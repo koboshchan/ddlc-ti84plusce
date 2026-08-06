@@ -108,3 +108,13 @@ per string, in pool order (this is the index OP_SAY/OP_MENU's text:u16 uses):
 
 A single appvar holding the chunk id, `pc`, the variable table, and the current
 scene state.
+
+## Character presence AppVars
+
+`src/chars.c` creates four empty AppVars — `SAYORI`, `NATSUKI`, `YURI`,
+`MONIKA` — as the on-calc stand-in for each character's Ren'Py `.chr` file.
+They carry no content; only their existence is meaningful. The Act 2/3 "file
+deletion" meta effect is implemented as `ti_Delete` on the relevant AppVar,
+and `chars_present()` lets the engine ask the filesystem directly rather than
+tracking deletion state separately. `chars_init()` only creates AppVars that
+are missing, so a deletion from a prior session persists across restarts.

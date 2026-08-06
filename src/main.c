@@ -3,6 +3,7 @@
  * @brief Entry point: wires the VM to graphx rendering and keypad input.
  */
 
+#include "chars.h"
 #include "demo.h"
 #include "render.h"
 #include "text.h"
@@ -185,6 +186,7 @@ int main(void)
 {
     vn_vm_t vm;
 
+    chars_init();
     render_init();
 
     vn_init(&vm, demo_code, demo_code_size, &host);
