@@ -1,0 +1,38 @@
+# --- Build output (CE toolchain) ---
+bin/
+obj/
+*.o
+*.8xp
+*.8xv
+*.8xg
+*.b83
+*.b84
+convimg.out
+convimg.yaml
+
+# --- Host simulator ---
+tools/host_sim/build/
+
+# --- Extracted / converted game data ---
+# NOTHING derived from a copy of DDLC may ever be committed. The pipeline
+# writes everything it produces under assets/ and build/, both ignored here.
+assets/
+build/
+*.rpa
+*.rpyc
+*.chr
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# --- Editors ---
+.vscode/
+.idea/
+*.swp
+
+# --- OS ---
+.DS_Store
