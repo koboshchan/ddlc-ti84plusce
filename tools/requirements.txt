@@ -1,0 +1,4 @@
+# Import-script dependencies. Install with: pip3 install -r tools/requirements.txt
+Pillow>=10
+PyYAML>=6
+unrpa>=2.3
