@@ -47,38 +47,30 @@ typedef struct {
     bool advance;   /* 2nd / enter */
     bool up;
     bool down;
-    bool left;      /* only the name-entry screen uses these two */
-    bool right;
     bool pause;     /* mode -- opens the pause menu, or cancels a submenu */
     bool quit;      /* clear       */
 } input_t;
 
 static void input_poll(input_t *in)
 {
-    static bool held_advance, held_up, held_down, held_left, held_right, held_pause;
+    static bool held_advance, held_up, held_down, held_pause;
 
     kb_Scan();
 
     bool advance = kb_IsDown(kb_Key2nd) || kb_IsDown(kb_KeyEnter);
     bool up      = kb_IsDown(kb_KeyUp);
     bool down    = kb_IsDown(kb_KeyDown);
-    bool left    = kb_IsDown(kb_KeyLeft);
-    bool right   = kb_IsDown(kb_KeyRight);
     bool pause   = kb_IsDown(kb_KeyMode);
 
     in->advance = advance && !held_advance;
     in->up      = up      && !held_up;
     in->down    = down    && !held_down;
-    in->left    = left    && !held_left;
-    in->right   = right   && !held_right;
     in->pause   = pause   && !held_pause;
     in->quit    = kb_IsDown(kb_KeyClear);
 
     held_advance = advance;
     held_up      = up;
     held_down    = down;
-    held_left    = left;
-    held_right   = right;
     held_pause   = pause;
 
     if (in->quit) {
@@ -563,77 +555,70 @@ static void run_splash_screens(void)
  * Player name entry
  *
  * DDLC asks for this once, right at the start of Act 1 (`renpy.input()`),
- * and every later "[player]" in dialogue substitutes it in. There's no real
- * text keyboard here, so entry is a classic name-entry-screen letter picker:
- * left/right move between NAME_MAX_LEN slots, up/down cycle each slot
- * through a blank and A-Z, 2nd confirms whatever's currently typed (trailing
- * blanks trimmed).
+ * and every later "[player]" in dialogue substitutes it in. Typed directly
+ * on the keypad rather than picked from a list: os_GetCSC() (ti/getcsc.h)
+ * returns the OS's own keypad scancode, and its doc comment gives the exact
+ * scancode -> letter table the OS uses for its own text-entry routines --
+ * that's also the mapping printed above each key in ALPHA mode (MATH=A,
+ * APPS=B, PRGM=C, ...), so typing a name here works the same way it would in
+ * the TI-OS itself. Deliberately not mixed with input_poll()'s kb_Scan()
+ * layer in the same loop -- both read the same hardware, but through
+ * different APIs, and os_GetCSC() already reports Clear/Enter/Del as plain
+ * scancodes, so there's nothing input_poll() would add here.
  * ------------------------------------------------------------------------ */
 
-#define NAME_ALPHABET " ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-#define NAME_SLOT_W 16
+/* Verbatim from ti/getcsc.h's os_GetCSC() doc comment: index by scancode to
+ * get the letter printed on that key in ALPHA mode, or NUL if it has none. */
+static const char name_entry_keymap[] =
+    "\0\0\0\0\0\0\0\0\0\0\"WRMH\0\0?[VQLG\0\0:ZUPKFC\0 YTOJEB\0\0XSNIDA\0\0\0\0\0\0\0\0";
 
 static void run_name_entry(void)
 {
-    char letters[NAME_MAX_LEN];
-    memset(letters, ' ', sizeof(letters));
-    uint8_t cursor = 0;
-
-    const int start_x = (SCREEN_W - NAME_MAX_LEN * NAME_SLOT_W) / 2;
-    const int slot_y = 100;
+    char name[NAME_MAX_LEN + 1];
+    size_t len = 0;
 
     for (;;) {
         render_backdrop(COL_WHITE);
         render_text_centered("What is your name?", 60, COL_BLACK);
 
-        for (uint8_t i = 0; i < NAME_MAX_LEN; i++) {
-            int x = start_x + i * NAME_SLOT_W;
-            if (i == cursor) {
-                gfx_SetColor(COL_HIGHLIGHT);
-                gfx_FillRectangle_NoClip(x, slot_y, NAME_SLOT_W - 2, NAME_SLOT_W);
-            }
-            char ch[2] = { letters[i], '\0' };
-            render_text(ch, x + 5, slot_y + 2, COL_BLACK);
-        }
+        char shown[NAME_MAX_LEN + 2];
+        memcpy(shown, name, len);
+        shown[len] = '_';
+        shown[len + 1] = '\0';
+        render_text_centered(shown, 100, COL_BLACK);
 
-        render_text_centered("left/right move, up/down change letter", 140, COL_BOX_FILL);
-        render_text_centered("2nd to confirm", 154, COL_BOX_FILL);
+        render_text_centered("Type your name on the keypad", 140, COL_BOX_FILL);
+        render_text_centered("Del erases, Enter confirms", 154, COL_BOX_FILL);
         render_present(TRANS_CUT);
         gfx_Wait();
 
-        input_t in;
-        input_poll(&in);
-        if (quit_requested) {
+        uint8_t key = os_GetCSC();
+        if (!key) {
+            continue;
+        }
+        if (key == sk_Clear) {
+            quit_requested = true;
             return;
         }
-
-        if (in.left) {
-            cursor = cursor == 0 ? NAME_MAX_LEN - 1 : (uint8_t)(cursor - 1);
-        }
-        if (in.right) {
-            cursor = (uint8_t)((cursor + 1) % NAME_MAX_LEN);
-        }
-        if (in.up || in.down) {
-            const char *pos = strchr(NAME_ALPHABET, letters[cursor]);
-            int idx = pos ? (int)(pos - NAME_ALPHABET) : 0;
-            int span = (int)strlen(NAME_ALPHABET);
-            idx = in.up ? (idx + 1) % span : (idx - 1 + span) % span;
-            letters[cursor] = NAME_ALPHABET[idx];
-        }
-        if (in.advance) {
-            char name[NAME_MAX_LEN + 1];
-            size_t len = 0;
-            for (uint8_t i = 0; i < NAME_MAX_LEN; i++) {
-                if (letters[i] != ' ') {
-                    name[len++] = letters[i];
-                }
-            }
+        if (key == sk_Enter || key == sk_2nd) {
             if (len == 0) {
                 continue; /* need at least one character */
             }
             name[len] = '\0';
             name_save(name);
             return;
+        }
+        if (key == sk_Del) {
+            if (len > 0) {
+                len--;
+            }
+            continue;
+        }
+        if (key < sizeof(name_entry_keymap)) {
+            char c = name_entry_keymap[key];
+            if (c >= 'A' && c <= 'Z' && len < NAME_MAX_LEN) {
+                name[len++] = c;
+            }
         }
     }
 }
