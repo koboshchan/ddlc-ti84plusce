@@ -140,10 +140,31 @@ into one combined chunk. That worked for a small selection (the default
 set's combined chunk measured 254,842 bytes, well over one resident
 buffer's budget, and (separately) needed 406 distinct sprite ids against
 `OP_SHOW`'s then-`u8` `sprite` operand (fixed alongside this, see the
-Bytecode table above). Per-file chunking sidesteps both: every file
-measured so far fits in one AppVar with room to spare (ch0=20242 bytes,
-the largest, `script-poemresponses`, is 62004), so `--files=act1` is a
-valid, working selection now, not just a compiles-but-can't-run one.
+Bytecode table above). Per-file chunking sidesteps both: every file except
+one fits in one AppVar with room to spare (ch0=20242 bytes; the largest
+that fits whole, `script-poemresponses`, is 62004), so `--files=act1` and
+`--files=all` (every script file DDLC ships -- `import_game.py`'s
+`ALL_FILES`, all three acts and every exclusive route) are both valid,
+working selections now, not just compiles-but-can't-run ones.
+
+The one exception is `script-ch30` (Act 3's finale), whose own compiled
+output alone is 67,954 bytes -- just over a single AppVar. `Compiler.
+compile_file_chunked()` splits a file like this automatically: it tracks
+code+string size as it walks the file's top-level nodes, and if a size
+threshold is crossed right before a top-level `Label`, it flushes any
+pending scene, emits an explicit `Jump` to that label, and starts a fresh
+chunk there. This is safe *only* at a top-level Label boundary -- Ren'Py
+lets sequential top-level labels fall through into each other with no
+explicit Jump between them, so replacing that fall-through with a real one
+at a chosen label is behaviorally identical, not a semantic change; splitting
+inside a label's own block isn't attempted, and no single label has come
+close to the budget by itself. `--files=all` produces 23 chunks this way
+(`script-ch30` becomes two); its packaged bundle measures ~3.14MB, over
+this project's own ~3MB hardware archive figure (see "Design constraints"
+above) -- it compiles, links, and replays correctly through `host_sim`, but
+isn't expected to fit a stock calculator's user archive as one bundle.
+`--files=act1`'s ~2.63MB does fit that ceiling, just not the more
+conservative 2.5MB internal target.
 
 **Packed addresses.** `OP_JUMP`/`OP_CALL`/`OP_IF`/`OP_MENU`'s `u24` target,
 `vn_vm_t.pc`, and `vn_vm_t.stack[]` all encode `(chunk_id << 16) |
