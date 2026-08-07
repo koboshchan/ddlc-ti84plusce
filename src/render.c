@@ -252,9 +252,11 @@ void render_list_menu(const char *const *items, uint8_t count, uint8_t selected,
  * Reproduces DDLC's main menu: the tiling background scrolls forever, and a
  * one-shot entrance slides the cast up, the nav panel in from the left, and
  * bounces the logo down from above. DDLC's own entrance runs ~3.45s; the
- * timings below keep its relative shape but compress it to under a second --
- * a homebrew title screen doesn't need DDLC's patience-testing intro length,
- * and the player sees it every time they back out to the title.
+ * timings below keep its relative shape and land close to that same length --
+ * compressing it further read as elements "popping" into place rather than
+ * animating, since eased motion needs enough real time on screen to actually
+ * show the curve instead of jumping most of the way there in a couple of
+ * frames.
  *
  * @p t (render_title_screen's parameter) is real elapsed milliseconds, not a
  * frame count. An earlier version counted rendered frames instead, on the
@@ -298,15 +300,17 @@ static const uint8_t bounce_remain[EASE_STEPS] = {
      12,  16,  15,  11,   2,   3,   4,   0,
 };
 
-/* Keyframes, in milliseconds since the intro started. */
-#define F_CAST_RISE_AT     50
-#define F_CAST_RISE_DUR   450
-#define F_NAV_AT          100
-#define F_NAV_DUR         350
-#define F_CAST_SLIDE_AT   300
-#define F_CAST_SLIDE_DUR  400
-#define F_LOGO_AT         200
-#define F_LOGO_DUR        500
+/* Keyframes, in milliseconds since the intro started -- roughly 5x the
+ * original compressed values, landing the whole entrance (cast slide, the
+ * last element to settle) around 3.5s, matching DDLC's own pacing. */
+#define F_CAST_RISE_AT    250
+#define F_CAST_RISE_DUR  2250
+#define F_NAV_AT          500
+#define F_NAV_DUR        1750
+#define F_CAST_SLIDE_AT  1500
+#define F_CAST_SLIDE_DUR 2000
+#define F_LOGO_AT        1000
+#define F_LOGO_DUR       2500
 
 /** How much of @p amp is still left to travel at time @p t (ms), per @p lut.
  *

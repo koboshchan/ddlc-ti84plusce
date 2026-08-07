@@ -112,7 +112,7 @@ void render_list_menu(const char *const *items, uint8_t count, uint8_t selected,
                       int x, int y, uint8_t normal_color, uint8_t selected_color);
 
 /** Milliseconds the title intro runs for; past this everything is at rest. */
-#define TITLE_INTRO_MS 900
+#define TITLE_INTRO_MS 3500
 
 /**
  * Draws the whole title screen -- scrolling background, cast, nav panel, menu
