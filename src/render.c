@@ -12,6 +12,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <time.h>
 
 void render_init(void)
 {
@@ -56,29 +57,103 @@ static void print_slice(const char *str, size_t len, int x, int y)
 }
 
 /* ---------------------------------------------------------------------------
+ * Easing
+ *
+ * Shared by the speaking pop (below) and the title screen entrance (further
+ * down): both need a smooth eased offset driven by real elapsed time, not a
+ * continuous idle animation, and this LUT/ease() pair is generic in either
+ * case -- what differs per caller is just the curve, amplitude, and timing.
+ * ------------------------------------------------------------------------ */
+
+/* Remaining-offset curves, 255 (fully displaced) -> 0 (arrived), sampled 32
+ * ways. Integer tables rather than float easing: this can run per element
+ * per frame, and the eZ80 has no FPU. Max amplitude is 300, so 300*255 stays
+ * well inside a 24-bit int -- no overflow, no division. */
+#define EASE_STEPS 32
+
+static const uint8_t ease_remain[EASE_STEPS] = {
+    255, 254, 252, 249, 245, 239, 232, 224,
+    215, 206, 195, 184, 172, 159, 147, 134,
+    121, 108,  96,  83,  71,  60,  49,  40,
+     31,  23,  16,  10,   6,   3,   1,   0,
+};
+static const uint8_t quint_remain[EASE_STEPS] = {
+    255, 224, 195, 170, 147, 126, 108,  92,
+     77,  65,  54,  44,  36,  29,  23,  18,
+     14,  11,   8,   6,   4,   3,   2,   1,
+      1,   0,   0,   0,   0,   0,   0,   0,
+};
+static const uint8_t bounce_remain[EASE_STEPS] = {
+    255, 253, 247, 237, 223, 205, 183, 157,
+    127,  92,  54,  12,  15,  33,  47,  56,
+     62,  64,  61,  55,  45,  30,  12,   5,
+     12,  16,  15,  11,   2,   3,   4,   0,
+};
+
+/** How much of @p amp is still left to travel at time @p t (ms), per @p lut.
+ *
+ * Interpolates between table entries rather than snapping to the nearest:
+ * with only EASE_STEPS samples spread over the intro, snapping quantises the
+ * motion into visible steps, and the bounce curve in particular has enough
+ * high-frequency detail near its end to read as jitter instead of a bounce. */
+static int ease(const uint8_t *lut, int amp, unsigned t, unsigned at, unsigned dur)
+{
+    if (t <= at) {
+        return amp;
+    }
+    unsigned elapsed = t - at;
+    if (elapsed >= dur) {
+        return 0;
+    }
+
+    unsigned pos  = elapsed * ((EASE_STEPS - 1) << 8) / dur;  /* 8 frac bits */
+    unsigned i    = pos >> 8;
+    unsigned frac = pos & 0xFF;
+    int a = lut[i];
+    int b = (i + 1 < EASE_STEPS) ? lut[i + 1] : 0;
+
+    return (amp * (a + (((b - a) * (int)frac) >> 8))) / 255;
+}
+
+/* ---------------------------------------------------------------------------
  * Scene art
  * ------------------------------------------------------------------------ */
 
-/* Idle "breathing" bob: DDLC runs a real per-frame ATL transform for this
- * that this engine doesn't interpret (see compile_script.py's position
- * comment for the general ATL gap). This is a cheap stand-in, not a
- * reproduction of the original curve: a small sine table, offset a quarter
- * cycle per character slot so multiple actors don't bob in lockstep. */
-#define BOB_LUT_SIZE    32
-#define BOB_SPEED_DIV   2  /* frames per LUT step -- lower = faster bob */
+/* Speaking pop: DDLC's own ATL (transforms.rpy's `focus`/`hopfocus` vs.
+ * `tcommon`/`hop`) zooms whichever character is currently speaking to 1.05x
+ * and holds everyone else at 1.00x -- an earlier version of this engine
+ * instead ran a continuous idle sine wobble unrelated to who was talking,
+ * which was both the wrong effect and, being unbounded, never settled.
+ *
+ * graphx has no runtime scaler for rlet sprites (the same constraint that
+ * dropped the title screen's own zoom -- see its file comment), so a literal
+ * 1.05x isn't cheap: it would mean baking and shipping a second scaled copy
+ * of every sprite. A small vertical rise approximates the "coming forward"
+ * read instead, eased in when a character becomes the speaker and back out
+ * when they stop, using the same curve/timing shape as DDLC's own 0.25s
+ * `on show` ease (see `focus`'s ATL) rather than DDLC's raw pixel amount
+ * (which is against a 1280-wide canvas the 320-wide scene has no room for). */
+#define SPEAK_POP_PX   4    /* screen px risen while speaking */
+#define SPEAK_POP_MS 250    /* ms to ease in or out of the pop */
 
-static const int8_t bob_lut[BOB_LUT_SIZE] = {
-     0,  0,  1,  1,  2,  2,  2,  2,  2,  2,  2,  2,  2,  1,  1,  0,
-     0,  0, -1, -1, -2, -2, -2, -2, -2, -2, -2, -2, -2, -1, -1,  0,
-};
-
-static unsigned frame_counter;
-
-static int bob_offset(uint8_t character)
+static int speak_pop_offset(uint8_t character, bool speaking, unsigned t)
 {
-    unsigned step = frame_counter / BOB_SPEED_DIV
-                  + (unsigned)character * (BOB_LUT_SIZE / 4);
-    return bob_lut[step % BOB_LUT_SIZE];
+    static bool     was_speaking[VN_MAX_CHARS];
+    static unsigned changed_at[VN_MAX_CHARS];
+
+    int old_rest = was_speaking[character] ? -SPEAK_POP_PX : 0;
+    if (speaking != was_speaking[character]) {
+        was_speaking[character] = speaking;
+        changed_at[character] = t;
+    }
+    int new_rest = speaking ? -SPEAK_POP_PX : 0;
+
+    /* ease() decays `amp` toward 0 as `t` runs from the change to
+     * change+dur, so amp = old_rest - new_rest lands exactly on old_rest at
+     * t=changed_at and new_rest once the ease finishes, whichever direction
+     * this particular transition runs. */
+    return new_rest + ease(ease_remain, old_rest - new_rest, t,
+                           changed_at[character], SPEAK_POP_MS);
 }
 
 static void draw_background(uint8_t bg)
@@ -93,26 +168,21 @@ static void draw_background(uint8_t bg)
     }
 }
 
-/** Horizontal center for each enum vn_pos anchor. */
+/** Decodes vn_actor_t.pos (half the screen-space center X) back to a real
+ * screen X. Not a bucketed anchor -- see vn.h and compile_script.py's
+ * _pos_from_x. */
 static int pos_center(uint8_t pos)
 {
-    switch (pos) {
-        case POS_FARLEFT:  return SCREEN_W / 6;
-        case POS_LEFT:     return SCREEN_W / 3;
-        case POS_RIGHT:    return (SCREEN_W * 2) / 3;
-        case POS_FARRIGHT: return (SCREEN_W * 5) / 6;
-        case POS_CENTER:
-        default:           return SCREEN_W / 2;
-    }
+    return (int)pos * 2;
 }
 
-static void draw_actor(const vn_actor_t *actor)
+static void draw_actor(const vn_actor_t *actor, bool speaking, unsigned t)
 {
-    /* feet anchored to the box edge (plus the idle bob); assets_draw_sprite
+    /* feet anchored to the box edge (plus the speaking pop); assets_draw_sprite
      * centers on width once it knows it (only it has the sprite's AppVar
      * open to check) */
     assets_draw_sprite(actor->sprite, pos_center(actor->pos),
-                       SCENE_H + bob_offset(actor->character));
+                       SCENE_H + speak_pop_offset(actor->character, speaking, t));
 }
 
 /* ---------------------------------------------------------------------------
@@ -123,9 +193,17 @@ void render_scene(const vn_scene_t *scene)
 {
     draw_background(scene->background);
 
+    /* Real elapsed time, not a frame count -- render_scene() is called from
+     * many different loops (the typewriter reveal, idle waits, the pause
+     * menu overlay) rather than one central per-frame driver like the title
+     * screen has, so speak_pop_offset() samples the clock itself here rather
+     * than threading a @p t parameter through every one of those call sites. */
+    unsigned t = (unsigned)(clock() * 1000UL / CLOCKS_PER_SEC);
+
     for (int i = 0; i < VN_MAX_CHARS; i++) {
-        if (scene->actors[i].character != VN_NO_SPRITE) {
-            draw_actor(&scene->actors[i]);
+        const vn_actor_t *actor = &scene->actors[i];
+        if (actor->character != VN_NO_SPRITE) {
+            draw_actor(actor, actor->character == scene->speaker, t);
         }
     }
 }
@@ -204,7 +282,6 @@ void render_present(uint8_t trans)
      * the palette-ramp pass that lands with the asset pipeline. */
     (void)trans;
 
-    frame_counter++;
     gfx_SwapDraw();
     gfx_BlitScreen();
 }
@@ -275,31 +352,6 @@ void render_list_menu(const char *const *items, uint8_t count, uint8_t selected,
  * concurrent horizontal slide already carries the "settling into place" feel.
  * ------------------------------------------------------------------------ */
 
-/* Remaining-offset curves, 255 (fully displaced) -> 0 (arrived), sampled 32
- * ways. Integer tables rather than float easing: this runs per element per
- * frame, and the eZ80 has no FPU. Max amplitude is 300, so 300*255 stays well
- * inside a 24-bit int -- no overflow, no division. */
-#define EASE_STEPS 32
-
-static const uint8_t ease_remain[EASE_STEPS] = {
-    255, 254, 252, 249, 245, 239, 232, 224,
-    215, 206, 195, 184, 172, 159, 147, 134,
-    121, 108,  96,  83,  71,  60,  49,  40,
-     31,  23,  16,  10,   6,   3,   1,   0,
-};
-static const uint8_t quint_remain[EASE_STEPS] = {
-    255, 224, 195, 170, 147, 126, 108,  92,
-     77,  65,  54,  44,  36,  29,  23,  18,
-     14,  11,   8,   6,   4,   3,   2,   1,
-      1,   0,   0,   0,   0,   0,   0,   0,
-};
-static const uint8_t bounce_remain[EASE_STEPS] = {
-    255, 253, 247, 237, 223, 205, 183, 157,
-    127,  92,  54,  12,  15,  33,  47,  56,
-     62,  64,  61,  55,  45,  30,  12,   5,
-     12,  16,  15,  11,   2,   3,   4,   0,
-};
-
 /* Keyframes, in milliseconds since the intro started -- roughly 5x the
  * original compressed values, landing the whole entrance (cast slide, the
  * last element to settle) around 3.5s, matching DDLC's own pacing. */
@@ -311,31 +363,6 @@ static const uint8_t bounce_remain[EASE_STEPS] = {
 #define F_CAST_SLIDE_DUR 2000
 #define F_LOGO_AT        1000
 #define F_LOGO_DUR       2500
-
-/** How much of @p amp is still left to travel at time @p t (ms), per @p lut.
- *
- * Interpolates between table entries rather than snapping to the nearest:
- * with only EASE_STEPS samples spread over the intro, snapping quantises the
- * motion into visible steps, and the bounce curve in particular has enough
- * high-frequency detail near its end to read as jitter instead of a bounce. */
-static int ease(const uint8_t *lut, int amp, unsigned t, unsigned at, unsigned dur)
-{
-    if (t <= at) {
-        return amp;
-    }
-    unsigned elapsed = t - at;
-    if (elapsed >= dur) {
-        return 0;
-    }
-
-    unsigned pos  = elapsed * ((EASE_STEPS - 1) << 8) / dur;  /* 8 frac bits */
-    unsigned i    = pos >> 8;
-    unsigned frac = pos & 0xFF;
-    int a = lut[i];
-    int b = (i + 1 < EASE_STEPS) ? lut[i + 1] : 0;
-
-    return (amp * (a + (((b - a) * (int)frac) >> 8))) / 255;
-}
 
 /* Nav panel, in the calculator's own units rather than scaled from DDLC's
  * 310px: it has to hold "Load Game", and DDLC's proportional width (77px)

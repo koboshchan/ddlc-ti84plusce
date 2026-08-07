@@ -43,11 +43,6 @@ enum vn_cmp {
     CMP_EQ = 0, CMP_NE = 1, CMP_LT = 2, CMP_LE = 3, CMP_GT = 4, CMP_GE = 5,
 };
 
-/** Sprite anchor positions across the 320px-wide scene area. */
-enum vn_pos {
-    POS_LEFT = 0, POS_CENTER = 1, POS_RIGHT = 2, POS_FARLEFT = 3, POS_FARRIGHT = 4,
-};
-
 /** Scene transitions. Only CUT and FADE are implemented for now. */
 enum vn_trans { TRANS_CUT = 0, TRANS_FADE = 1 };
 
@@ -79,7 +74,8 @@ enum vn_trans { TRANS_CUT = 0, TRANS_FADE = 1 };
 typedef struct {
     uint8_t character; /* character id, or VN_NO_SPRITE when the slot is free */
     uint8_t sprite;
-    uint8_t pos;       /* enum vn_pos */
+    uint8_t pos;       /* half the on-screen center X: center_x = pos * 2
+                         * (tools/compile_script.py's _pos_from_x) */
 } vn_actor_t;
 
 /** Everything the renderer needs to draw a frame. Owned by the VM. */

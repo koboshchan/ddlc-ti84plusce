@@ -70,8 +70,18 @@ code section. Strings are `u16` indices into the chunk's string pool.
 
 Comparison selectors for `OP_IF`: `0` EQ, `1` NE, `2` LT, `3` LE, `4` GT, `5` GE.
 
-Sprite anchors for `OP_SHOW`: `0` left, `1` center, `2` right, `3` far-left,
-`4` far-right.
+`OP_SHOW`'s `pos` is half the on-screen center X: `screen_x = pos * 2`, 2px
+granularity across the 320px scene. `tools/compile_script.py`'s
+`_pos_from_x()` computes it straight from the real X a DDLC position
+transform (`transforms.rpy`'s `t21`, `f22`, ...) carries on Ren'Py's
+1280-wide canvas, scaled by the same 0.25 factor used for backgrounds
+(halved again, `/8` not `/4`, so it fits a byte). An earlier version instead
+bucketed X into one of 5 fixed anchors (left/center/right/far-left/
+far-right); that lost DDLC's real spacing -- a 4-character scene's own
+transforms place them at roughly even quarters of the canvas, but two of
+those always landed in adjacent buckets while the middle bucket sat unused,
+rendering as two overlapping pairs with a gap between them instead of four
+evenly spaced characters.
 
 Transitions for `OP_SCENE`: `0` cut, `1` fade -- a real dissolve-to-black,
 hold, dissolve-back (`src/render.c`'s `render_fade_out()`/`render_fade_in()`),
@@ -223,6 +233,26 @@ reader never has to stitch bytes across two AppVars for one image — one
   against its own 256-entry palette (fixed-entries 0-7 pinned, same as
   `pal_game`/`pal_title`, so the dialogue box drawn over a CG still reads the
   right colors) and packs it into the `DCGPAL*`/`DCGPLUT` group.
+
+## The speaking pop
+
+DDLC's own ATL (`transforms.rpy`'s `focus`/`hopfocus` vs. `tcommon`/`hop`)
+zooms whichever character is currently speaking to 1.05x and holds everyone
+else at 1.00x. `graphx` has no runtime scaler for `rlet` sprites (the same
+constraint the title screen's own dropped zoom already documents), and a
+literal 1.05x would mean baking and shipping a second scaled copy of every
+sprite, so `render.c`'s `speak_pop_offset()` approximates it with a small
+eased vertical rise instead -- driven by `scene->speaker == actor->character`
+(already tracked for the name plate, so no bytecode or compiler change was
+needed), not by which position-transform family the original script used.
+The rise eases in over 250ms when a character becomes the speaker and back
+out when they stop, using the same integer LUT/`ease()` the title screen's
+entrance uses, sampled off `clock()` rather than a frame count for the same
+reason the title intro is (see "Title screen" below).
+
+An earlier version instead ran a continuous idle sine wobble, unrelated to
+who was talking and never settling -- wrong on both counts: DDLC's animation
+is state-driven by the current speaker, not a perpetual idle loop.
 
 ## Scene transitions
 

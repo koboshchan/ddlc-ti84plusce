@@ -28,8 +28,18 @@ OP_END = 0x0D
 OP_ADD = 0x0E
 
 CMP_EQ, CMP_NE, CMP_LT, CMP_LE, CMP_GT, CMP_GE = range(6)
-POS_LEFT, POS_CENTER, POS_RIGHT, POS_FARLEFT, POS_FARRIGHT = range(5)
 TRANS_CUT, TRANS_FADE = 0, 1
+
+# OP_SHOW's pos:u8 is half the on-screen center X (decode: center_x = pos*2),
+# not a bucketed enum -- see compile_script.py's _pos_from_x. Values below are
+# DDLC's own canvas X (transforms.rpy's l11/l21/l22, center/2-character-left/
+# 2-character-right) divided by 8 -- the same 0.25 canvas-to-screen scale
+# used everywhere else, halved again to fit a byte. Only used as convenient
+# presets here and in gen_demo.py; the real pipeline computes a byte per
+# scene from the actual transform in use, not from this fixed set.
+POS_CENTER = 640 // 8
+POS_LEFT = 400 // 8
+POS_RIGHT = 880 // 8
 
 SPEAKER_NONE = 0xFF
 NO_SPRITE = 0xFF

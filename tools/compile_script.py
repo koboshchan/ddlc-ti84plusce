@@ -86,18 +86,18 @@ def load_transform_positions(raw_dir: Path) -> dict[str, int]:
 
 
 def _pos_from_x(x: int) -> int:
-    """Buckets a 0..1280 canvas X into one of the engine's 5 discrete
-    anchors -- OP_SHOW's pos operand is a fixed enum, not a raw coordinate,
-    so this is a lossy but simple fit rather than a bytecode format change."""
-    if x < 256:
-        return vnasm.POS_FARLEFT
-    if x < 512:
-        return vnasm.POS_LEFT
-    if x < 768:
-        return vnasm.POS_CENTER
-    if x < 1024:
-        return vnasm.POS_RIGHT
-    return vnasm.POS_FARRIGHT
+    """Converts a canvas X (0..1280) to OP_SHOW's pos:u8 -- half the
+    screen-space center X (image_resolve.py's 0.25 canvas-to-screen scale,
+    halved again so the result fits a byte; render.c decodes it back via
+    `center_x = pos * 2`, 2px granularity on the 320px-wide scene).
+
+    An earlier version bucketed X into one of 5 fixed anchors instead. That
+    lost DDLC's real spacing: a 4-character scene's own transforms place them
+    at roughly even quarters of the canvas (e.g. 200/493/786/1080), but two
+    of those always fell in adjacent buckets while the middle bucket sat
+    unused, rendering as two overlapping pairs with a gap between them
+    instead of four evenly spaced characters."""
+    return max(0, min(255, round(x / 8)))
 
 _CMP_MAP = {
     ast.Eq: vnasm.CMP_EQ, ast.NotEq: vnasm.CMP_NE,
@@ -291,8 +291,10 @@ class Compiler:
         # (transforms.rpy: 't31', 'f22', ...) rather than the simple built-in
         # left/right/truecenter keywords. Each one turns out to be a single
         # `func(X)` call on Ren'Py's 1280-wide canvas (see
-        # load_transform_positions) -- bucketed into one of the engine's 5
-        # discrete anchors, not a full ATL property interpreter.
+        # load_transform_positions) -- converted straight to a screen X
+        # (_pos_from_x), not a full ATL property interpreter (no scaling,
+        # easing, or the transform family's zoom -- see _resolve_pos and
+        # render.c's speaking pop for that last part).
         at_list = node.imspec[3] if len(node.imspec) > 3 else None
         self.asm.show(char, sprite, self._resolve_pos(char, at_list))
 
