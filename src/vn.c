@@ -183,8 +183,9 @@ bool vn_step(vn_vm_t *vm)
             if (vm->status != VN_RUNNING) {
                 break;
             }
-            vm->scene.speaker = spk;
-            vm->scene.text    = vm->host->string(vm->host->ctx, text);
+            vm->scene.speaker    = spk;
+            vm->scene.text       = vm->host->string(vm->host->ctx, text);
+            vm->scene.text_index = text;
             vm->host->say(vm->host->ctx, &vm->scene);
             break;
         }

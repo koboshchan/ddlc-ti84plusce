@@ -88,6 +88,11 @@ typedef struct {
     vn_actor_t  actors[VN_MAX_CHARS];
     uint8_t     speaker;                /* VN_SPEAKER_NONE for narration     */
     const char *text;                   /* current line, NUL-terminated      */
+    uint16_t    text_index;             /* text's string-pool index, for save
+                                          * games -- `text` itself is a pointer
+                                          * into this run's malloc'd DSCRIPT
+                                          * copy, unsafe to persist across a
+                                          * restart (see save.h)             */
 } vn_scene_t;
 
 /**
