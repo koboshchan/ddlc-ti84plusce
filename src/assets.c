@@ -31,16 +31,18 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* A single resident chunk's string pool, generously capped -- script+ch0
- * currently uses 352. Table of pointers, not copies: each points directly
- * into script_buf (this module's private copy of DSCRIPT's bytes). */
-#define MAX_STRINGS 1024
+/* A single resident chunk's string pool, generously capped -- the largest
+ * single compiled chunk seen so far (script-poemresponses) uses 1257. Table
+ * of pointers, not copies: each points directly into script_buf (this
+ * module's private copy of the current chunk's bytes). */
+#define MAX_STRINGS 2048
 
-static uint8_t         *script_buf; /* owns the DSCRIPT bytes */
+static uint8_t         *script_buf; /* owns the current chunk's bytes */
 static const uint8_t   *script_code;
 static size_t            script_code_size;
 static const char       *string_ptrs[MAX_STRINGS];
 static uint16_t          string_count;
+static uint32_t          entry_pc; /* packed (chunk_id<<16)|offset, from DENTRY */
 
 /* Sprite/scene lookup tables: tools/import_game.py's build_lut() format --
  * u16 count, then per entry u8 appvar_index, u16 offset, u16 length. Each is
@@ -108,12 +110,22 @@ static uint8_t *read_whole(const char *name, uint16_t *size_out)
     return buf;
 }
 
-static assets_status_t load_script(void)
+bool assets_load_chunk(uint8_t chunk_id)
 {
+    /* Only one chunk is ever resident (see docs/FORMAT.md's "Chunking") --
+     * the previous one's buffer has to go before loading the next, or a long
+     * session that crosses many chunk boundaries would leak one chunk's
+     * worth of RAM per crossing. First call has nothing to free yet. */
+    free(script_buf);
+    script_buf = NULL;
+
+    char name[9];
+    sprintf(name, "DSCR%u", chunk_id);
+
     uint16_t total;
-    script_buf = read_whole("DSCRIPT", &total);
+    script_buf = read_whole(name, &total);
     if (!script_buf) {
-        return ASSETS_ERR_SCRIPT_OPEN;
+        return false;
     }
 
     uint16_t code_len = read_u16le(script_buf);
@@ -125,7 +137,9 @@ static assets_status_t load_script(void)
     p += 2;
 
     if (string_count > MAX_STRINGS) {
-        return ASSETS_ERR_TOO_MANY_STRINGS;
+        free(script_buf);
+        script_buf = NULL;
+        return false;
     }
 
     for (uint16_t i = 0; i < string_count; i++) {
@@ -134,7 +148,7 @@ static assets_status_t load_script(void)
         string_ptrs[i] = (const char *)p;
         p += (size_t)len + 1; /* +1: trailing NUL, see vnasm.py's to_chunk_bytes */
     }
-    return ASSETS_OK;
+    return true;
 }
 
 static bool load_lut(const char *name, uint8_t **buf_out,
@@ -153,9 +167,18 @@ static bool load_lut(const char *name, uint8_t **buf_out,
 
 assets_status_t assets_init(void)
 {
-    assets_status_t status = load_script();
-    if (status != ASSETS_OK) {
-        return status;
+    uint16_t entry_size;
+    uint8_t *entry = read_whole("DENTRY", &entry_size);
+    if (!entry || entry_size < 4) {
+        free(entry);
+        return ASSETS_ERR_ENTRY;
+    }
+    entry_pc = (uint32_t)entry[0] | ((uint32_t)entry[1] << 8) |
+              ((uint32_t)entry[2] << 16) | ((uint32_t)entry[3] << 24);
+    free(entry);
+
+    if (!assets_load_chunk((uint8_t)(entry_pc >> 16))) {
+        return ASSETS_ERR_SCRIPT_OPEN;
     }
     if (!load_lut("DSPRLUT", &sprite_lut_buf, &sprite_lut, &sprite_lut_count)) {
         return ASSETS_ERR_SPRITE_LUT;
@@ -210,13 +233,18 @@ const char *assets_status_str(assets_status_t status)
 {
     switch (status) {
         case ASSETS_OK:                    return "ok";
-        case ASSETS_ERR_SCRIPT_OPEN:       return "DSCRIPT missing/unreadable";
-        case ASSETS_ERR_TOO_MANY_STRINGS:  return "DSCRIPT string_count too large";
+        case ASSETS_ERR_ENTRY:             return "DENTRY missing/unreadable";
+        case ASSETS_ERR_SCRIPT_OPEN:       return "entry chunk's DSCRn missing/unreadable";
         case ASSETS_ERR_SPRITE_LUT:        return "DSPRLUT missing/unreadable";
         case ASSETS_ERR_SCENE_LUT:         return "DSCNLUT missing/unreadable";
         case ASSETS_ERR_PALETTE:           return "DPALGAME missing/unreadable";
         default:                           return "unknown";
     }
+}
+
+uint32_t assets_entry_pc(void)
+{
+    return entry_pc;
 }
 
 const uint8_t *assets_script(size_t *size_out)
@@ -232,8 +260,11 @@ const char *assets_string(uint16_t index)
     return index < string_count ? string_ptrs[index] : "";
 }
 
-/* LUT entry layout: u8 appvar_index, u16 offset, u16 length (5 bytes). */
-static bool lut_lookup(const uint8_t *lut, uint16_t count, uint8_t id,
+/* LUT entry layout: u8 appvar_index, u16 offset, u16 length (5 bytes). @p id
+ * is u16 (not every LUT this indexes has more than 255 entries, but the
+ * sprite one does -- 406 for the full game -- so the shared helper takes the
+ * wider type for all callers rather than having two near-identical copies). */
+static bool lut_lookup(const uint8_t *lut, uint16_t count, uint16_t id,
                        uint8_t *appvar_out, uint16_t *offset_out)
 {
     if (id >= count) {
@@ -245,7 +276,7 @@ static bool lut_lookup(const uint8_t *lut, uint16_t count, uint8_t id,
     return true;
 }
 
-bool assets_draw_sprite(uint8_t id, int center_x, int feet_y)
+bool assets_draw_sprite(uint16_t id, int center_x, int feet_y)
 {
     uint8_t appvar_idx;
     uint16_t offset;

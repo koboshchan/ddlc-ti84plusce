@@ -19,14 +19,12 @@ under assets/ and build/, both gitignored (see LICENSE, README.md).
 
 SCOPE NOTE: --files selects which imported chapters actually get compiled
 and bundled (default: just `script` + `script-ch0`, a complete, working
-Chapter 0 that fits in RAM as a single resident chunk and loads through
-src/assets.c). The pipeline *can* compile the whole of Act 1 (ch0-ch4, pass
---files with the full list) into one combined chunk -- cross-file Jump/Call
-resolve correctly across it -- but that combined chunk runs ~240KB, well
-over the ~154KB of usable RAM, and there's no loader yet that can keep only
-part of a multi-chapter script resident and swap chunks on a label jump.
-Picking a subset that already fits is how "real assets, actually running"
-ships today without waiting on that loader.
+Chapter 0). Each compiled file becomes its own resident "chunk" (one DSCRn
+AppVar); only one is ever resident on-calc at a time, swapped in by
+src/assets.c's assets_load_chunk() whenever a Jump/Call crosses a chunk
+boundary (see docs/FORMAT.md's "Chunking"), so --files=act1 (the full
+ch0-ch4 set, plus the labels it calls into) now actually runs rather than
+just compiling.
 """
 
 from __future__ import annotations
@@ -43,7 +41,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import convert_images
 import extract
-from compile_script import CompileError, Compiler, load_transform_positions
+import vnasm
+from compile_script import CompileError, Compiler, link_chunks, load_transform_positions
 from image_resolve import ImageResolver
 
 # Full Act 1 (ch0-ch4) plus the labels it calls into that live in other
@@ -61,10 +60,13 @@ ACT1_FILES = [
 DEFAULT_FILES = ["script", "script-ch0"]
 
 ARCHIVE_BUDGET = 2_500_000  # ~2.5MB target, from the plan
-CHUNK_BUDGET = 16 * 1024    # docs/FORMAT.md per-chunk RAM budget
-RAM_BUDGET = 150 * 1024     # conservative usable-RAM ceiling for the resident chunk
 
-MAXVARSIZE = 65000  # safely under the 65535-byte TI variable cap
+MAXVARSIZE = 65000  # safely under the 65535-byte TI variable cap; also the
+                     # real per-chunk ceiling now, since each chunk ships as
+                     # exactly one AppVar (no multi-piece packing like
+                     # DSPR/DSCN) -- comfortably under the ~150KB one
+                     # resident chunk actually has room for, so nothing
+                     # measured so far has come close to needing more.
 
 # Title screen cast, with DDLC's own image-level ATL constants from
 # splash.rpyc (xcenter, ycenter, zoom against the 1280x720 canvas).
@@ -100,24 +102,33 @@ def do_extract(game_dir: Path, raw_dir: Path, skip: bool) -> None:
 
 
 def do_compile(raw_dir: Path, build_dir: Path,
-               files: list[str]) -> tuple[Compiler, ImageResolver, list[str]]:
+               files: list[str]) -> tuple[Compiler, list[vnasm.Assembler], ImageResolver, list[str]]:
     step("compile script + resolve images")
     resolver = ImageResolver(raw_dir, build_dir)
     compiler = Compiler(resolver=resolver,
                         transform_positions=load_transform_positions(raw_dir))
 
-    # The startup splash (Team Salvato's logo, from splash.rpyc's `intro`
-    # ATL). Baked first and unconditionally so its scene id is always 0,
-    # matching src/main.c's SPLASH_LOGO_SCENE -- everything dialogue bakes
-    # afterward gets whatever id comes next.
-    resolver.splash_scene("bg/splash.png")
+    # Two backgrounds no dialogue references by name, baked first and
+    # unconditionally (regardless of --files) so their scene ids are always
+    # the same two values -- matching src/main.c's SPLASH_LOGO_SCENE=0 and
+    # src/poem.c's POEM_BG_SCENE=1. Everything dialogue bakes afterward gets
+    # whatever id comes next.
+    resolver.explicit_bg_scene("bg/splash.png")     # Team Salvato logo (splash.rpyc's `intro` ATL)
+    resolver.explicit_bg_scene("bg/notebook.png")    # poem minigame background
 
+    # One Assembler (chunk) per compiled file -- compiler.variables/
+    # last_sprite/last_pos stay on the shared Compiler instance across all of
+    # them (see compile_script.py's Compiler docstring), only compiler.asm
+    # gets swapped out before each file.
+    assemblers: list[vnasm.Assembler] = []
     for name in files:
         path = raw_dir / f"{name}.rpyc"
         if not path.is_file():
             print(f"  ! {name}.rpyc not found in {raw_dir}, skipping")
             continue
+        compiler.asm = vnasm.Assembler(chunk_id=len(assemblers))
         compiler.compile_file(path)
+        assemblers.append(compiler.asm)
 
     # The title screen's own art set (see TITLE_ART). These are plain `gui/`
     # files, not Ren'Py image names -- no dialogue references them, so the
@@ -128,12 +139,13 @@ def do_compile(raw_dir: Path, build_dir: Path,
     resolver.title_logo()
     resolver.title_bg_strip()
 
-    missing = compiler.finish()
+    missing = link_chunks(assemblers)
     resolver.write_manifest()
 
-    print(f"code: {len(compiler.asm.code)} bytes, "
-          f"{len(compiler.asm.strings)} strings, "
-          f"{len(compiler.variables)} variables")
+    total_code = sum(len(a.code) for a in assemblers)
+    total_strings = sum(len(a.strings) for a in assemblers)
+    print(f"code: {total_code} bytes across {len(assemblers)} chunks, "
+          f"{total_strings} strings, {len(compiler.variables)} variables")
     print(f"sprites baked: {len(resolver.sprites)}, scenes baked: {len(resolver.scenes)}")
     if resolver.unsupported:
         print(f"unsupported images: {len(resolver.unsupported)}")
@@ -147,25 +159,35 @@ def do_compile(raw_dir: Path, build_dir: Path,
         [{"file": s.file, "line": s.line, "kind": s.kind, "reason": s.reason}
          for s in compiler.skipped], indent=2))
 
-    return compiler, resolver, missing
+    return compiler, assemblers, resolver, missing
 
 
-def write_chunk(compiler: Compiler, build_dir: Path) -> Path:
-    chunk = compiler.asm.to_chunk_bytes()
-    path = build_dir / "script.vnb"
-    path.write_bytes(chunk)
+def find_entry_point(assemblers: list[vnasm.Assembler]) -> tuple[int, int]:
+    """Ren'Py's real entry point, `label start`, usually lives in the
+    `script` file -- found by name here (chunk_id, local offset) rather than
+    assumed to be chunk 0 offset 0, since --files order no longer has to put
+    it first (tools/vnasm.py's docs/FORMAT.md "Chunking" section)."""
+    for asm in assemblers:
+        if "start" in asm._labels:
+            return asm.chunk_id, asm._labels["start"]
+    print("  ! no 'start' label in the compiled --files selection; "
+          "defaulting entry to chunk 0 offset 0")
+    return 0, 0
 
-    if len(chunk) > RAM_BUDGET:
-        sys.exit(f"chunk is {len(chunk)} bytes, over the ~{RAM_BUDGET}-byte usable-RAM "
-                 f"ceiling -- src/assets.c loads the whole chunk resident, so this "
-                 f"file selection (--files) won't run on real hardware. Pick fewer "
-                 f"files, e.g. the default `script,script-ch0`.")
-    if len(chunk) > CHUNK_BUDGET:
-        print(f"  ! chunk is {len(chunk)} bytes, over the conservative {CHUNK_BUDGET}-byte "
-              f"per-chunk budget from docs/FORMAT.md (fine under the real "
-              f"~{RAM_BUDGET}-byte ceiling; that budget targets a future multi-chunk "
-              f"loader that can keep several chunks resident at once)")
-    return path
+
+def write_chunks(assemblers: list[vnasm.Assembler], build_dir: Path) -> list[Path]:
+    paths = []
+    for asm in assemblers:
+        chunk = asm.to_chunk_bytes()
+        if len(chunk) > MAXVARSIZE:
+            sys.exit(f"chunk {asm.chunk_id} is {len(chunk)} bytes, over the "
+                     f"{MAXVARSIZE}-byte single-AppVar ceiling -- split this file "
+                     f"selection into smaller per-file chunks (see docs/FORMAT.md's "
+                     f"'Chunking' section).")
+        path = build_dir / f"chunk{asm.chunk_id}.vnb"
+        path.write_bytes(chunk)
+        paths.append(path)
+    return paths
 
 
 def do_convert_images(build_dir: Path, quality: int, skip: bool) -> None:
@@ -267,7 +289,44 @@ def package_group(files: list[Path], prefix: str, lut_name: str,
     return appvars
 
 
-def do_package(build_dir: Path, appvar_dir: Path, manifest: dict) -> list[Path]:
+def do_poem_words(raw_dir: Path) -> bytes | None:
+    """Parses poemwords.txt (assets/raw's own copy, one `word,sPoint,nPoint,
+    yPoint` line each -- see docs/FORMAT.md's "Poem minigame" section) into
+    DPOEM's format: u16 count, then per word u8 len, word bytes (no NUL,
+    len-prefixed instead), u8 sPoint, u8 nPoint, u8 yPoint. None if the file
+    isn't present (extraction wasn't run, or this is a very old raw_dir) --
+    shipped unconditionally otherwise regardless of --files, same as the
+    title screen's assets: harmless and tiny (~2.5KB) if the poem minigame
+    isn't reachable from whatever was compiled.
+    """
+    path = raw_dir / "poemwords.txt"
+    if not path.is_file():
+        return None
+
+    words: list[tuple[bytes, int, int, int]] = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        word, s, n, y = line.split(",")
+        word_bytes = word.encode("utf-8")
+        if len(word_bytes) > 255:
+            raise CompileError(f"poem word too long for a u8 length prefix: {word!r}")
+        # Real values are always small whole numbers (1-3) despite the
+        # source file spelling them as floats ("3.0") -- see poemgame's
+        # PoemWord class, which does the same float() conversion.
+        words.append((word_bytes, int(float(s)), int(float(n)), int(float(y))))
+
+    out = bytearray(struct.pack("<H", len(words)))
+    for word_bytes, s, n, y in words:
+        out += struct.pack("<B", len(word_bytes))
+        out += word_bytes
+        out += struct.pack("<BBB", s, n, y)
+    return bytes(out)
+
+
+def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
+               chunk_paths: list[Path], entry_chunk: int, entry_offset: int) -> list[Path]:
     step("package AppVars (convbin)")
     require("convbin", 'export PATH="$HOME/CEdev/bin:$PATH"')
     gfx_dir = build_dir / "gfx"
@@ -275,9 +334,21 @@ def do_package(build_dir: Path, appvar_dir: Path, manifest: dict) -> list[Path]:
     def bin_for(png_name: str) -> Path:
         return gfx_dir / (Path(png_name).stem + ".bin")
 
-    appvars: list[Path] = [
-        write_appvar((build_dir / "script.vnb").read_bytes(), "DSCRIPT", appvar_dir),
-    ]
+    appvars: list[Path] = []
+    for chunk_path in chunk_paths:
+        chunk_id = int(chunk_path.stem.removeprefix("chunk"))
+        appvars.append(write_appvar(chunk_path.read_bytes(), ti_name("DSCR", chunk_id), appvar_dir))
+
+    # Packed (chunk_id << 16 | offset) for `label start` -- see vn.h's
+    # VN_PACK_ADDR and find_entry_point(). src/assets.c reads this instead of
+    # assuming pc=0 is the entry, since --files order no longer guarantees
+    # that (see docs/FORMAT.md's "Chunking").
+    appvars.append(write_appvar(struct.pack("<I", (entry_chunk << 16) | entry_offset),
+                                "DENTRY", appvar_dir))
+
+    poem_words = do_poem_words(raw_dir)
+    if poem_words is not None:
+        appvars.append(write_appvar(poem_words, "DPOEM", appvar_dir))
 
     sprite_files = [bin_for(s["file"]) for s in manifest["sprites"]]
     appvars += package_group(sprite_files, "DSPR", "DSPRLUT", build_dir, appvar_dir)
@@ -360,9 +431,9 @@ def main() -> int:
     ap.add_argument("--quality", type=int, default=8)
     ap.add_argument("--files", default="script,script-ch0",
                     help="comma-separated .rpyc stems to compile/bundle, or 'act1' "
-                         "for the full ch0-ch4 set (won't fit resident RAM as one "
-                         "chunk yet -- see the module docstring). "
-                         "Default: script,script-ch0")
+                         "for the full ch0-ch4 set. Each file becomes its own "
+                         "resident chunk, swapped in on demand -- see the module "
+                         "docstring. Default: script,script-ch0")
     ap.add_argument("--skip-extract", action="store_true")
     ap.add_argument("--skip-convimg", action="store_true")
     args = ap.parse_args()
@@ -372,18 +443,20 @@ def main() -> int:
 
     try:
         do_extract(args.game_dir.expanduser().resolve(), args.raw_dir, args.skip_extract)
-        compiler, resolver, _missing = do_compile(args.raw_dir, args.build_dir, files)
-        chunk_path = write_chunk(compiler, args.build_dir)
+        compiler, assemblers, resolver, _missing = do_compile(args.raw_dir, args.build_dir, files)
+        entry_chunk, entry_offset = find_entry_point(assemblers)
+        chunk_paths = write_chunks(assemblers, args.build_dir)
         do_convert_images(args.build_dir, args.quality, args.skip_convimg)
         manifest = json.loads((args.build_dir / "manifest.json").read_text())
-        appvars = do_package(args.build_dir, args.appvar_dir, manifest)
+        appvars = do_package(args.build_dir, args.appvar_dir, args.raw_dir, manifest,
+                             chunk_paths, entry_chunk, entry_offset)
         do_bundle(args.prog, appvars, args.out)
     except CompileError as e:
         sys.exit(f"compile error: {e}")
     except subprocess.CalledProcessError as e:
         sys.exit(f"{e.cmd[0]} failed with exit code {e.returncode}")
 
-    print(f"\ndone. {chunk_path} + {args.build_dir / 'gfx'} -> {args.out}")
+    print(f"\ndone. {len(chunk_paths)} chunks + {args.build_dir / 'gfx'} -> {args.out}")
     return 0
 
 

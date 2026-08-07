@@ -142,16 +142,6 @@ class Compiler:
         self.emit_block(top, path.name)
         self._flush_pending_scene(vnasm.TRANS_CUT)
 
-    def finish(self) -> list[str]:
-        """Resolve labels, patching any cross-file target left dangling.
-
-        Returns the (sorted) list of label names that had to be stubbed --
-        i.e. content that jumps/calls somewhere outside the compiled set.
-        """
-        missing = self.asm.patch_missing_labels()
-        self.asm.resolve()
-        return missing
-
     # -- bookkeeping ------------------------------------------------------------
 
     def _gensym(self, prefix: str) -> str:
@@ -226,6 +216,21 @@ class Compiler:
             self._skip(node, fname, "non-literal label name")
             return
         self.asm.label(name)
+
+        if name == "poem":
+            # The real body is DDLC's interactive word-picking minigame
+            # (ui.textbutton/ui.interact() in a Python `while True` loop --
+            # not translatable script) plus a Monika's-eyes jump-scare and a
+            # word-corruption easter egg, both gated behind
+            # persistent.playthrough == 2/3 -- structurally unreachable here,
+            # since this project has no persistent multi-playthrough state
+            # (see docs/FORMAT.md's "Poem minigame" section). Replace the
+            # whole body with a call into the real C-side minigame
+            # (src/poem.c) instead of walking it.
+            self.asm.minigame(self._var_slot("poem_winner"))
+            self.asm.ret()
+            return
+
         self.emit_block(node.block, fname)
 
     def _emit_Say(self, node, fname: str) -> None:
@@ -475,6 +480,45 @@ class Compiler:
             self.emit_block(block, fname)
             self.asm.jump(end_label)
         self.asm.label(end_label)
+
+
+def link_chunks(assemblers: list[vnasm.Assembler]) -> list[str]:
+    """Resolves every assembler's pending Jump/Call/If/Menu targets against
+    the union of every chunk's labels, so a target can live in a different
+    chunk than the one referencing it -- tools/import_game.py's do_compile()
+    now gives each compiled file its own Assembler/chunk_id, where a single
+    combined-chunk compile used to resolve everything against one local
+    table (Assembler.patch_missing_labels()/resolve() with no arguments,
+    still what a single-assembler caller like tools/gen_demo.py uses).
+
+    A name missing from every chunk (content outside the compiled --files
+    set) is stubbed to a local OP_END in whichever chunk references it
+    first, the same "content wasn't imported" idea as
+    Assembler.patch_missing_labels() -- and that stub is then registered
+    into the global table, so any other chunk referencing the same missing
+    name correctly cross-chunk-jumps to it instead of getting a second stub.
+
+    Returns the sorted list of names that had to be stubbed, for logging.
+    """
+    global_labels: dict[str, tuple[int, int]] = {}
+    for asm in assemblers:
+        for name, offset in asm._labels.items():
+            global_labels[name] = (asm.chunk_id, offset)
+
+    missing: set[str] = set()
+    for asm in assemblers:
+        local_missing = {name for _, name in asm._patches if name not in global_labels}
+        if local_missing:
+            stub = len(asm.code)
+            asm.end()
+            for name in local_missing:
+                global_labels.setdefault(name, (asm.chunk_id, stub))
+            missing |= local_missing
+
+    for asm in assemblers:
+        asm.resolve(global_labels)
+
+    return sorted(missing)
 
 
 _DECLARATION_KINDS = {

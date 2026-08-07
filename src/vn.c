@@ -12,11 +12,19 @@
  *
  * Every read is bounds-checked against code_size; a truncated or corrupt chunk
  * stops the VM with VN_ERR_BOUNDS instead of running off into memory.
+ *
+ * vm->pc carries a chunk id in its high byte (VN_CHUNK_ID/VN_CHUNK_OFFSET,
+ * vn.h) once vn_step() has swapped in the chunk it points at, but `code` only
+ * ever holds *that* chunk's bytes -- so every actual read/index here uses
+ * just the low 16 bits (VN_CHUNK_OFFSET), never the raw packed pc. This is
+ * safe to do with a plain `+=` on the full pc value: a valid offset never
+ * exceeds code_size (<= 65535), so advancing it a few bytes at a time can
+ * never carry into the chunk-id byte mid-instruction.
  * ------------------------------------------------------------------------ */
 
 static bool have(const vn_vm_t *vm, uint32_t bytes)
 {
-    return vm->pc + bytes <= vm->code_size;
+    return VN_CHUNK_OFFSET(vm->pc) + bytes <= vm->code_size;
 }
 
 static uint8_t read_u8(vn_vm_t *vm)
@@ -25,7 +33,7 @@ static uint8_t read_u8(vn_vm_t *vm)
         vm->status = VN_ERR_BOUNDS;
         return 0;
     }
-    return vm->code[vm->pc++];
+    return vm->code[VN_CHUNK_OFFSET(vm->pc++)];
 }
 
 static uint16_t read_u16(vn_vm_t *vm)
@@ -34,8 +42,9 @@ static uint16_t read_u16(vn_vm_t *vm)
         vm->status = VN_ERR_BOUNDS;
         return 0;
     }
-    uint16_t v = (uint16_t)vm->code[vm->pc] |
-                 (uint16_t)((uint16_t)vm->code[vm->pc + 1] << 8);
+    uint32_t off = VN_CHUNK_OFFSET(vm->pc);
+    uint16_t v = (uint16_t)vm->code[off] |
+                 (uint16_t)((uint16_t)vm->code[off + 1] << 8);
     vm->pc += 2;
     return v;
 }
@@ -51,9 +60,10 @@ static uint32_t read_u24(vn_vm_t *vm)
         vm->status = VN_ERR_BOUNDS;
         return 0;
     }
-    uint32_t v = (uint32_t)vm->code[vm->pc] |
-                 ((uint32_t)vm->code[vm->pc + 1] << 8) |
-                 ((uint32_t)vm->code[vm->pc + 2] << 16);
+    uint32_t off = VN_CHUNK_OFFSET(vm->pc);
+    uint32_t v = (uint32_t)vm->code[off] |
+                 ((uint32_t)vm->code[off + 1] << 8) |
+                 ((uint32_t)vm->code[off + 2] << 16);
     vm->pc += 3;
     return v;
 }
@@ -78,7 +88,7 @@ static int actor_slot(vn_scene_t *scene, uint8_t character)
     return free_slot;
 }
 
-static void actor_show(vn_scene_t *scene, uint8_t character, uint8_t sprite,
+static void actor_show(vn_scene_t *scene, uint8_t character, uint16_t sprite,
                        uint8_t pos)
 {
     int slot = actor_slot(scene, character);
@@ -159,7 +169,25 @@ bool vn_step(vn_vm_t *vm)
         return false;
     }
 
-    if (vm->pc >= vm->code_size) {
+    /* Swap chunks *before* the bounds check below: code_size still describes
+     * whichever chunk was resident last step, so it has to be refreshed
+     * first or a jump straight to another chunk's valid offset would look
+     * out of bounds against the wrong chunk's size. */
+    uint8_t want_chunk = VN_CHUNK_ID(vm->pc);
+    if (want_chunk != vm->chunk_id) {
+        const uint8_t *code;
+        size_t         code_size;
+        if (!vm->host->load_chunk ||
+            !vm->host->load_chunk(vm->host->ctx, want_chunk, &code, &code_size)) {
+            vm->status = VN_ERR_BOUNDS;
+            return false;
+        }
+        vm->code      = code;
+        vm->code_size = code_size;
+        vm->chunk_id  = want_chunk;
+    }
+
+    if (VN_CHUNK_OFFSET(vm->pc) >= vm->code_size) {
         vm->status = VN_ERR_BOUNDS;
         return false;
     }
@@ -204,9 +232,9 @@ bool vn_step(vn_vm_t *vm)
         }
 
         case OP_SHOW: {
-            uint8_t ch     = read_u8(vm);
-            uint8_t sprite = read_u8(vm);
-            uint8_t pos    = read_u8(vm);
+            uint8_t  ch     = read_u8(vm);
+            uint16_t sprite = read_u16(vm);
+            uint8_t  pos    = read_u8(vm);
             if (vm->status != VN_RUNNING) {
                 break;
             }
@@ -357,6 +385,19 @@ bool vn_step(vn_vm_t *vm)
             if (vm->host->pause) {
                 vm->host->pause(vm->host->ctx, frames);
             }
+            break;
+        }
+
+        case OP_MINIGAME: {
+            uint8_t result_var = read_u8(vm);
+            if (vm->status != VN_RUNNING) {
+                break;
+            }
+            if (result_var >= VN_MAX_VARS) {
+                vm->status = VN_ERR_BOUNDS;
+                break;
+            }
+            vm->vars[result_var] = vm->host->minigame ? (int16_t)vm->host->minigame(vm->host->ctx) : 0;
             break;
         }
 

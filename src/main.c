@@ -7,6 +7,7 @@
 #include "assets.h"
 #include "chars.h"
 #include "name.h"
+#include "poem.h"
 #include "render.h"
 #include "save.h"
 #include "text.h"
@@ -27,7 +28,12 @@
 /* Characters revealed per frame by the typewriter. */
 #define TYPE_SPEED 2
 
-static bool quit_requested;
+/* Not static: src/poem.c's own input loop (a self-contained screen, like the
+ * ones in this file, but living separately given how much word-bank state it
+ * owns) sets this directly on Clear, the same way every screen here does, so
+ * a quit mid-minigame still unwinds the whole app instead of just the
+ * minigame -- vn_step()'s host->quit() check picks it up on the next step. */
+bool quit_requested;
 
 /* Set by the pause menu's "Title Screen" choice, alongside quit_requested,
  * to unwind out of vn_run() the same way a real quit does (see
@@ -483,16 +489,38 @@ static bool host_quit(void *ctx)
     return quit_requested;
 }
 
+/* Called by vn_step() whenever a Jump/Call/Return/Menu-pick target's chunk
+ * differs from the one currently resident -- see vn.h's "Chunk-packed
+ * addresses" and docs/FORMAT.md's "Chunking". */
+static bool host_load_chunk(void *ctx, uint8_t chunk_id,
+                            const uint8_t **code_out, size_t *code_size_out)
+{
+    (void)ctx;
+    if (!assets_load_chunk(chunk_id)) {
+        return false;
+    }
+    *code_out = assets_script(code_size_out);
+    return true;
+}
+
+static uint8_t host_minigame(void *ctx)
+{
+    (void)ctx;
+    return poem_run();
+}
+
 /* .ctx is set to &vm once, in main(), after vm exists -- host_say needs it
  * to reach the pause menu (see wait_for_advance). */
 static vn_host_t host = {
-    .string = host_string,
-    .say    = host_say,
-    .menu   = host_menu,
-    .update = host_update,
-    .pause  = host_pause,
-    .quit   = host_quit,
-    .ctx    = NULL,
+    .string     = host_string,
+    .say        = host_say,
+    .menu       = host_menu,
+    .update     = host_update,
+    .pause      = host_pause,
+    .quit       = host_quit,
+    .load_chunk = host_load_chunk,
+    .minigame   = host_minigame,
+    .ctx        = NULL,
 };
 
 /* ---------------------------------------------------------------------------
@@ -503,7 +531,8 @@ static vn_host_t host = {
 
 /* tools/import_game.py's do_compile() bakes this scene first and
  * unconditionally, specifically so its id is always 0 regardless of which
- * chapters get compiled -- see resolver.splash_scene(). */
+ * chapters get compiled -- see resolver.explicit_bg_scene(). Scene 1 is the
+ * poem minigame's notebook background, src/poem.c's POEM_BG_SCENE. */
 #define SPLASH_LOGO_SCENE 0
 #define SPLASH_HOLD_MS 1600
 
@@ -690,6 +719,7 @@ int main(void)
     const uint8_t *code;
     size_t code_size;
     assets_status_t status;
+    uint32_t entry_pc;
 
     chars_init();
 
@@ -708,7 +738,7 @@ int main(void)
         return 1;
     }
 
-    code = assets_script(&code_size);
+    entry_pc = assets_entry_pc();
     host.ctx = &vm;
 
     run_splash_screens();
@@ -738,7 +768,18 @@ int main(void)
             break;
         }
 
+        /* Every "New Game"/"Continue" needs the entry chunk fresh and
+         * resident: a previous session may have crossed into a different
+         * chunk, and assets_load_chunk() frees the old buffer on every
+         * swap, so code/code_size from before this loop (or from a prior
+         * iteration) would be a stale, already-freed pointer by now -- see
+         * docs/FORMAT.md's "Chunking". assets_init() already proved the
+         * entry chunk loads, so this can't newly fail here. */
+        assets_load_chunk(VN_CHUNK_ID(entry_pc));
+        code = assets_script(&code_size);
         vn_init(&vm, code, code_size, &host);
+        vm.pc       = entry_pc;
+        vm.chunk_id = VN_CHUNK_ID(entry_pc);
 
         if (choice == TITLE_LOAD) {
             uint8_t slot = run_slot_picker("Load Game", true);

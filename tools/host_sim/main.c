@@ -9,13 +9,21 @@
  *
  * Modes:
  *   (default)   auto-play the compiled-in demo script, always taking menu option 0
- *   --vnb FILE  replay a real compiled chunk (tools/vnasm.py's
+ *   --vnb=FILE  replay a real compiled chunk (tools/vnasm.py's
  *               Assembler.to_chunk_bytes() container -- see docs/FORMAT.md's
- *               "Chunking" section) instead of the demo script
- *   --pc=N      start execution at byte offset N instead of 0 -- a combined
- *               multi-file chunk's actual entry point (Ren'Py's `label
- *               start`) usually isn't at offset 0, since compile_script.py
- *               emits files in the order they were given, not by role
+ *               "Chunking" section) instead of the demo script. Repeatable:
+ *               the first --vnb is chunk 0, the second chunk 1, and so on --
+ *               matching tools/import_game.py's DSCR0/DSCR1/... numbering --
+ *               so a real multi-chunk build can be replayed by passing every
+ *               DSCR*.vnb in chunk order. A cross-chunk jump/call swaps
+ *               between them the same way src/assets.c does on-calc.
+ *   --pc=N      start execution at packed address N instead of 0 -- N is a
+ *               raw vn_vm_t.pc value (see vn.h's VN_PACK_ADDR/VN_CHUNK_ID/
+ *               VN_CHUNK_OFFSET), i.e. chunk_id in the high byte, local
+ *               offset in the low 16 bits. A combined single-chunk build's
+ *               actual entry point (Ren'Py's `label start`) usually isn't at
+ *               offset 0 either, since compile_script.py emits files in the
+ *               order they were given, not by role.
  *   --choices=  comma-separated menu picks, e.g. --choices=0,1,2,3
  *   --trace     also print SCENE/SHOW/HIDE state changes
  */
@@ -37,10 +45,21 @@ static unsigned choices[64];
 static unsigned choice_count;
 static unsigned choice_pos;
 
-/* Set when --vnb loads a real chunk, so host_string() reads from it instead
- * of the compiled-in demo_strings[]. */
-static char   **vnb_strings;
-static uint16_t vnb_string_count;
+/* One entry per --vnb=FILE, in the order given (chunk 0, chunk 1, ...). Set
+ * when at least one --vnb is passed, so host_load_chunk()/host_string() read
+ * from these instead of the compiled-in demo_code/demo_strings[]. */
+#define MAX_CHUNKS 64
+typedef struct {
+    const uint8_t *code;
+    size_t         code_size;
+    char         **strings;
+    uint16_t       string_count;
+} chunk_t;
+
+static chunk_t  chunks[MAX_CHUNKS];
+static unsigned chunk_count;
+static uint8_t  active_chunk; /* which chunks[] entry host_string() reads */
+
 static unsigned say_count;
 static unsigned menu_count;
 
@@ -66,10 +85,29 @@ static const char *speaker_name(uint8_t speaker)
 static const char *host_string(void *ctx, uint16_t index)
 {
     (void)ctx;
-    if (vnb_strings != NULL) {
-        return index < vnb_string_count ? vnb_strings[index] : "";
+    if (chunk_count > 0) {
+        /* String indices are chunk-local (tools/vnasm.py's per-chunk pool),
+         * so this has to read whichever chunk vn_step() most recently
+         * swapped in via host_load_chunk(), not always chunk 0. */
+        const chunk_t *c = &chunks[active_chunk];
+        return index < c->string_count ? c->strings[index] : "";
     }
     return index < demo_string_count ? demo_strings[index] : "";
+}
+
+static bool host_load_chunk(void *ctx, uint8_t chunk_id,
+                            const uint8_t **code_out, size_t *code_size_out)
+{
+    (void)ctx;
+    if (chunk_id >= chunk_count) {
+        fprintf(stderr, "! chunk %u requested but only %u loaded (pass more --vnb=)\n",
+                chunk_id, chunk_count);
+        return false;
+    }
+    active_chunk  = chunk_id;
+    *code_out      = chunks[chunk_id].code;
+    *code_size_out = chunks[chunk_id].code_size;
+    return true;
 }
 
 static void host_say(void *ctx, const vn_scene_t *scene)
@@ -161,13 +199,17 @@ static bool host_quit(void *ctx)
 }
 
 static const vn_host_t host = {
-    .string = host_string,
-    .say    = host_say,
-    .menu   = host_menu,
-    .update = host_update,
-    .pause  = host_pause,
-    .quit   = host_quit,
-    .ctx    = NULL,
+    .string     = host_string,
+    .say        = host_say,
+    .menu       = host_menu,
+    .update     = host_update,
+    .pause      = host_pause,
+    .quit       = host_quit,
+    .load_chunk = host_load_chunk,
+    /* .minigame left NULL: OP_MINIGAME's vn.c null-guard defaults the
+     * result var to 0 rather than crashing, which is fine for a bytecode
+     * regression tool that isn't rendering anything. */
+    .ctx        = NULL,
 };
 
 static void parse_choices(const char *arg)
@@ -193,13 +235,20 @@ static uint16_t read_u16le(const uint8_t *p)
 /**
  * Load a tools/vnasm.py Assembler.to_chunk_bytes() container (see
  * docs/FORMAT.md's "Chunking" section): u16 code_length, code bytes, u16
- * string_count, then per string a u16 byte_length + UTF-8 bytes.
+ * string_count, then per string a u16 byte_length + UTF-8 bytes. Appends the
+ * result as the next entry in chunks[] (chunk id = call order, matching
+ * tools/import_game.py's DSCR0/DSCR1/... numbering).
  *
  * Leaks its allocations deliberately -- this is a short-lived CLI replay
  * tool, not the on-calc loader.
  */
-static bool load_vnb(const char *path, const uint8_t **code_out, size_t *code_size_out)
+static bool load_vnb(const char *path)
 {
+    if (chunk_count >= MAX_CHUNKS) {
+        fprintf(stderr, "too many --vnb= (max %d)\n", MAX_CHUNKS);
+        return false;
+    }
+
     FILE *f = fopen(path, "rb");
     if (f == NULL) {
         fprintf(stderr, "cannot open %s\n", path);
@@ -230,8 +279,7 @@ static bool load_vnb(const char *path, const uint8_t **code_out, size_t *code_si
         fprintf(stderr, "%s: truncated code section\n", path);
         return false;
     }
-    *code_out = buf + pos;
-    *code_size_out = code_len;
+    const uint8_t *code = buf + pos;
     pos += code_len;
 
     uint16_t string_count = read_u16le(buf + pos);
@@ -258,17 +306,20 @@ static bool load_vnb(const char *path, const uint8_t **code_out, size_t *code_si
         pos += len + 1;
     }
 
-    vnb_strings = strings;
-    vnb_string_count = string_count;
+    unsigned id = chunk_count++;
+    chunks[id].code         = code;
+    chunks[id].code_size    = code_len;
+    chunks[id].strings      = strings;
+    chunks[id].string_count = string_count;
 
-    printf("loaded %s: %u bytes code, %u strings\n", path, code_len, string_count);
+    printf("loaded chunk %u from %s: %u bytes code, %u strings\n",
+          id, path, code_len, string_count);
     return true;
 }
 
 int main(int argc, char **argv)
 {
-    const char *vnb_path = NULL;
-    uint32_t    start_pc = 0;
+    uint32_t start_pc = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--trace") == 0) {
@@ -276,7 +327,9 @@ int main(int argc, char **argv)
         } else if (strncmp(argv[i], "--choices=", 10) == 0) {
             parse_choices(argv[i] + 10);
         } else if (strncmp(argv[i], "--vnb=", 6) == 0) {
-            vnb_path = argv[i] + 6;
+            if (!load_vnb(argv[i] + 6)) {
+                return 2;
+            }
         } else if (strncmp(argv[i], "--pc=", 5) == 0) {
             start_pc = (uint32_t)strtoul(argv[i] + 5, NULL, 0);
         } else {
@@ -288,10 +341,9 @@ int main(int argc, char **argv)
     const uint8_t *run_code = demo_code;
     size_t run_code_size = demo_code_size;
 
-    if (vnb_path != NULL) {
-        if (!load_vnb(vnb_path, &run_code, &run_code_size)) {
-            return 2;
-        }
+    if (chunk_count > 0) {
+        run_code = chunks[0].code;
+        run_code_size = chunks[0].code_size;
     }
 
     vn_vm_t vm;
@@ -301,7 +353,8 @@ int main(int argc, char **argv)
 
     printf("---\n");
     printf("status : %s\n", vn_status_str(status));
-    printf("pc     : %u / %u\n", vm.pc, (unsigned)vm.code_size);
+    printf("chunk  : %u\n", vm.chunk_id);
+    printf("pc     : %u / %u\n", (unsigned)VN_CHUNK_OFFSET(vm.pc), (unsigned)vm.code_size);
     printf("lines  : %u\n", say_count);
     printf("menus  : %u\n", menu_count);
 

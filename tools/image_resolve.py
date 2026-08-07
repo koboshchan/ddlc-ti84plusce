@@ -438,24 +438,25 @@ class ImageResolver:
         return self._title_entry("logo", rel_path, img, LOGO_POS[0], LOGO_POS[1],
                                  0, -round(300 * TITLE_SCALE))
 
-    def splash_scene(self, rel_path: str) -> Optional[int]:
-        """Bakes a full-screen splash frame (currently just the Team Salvato
-        logo, `bg/splash.png`) as an ordinary background scene: letterboxed
-        onto BG_SIZE, centered, quantized against the shared game palette.
+    def explicit_bg_scene(self, rel_path: str) -> Optional[int]:
+        """Bakes a full-screen background frame as an ordinary scene:
+        letterboxed onto BG_SIZE, centered, quantized against the shared game
+        palette. Used for backgrounds no dialogue references by name -- the
+        startup splash (`bg/splash.png`) and the poem minigame's notebook
+        (`bg/notebook.png`) -- so scene_id() never reaches them.
 
         Deliberately reuses the existing DSCNn/DPALGAME pipeline rather than
-        the title's own -- this needs no title-style positioning or its own
-        palette, so riding assets_scene() as-is means zero new C code. Like
-        title_art(), this is a plain file path bypass: no dialogue references
-        it, so scene_id() never reaches it.
+        the title's own -- these need no title-style positioning or their own
+        palette, so riding assets_scene() as-is means zero new C code.
 
-        Must be called before any dialogue is compiled (see do_compile()) so
-        its id is deterministic -- callers hardcode the resulting index
-        rather than threading a lookup through to src/main.c.
+        Must be called before any dialogue is compiled (see do_compile()), in
+        the same order every time, so each id is deterministic -- callers
+        hardcode the resulting index rather than threading a lookup through
+        to src/main.c/src/poem.c.
         """
         art = _find_art_file(self.raw_dir, rel_path)
         if art is None:
-            self._log_unsupported((rel_path,), "splash art not found")
+            self._log_unsupported((rel_path,), "background art not found")
             return None
 
         img = PILImage.open(art).convert("RGBA")
@@ -467,10 +468,10 @@ class ImageResolver:
                                         (BG_SIZE[1] - size[1]) // 2))
 
         idx = len(self.scenes)
-        filename = f"bg_{idx:03d}_splash_{Path(rel_path).stem}.png"
+        filename = f"bg_{idx:03d}_explicit_{Path(rel_path).stem}.png"
         canvas.save(self.img_dir / filename)
 
-        self.scenes.append({"imgname": ["__splash__", rel_path], "file": filename,
+        self.scenes.append({"imgname": ["__explicit__", rel_path], "file": filename,
                             "w": BG_SIZE[0], "h": BG_SIZE[1],
                             "palette": "shared", "cg_palette_index": None})
         return idx

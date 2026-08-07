@@ -26,6 +26,7 @@ OP_PAUSE = 0x0B
 OP_SOUND = 0x0C
 OP_END = 0x0D
 OP_ADD = 0x0E
+OP_MINIGAME = 0x0F
 
 CMP_EQ, CMP_NE, CMP_LT, CMP_LE, CMP_GT, CMP_GE = range(6)
 TRANS_CUT, TRANS_FADE = 0, 1
@@ -51,6 +52,13 @@ class AsmError(Exception):
 
 @dataclass
 class Assembler:
+    # Which resident chunk this assembler's code belongs to (see vn.h's
+    # "Chunk-packed addresses" and docs/FORMAT.md's "Chunking") -- baked into
+    # every Jump/Call/If/Menu target this assembler resolves, so a target in
+    # another chunk's Assembler can still be addressed. 0 for a single-chunk
+    # build (tools/gen_demo.py), which is numerically identical to the old
+    # flat-offset scheme.
+    chunk_id: int = 0
     code: bytearray = field(default_factory=bytearray)
     strings: list[str] = field(default_factory=list)
     _pool: dict[str, int] = field(default_factory=dict)
@@ -106,6 +114,12 @@ class Assembler:
         resolve() raise. Landing on OP_END there is a deliberate, visible
         "this content wasn't imported" stop rather than undefined behavior.
         Returns the sorted list of missing label names, for logging.
+
+        Only meaningful for a single-chunk assembler resolved on its own
+        (tools/gen_demo.py) -- a multi-chunk compile's missing-label check has
+        to happen after every chunk's labels are known, so it uses the
+        top-level link_chunks() in compile_script.py instead, which stubs
+        into whichever assembler needs it via the same OP_END-stub idea.
         """
         missing = sorted({name for _, name in self._patches if name not in self._labels})
         if not missing:
@@ -117,12 +131,28 @@ class Assembler:
             self._labels[name] = stub
         return missing
 
-    def resolve(self) -> None:
+    def resolve(self, global_labels: dict[str, tuple[int, int]] | None = None) -> None:
+        """Backpatches every pending Jump/Call/If/Menu target to a packed
+        `(chunk_id << 16) | local_offset` value (vn.h's VN_PACK_ADDR).
+
+        @global_labels, if given, maps a label name to (chunk_id, offset)
+        across every chunk being linked together (compile_script.py's
+        link_chunks(), once compiling switched from one combined chunk to one
+        chunk per file). Without it, falls back to this assembler's own local
+        labels with its own chunk_id -- for a single-chunk build
+        (tools/gen_demo.py) that's exactly the packed value anyway, since
+        chunk_id defaults to 0.
+        """
+        labels = global_labels
+        if labels is None:
+            labels = {name: (self.chunk_id, offset) for name, offset in self._labels.items()}
+
         for offset, name in self._patches:
-            if name not in self._labels:
+            if name not in labels:
                 raise AsmError(f"undefined label: {name}")
-            target = self._labels[name]
-            self.code[offset:offset + 3] = struct.pack("<I", target)[:3]
+            chunk_id, target = labels[name]
+            packed = (chunk_id << 16) | target
+            self.code[offset:offset + 3] = struct.pack("<I", packed)[:3]
         self._patches.clear()
 
     # --- instructions ------------------------------------------------------
@@ -146,7 +176,7 @@ class Assembler:
     def show(self, char: int, sprite: int, pos: int = POS_CENTER) -> None:
         self._u8(OP_SHOW)
         self._u8(char)
-        self._u8(sprite)
+        self._u16(sprite)
         self._u8(pos)
 
     def hide(self, char: int) -> None:
@@ -202,6 +232,13 @@ class Assembler:
 
     def end(self) -> None:
         self._u8(OP_END)
+
+    def minigame(self, result_var: int) -> None:
+        """Runs the host-side minigame screen; stores its outcome in story
+        variable @result_var. Only the poem word-picking game exists today
+        (compile_script.py's _emit_Label special-cases `label poem:`)."""
+        self._u8(OP_MINIGAME)
+        self._u8(result_var)
 
     # --- output ------------------------------------------------------------
 

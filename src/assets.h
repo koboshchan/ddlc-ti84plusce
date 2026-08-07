@@ -2,17 +2,20 @@
  * @file assets.h
  * @brief Loads the AppVars tools/import_game.py packages (see docs/FORMAT.md).
  *
- * DSCRIPT/DSPRLUT/DSCNLUT/DPALGAME are read once in assets_init() into
- * private RAM copies (a few KB total); script text and the sprite/scene
- * tables are zero-copy *within that private buffer*, not the original
- * AppVar -- see assets.c's file comment for why a pointer straight into the
- * AppVar isn't safe to hold across the many DSPRn/DSCNn opens a play
- * session does. Per-image sprite data stays a direct pointer into its
- * AppVar for the brief window it's actually being drawn. Backgrounds are
- * copied into a caller-supplied destination (the graphx draw buffer) --
- * uncompressed on disk, not decompressed here, since this runs every frame
- * a scene redraws and a per-frame decode was the actual bottleneck behind
- * sluggish rendering (see assets.c's assets_scene()).
+ * DENTRY/DSCRn/DSPRLUT/DSCNLUT/DPALGAME are read into private RAM copies;
+ * script text and the sprite/scene tables are zero-copy *within that private
+ * buffer*, not the original AppVar -- see assets.c's file comment for why a
+ * pointer straight into the AppVar isn't safe to hold across the many
+ * DSPRn/DSCNn opens a play session does. Per-image sprite data stays a
+ * direct pointer into its AppVar for the brief window it's actually being
+ * drawn. Backgrounds are copied into a caller-supplied destination (the
+ * graphx draw buffer) -- uncompressed on disk, not decompressed here, since
+ * this runs every frame a scene redraws and a per-frame decode was the
+ * actual bottleneck behind sluggish rendering (see assets.c's
+ * assets_scene()).
+ *
+ * Only one script chunk is ever resident (assets_load_chunk()) -- see
+ * docs/FORMAT.md's "Chunking".
  */
 
 #ifndef ASSETS_H
@@ -30,23 +33,38 @@
  * a plain bool can't tell those apart from "not sent at all"). */
 typedef enum {
     ASSETS_OK = 0,
-    ASSETS_ERR_SCRIPT_OPEN,     /* DSCRIPT missing/unreadable */
-    ASSETS_ERR_TOO_MANY_STRINGS,/* DSCRIPT's string_count > MAX_STRINGS */
+    ASSETS_ERR_ENTRY,           /* DENTRY missing/unreadable */
+    ASSETS_ERR_SCRIPT_OPEN,     /* the entry chunk's DSCRn missing/unreadable/corrupt */
     ASSETS_ERR_SPRITE_LUT,      /* DSPRLUT missing/unreadable */
     ASSETS_ERR_SCENE_LUT,       /* DSCNLUT missing/unreadable */
     ASSETS_ERR_PALETTE,         /* DPALGAME missing/unreadable */
 } assets_status_t;
 
 /**
- * Opens the DSCRIPT, DSPRn, DSCNn, and DPALGAME AppVars and loads
- * gfx_palette. Call once before vn_init().
+ * Reads DENTRY (the packed entry pc -- see vn.h's VN_PACK_ADDR) and loads
+ * its chunk, plus DSPRn, DSCNn, and DPALGAME into gfx_palette. Call once
+ * before vn_init().
  */
 assets_status_t assets_init(void);
 
 /** Human-readable form of @p status, for an on-device error screen. */
 const char *assets_status_str(assets_status_t status);
 
-/** Zero-copy pointer to the loaded chunk's bytecode, plus its size. */
+/**
+ * Loads chunk @p chunk_id (its DSCRn AppVar), replacing whichever chunk was
+ * previously resident -- both at startup (assets_init(), for the entry
+ * chunk) and at runtime (main.c's vn_host_t.load_chunk, whenever a Jump/Call
+ * crosses a chunk boundary). Returns false if the AppVar is missing,
+ * unreadable, or its string pool is too large (see assets.c's MAX_STRINGS).
+ */
+bool assets_load_chunk(uint8_t chunk_id);
+
+/** DENTRY's packed entry pc (vn.h's VN_PACK_ADDR/VN_CHUNK_ID/
+ * VN_CHUNK_OFFSET) -- where main.c should point vm.pc after vn_init(). */
+uint32_t assets_entry_pc(void);
+
+/** Zero-copy pointer to the currently resident chunk's bytecode, plus its
+ * size (see assets_load_chunk()). */
 const uint8_t *assets_script(size_t *size_out);
 
 /** Zero-copy pointer to string @p index's NUL-terminated UTF-8 bytes. */
@@ -61,7 +79,7 @@ const char *assets_string(uint16_t index);
  * sprite's AppVar handle can be opened, used, and closed within this one
  * call -- see assets.c's file comment for why that matters.
  */
-bool assets_draw_sprite(uint8_t id, int center_x, int feet_y);
+bool assets_draw_sprite(uint16_t id, int center_x, int feet_y);
 
 /**
  * Copies background/CG @p id's raw 320x180 palette-index pixels directly
