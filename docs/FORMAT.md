@@ -86,6 +86,14 @@ effect surrounds it. A bare `dissolve`/`wipeleft` between images (not a
 scene change) has no black step and needs alpha blending the 8bpp renderer
 doesn't have, so those stay cuts.
 
+`OP_SAY`/`OP_MENU` text is plain -- no Ren'Py inline tags (`{i}`, `{cps=30}`,
+`{w=0.5}`, `{nw}`, ...). `compile_script.py`'s `_strip_text_tags()` removes
+every `{...}` from `Say.what`/`Menu` captions at compile time (`{{` is
+Ren'Py's own escape for a literal `{`, preserved rather than stripped); the
+renderer has no italics, per-span color, or variable typing speed to give
+any of them meaning, so leaving them in would only show up as literal brace
+characters in the dialogue box.
+
 ### Limits
 
 | Limit | Value | Notes |

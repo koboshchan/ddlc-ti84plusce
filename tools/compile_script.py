@@ -31,6 +31,22 @@ from rpyc_ast import kind, load_rpyc, pycode_source
 TAG_TO_CHAR = {"sayori": 0, "natsuki": 1, "yuri": 2, "monika": 3}
 CODE_TO_TAG = {"s": "sayori", "n": "natsuki", "y": "yuri", "m": "monika"}
 
+# Ren'Py inline text tags (`{i}...{/i}`, `{cps=30}`, `{w=0.5}`, `{nw}`, ...)
+# show up literally in Say.what/Menu captions -- e.g. ch0 alone has 4 "{i}"
+# italics pairs. The engine's text renderer (text.c/render.c) has no notion
+# of markup, italics, per-span color, or a variable typing speed, so an
+# unstripped tag would show up as literal brace characters in the dialogue
+# box instead of doing anything. Ren'Py's own escape for a literal brace is
+# doubled ("{{"), which this preserves; every other "{...}" is a tag and is
+# dropped rather than interpreted, since there's nothing here that could act
+# on cps/wait/color even if it were parsed out.
+_TAG_RE = re.compile(r"\{\{|\{[^{}]*\}")
+
+
+def _strip_text_tags(text: str) -> str:
+    return _TAG_RE.sub(lambda m: "{" if m.group(0) == "{{" else "", text)
+
+
 # DDLC positions characters via named ATL transforms (transforms.rpy) rather
 # than the simple built-in left/right/truecenter keywords. Each one turns out
 # to be a single call like `tcommon(640)` / `focus(880)` / `sink(240)` --
@@ -219,6 +235,7 @@ class Compiler:
         if not isinstance(text, str):
             self._skip(node, fname, "non-literal Say.what")
             return
+        text = _strip_text_tags(text)
         speaker = vnasm.SPEAKER_NONE
         tag = CODE_TO_TAG.get(who) if isinstance(who, str) else None
         char = TAG_TO_CHAR.get(tag) if tag else None
@@ -441,7 +458,7 @@ class Compiler:
             else:
                 continue
             if isinstance(caption, str) and block:
-                rows.append((caption, block))
+                rows.append((_strip_text_tags(caption), block))
 
         if not rows:
             self._skip(node, fname, "Menu with no selectable items")
