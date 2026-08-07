@@ -1,8 +1,9 @@
 # On-calculator data formats
 
 Specification for the bytecode and asset containers used by the engine.
-Implemented by `src/vn.c` (VM), `tools/vnasm.py` (assembler), and
-`tools/compile_script.py` (bytecode compiler).
+Implemented by `src/vn.c` (VM), `src/assets.c` (AppVar loader),
+`tools/vnasm.py` (assembler), `tools/compile_script.py` (bytecode compiler),
+and `tools/import_game.py` (AppVar packaging).
 
 ## Design constraints
 
@@ -103,40 +104,91 @@ u16  string_count
 per string, in pool order (this is the index OP_SAY/OP_MENU's text:u16 uses):
     u16  byte_length
     <byte_length bytes of UTF-8 text>
+    1 trailing NUL byte (not counted in byte_length)
 ```
 
-**Current status**: `tools/compile_script.py` compiles every imported source
-file into *one* combined chunk, not yet split at the 16 KB boundary — doing
-that requires a loader that can stitch multiple resident chunks back
-together for a single script (`src/assets.c`), which doesn't exist yet
-(Milestone 3). The combined chunk is still useful today: it's what
-`tools/import_game.py` size-checks and packages, and what proves the
-compiler and asset resolution work end to end via the host simulator.
+The trailing NUL lets `src/assets.c` hand out `const char *` pointers straight
+into the AppVar (archived, so `ti_GetDataPtr` addresses it directly with no
+copy) instead of copying every accessed string into a scratch buffer first.
+
+**Current status**: `tools/compile_script.py` compiles every *selected*
+source file (`import_game.py --files`, default `script,script-ch0`) into
+one combined chunk. `src/assets.c` loads exactly one such chunk resident and
+`src/main.c` runs it — real, on-device gameplay, not just a pipeline
+self-test. What's still missing is a loader that can hold multiple chunks
+and stitch a jump from one into another: the full Act 1 set (`--files
+act1`) compiles fine, but at ~240KB it's well over the ~150KB usable-RAM
+ceiling `import_game.py` enforces, so it isn't a valid `--files` selection
+yet. Picking a subset that already fits (a chapter, or a few) is how real
+assets ship today.
+
+## AppVar naming and lookup tables
+
+`tools/import_game.py` packages everything under 8-character TI names,
+matched by `src/assets.c`:
+
+| AppVar(s) | Contents |
+|---|---|
+| `DSCRIPT` | One chunk container (above), whole — the compiled selection always fits one AppVar in practice |
+| `DSPR0`, `DSPR1`, … | Sprite bytes, greedily packed so no sprite's bytes ever straddle an AppVar boundary |
+| `DSPRLUT` | Lookup table: which `DSPRn` holds sprite id *i*, and where |
+| `DSCN0`, `DSCN1`, … | Background/CG bytes, packed the same way |
+| `DSCNLUT` | Lookup table for scene ids |
+| `DPALGAME` | The 256-entry shared palette, loaded whole into `gfx_palette` |
+
+**Lookup table format** (`tools/import_game.py: build_lut()`), little-endian:
+
+```
+u16  entry_count
+per entry, indexed by sprite/scene id (this is OP_SHOW's sprite:u8 or
+OP_SCENE's bg:u8):
+    u8   appvar_index    -- e.g. 2 means DSPR2 / DSCN2
+    u16  offset           -- byte offset within that AppVar
+    u16  length            -- byte length of this entry's data
+```
+
+Packing greedily per-AppVar (rather than concatenating everything into one
+blob and splitting blindly at the 64KB TI variable boundary) means the
+reader never has to stitch bytes across two AppVars for one image — one
+`ti_Open` always gets a complete entry.
 
 ## Image assets
 
 - **Backgrounds and CGs share one id space.** `OP_SCENE` has a single
   `bg:u8` operand with no room for a bucket discriminator, so
   `tools/image_resolve.py` allocates backgrounds and CGs from one combined
-  list rather than two. Each entry carries a `palette` tag (`"shared"` or
-  `"own"`) so the loader (Milestone 3) knows whether to use `pal_game` or
-  swap in a per-image palette — the id alone doesn't say which.
+  list (and therefore one `DSCNn` id space) rather than two. Each manifest
+  entry carries a `palette` tag (`"shared"` or `"own"`) recording which it
+  needs — **not yet consumed by the engine**: `assets_init()` only loads
+  `DPALGAME`, so a CG (`palette: "own"`) would currently render with the
+  wrong colors. No CG is reachable from the current default `--files`
+  selection, so this hasn't been hit in practice, but it's a real gap for
+  whenever one is included.
 - **Backgrounds** (`palette: "shared"`) — scaled to 320x180, quantized
-  against the shared game palette, zx0-compressed. Decompressed directly
-  into the graphx back buffer (`gfx_buffer`, 76,800 bytes), which costs no
-  heap. Solid-color scenes (`scene black`, `scene white`, …) are classified
-  here too — cheap enough to render as a flat 320x180 fill.
+  against the shared game palette, zx0-compressed (a background's
+  decompressed size is always exactly 320x180 — fixed and known, so a
+  bounds-checked destination is trivial). `src/assets.c` decompresses
+  straight into the graphx draw buffer (`gfx_vbuffer`), which costs no
+  extra RAM. Solid-color scenes (`scene black`, `scene white`, …) are
+  classified here too — cheap enough to render as a flat 320x180 fill.
 - **Sprites** — DDLC composites each shown pose from 2-3 layers (e.g. body
   halves + mouth) onto a shared 960x960 canvas, defined per named combo in
   the Ren'Py `Image` declarations (`im.Composite(...)`), not as a fixed
   body/face pair. Rather than layer at runtime, the converter composites
   each *used* combo once at build time with Pillow, crops to its
   non-transparent bounding box, and scales it down to one flat sprite.
-  `OP_SHOW` references this single pre-baked id — the VM and renderer never
-  composite layers. Stored `rlet` (transparent-run encoded) + zx0.
+  `OP_SHOW` references this single pre-baked id. Stored `rlet` (transparent-run
+  encoded) but **not** zx0-compressed, unlike backgrounds: a sprite's
+  decompressed size varies per image and isn't recorded anywhere, and
+  `zx0_Decompress` has no bounds-checked API to safely guard a fixed-size
+  scratch buffer against it. Shipping sprites uncompressed instead means
+  `assets_sprite()` can point `gfx_RLETSprite()` directly at the AppVar's
+  flash bytes — zero-copy, zero-decompress, and simpler than getting the
+  scratch-buffer sizing right.
 - **CGs** (`palette: "own"`) — rendered full-screen and alone, scaled to fit
-  320x180 preserving aspect (letterboxed), so each carries its own palette,
-  swapped in on display and restored afterward.
+  320x180 preserving aspect (letterboxed), so each is meant to carry its own
+  palette, swapped in on display and restored afterward — see the palette
+  gap noted above.
 
 ## Save data
 

@@ -24,16 +24,11 @@
 #define BOX_Y        SCENE_H
 #define BOX_H        (SCREEN_H - SCENE_H)
 
-/* Reserved palette entries. The generated game palette fills 8..255; these
- * low indices are pinned by convimg 'fixed-entries' so UI colors stay stable
- * no matter which images the palette was built from.
- *
- * Milestone 1's placeholder art also borrows indices 8..12 from that range
- * (8 = background tint, 9..12 = one fixed slot per character id). Each must
- * stay its OWN index: gfx_palette is a direct pointer into hardware palette
- * memory, so two draw calls sharing one index recolor each other's pixels
- * retroactively. This block goes away once real quantized art replaces the
- * placeholders. */
+/* Reserved palette entries. The generated game palette (tools/convert_images.py)
+ * fills 8..255; these low indices are pinned via convimg 'fixed-entries' so
+ * UI colors stay stable no matter which images the palette was built from.
+ * assets_init() loads the whole 256-entry palette from the DPALGAME AppVar,
+ * so these indices' actual colors are set there, not in this file. */
 #define COL_TRANSPARENT 0
 #define COL_BLACK       1
 #define COL_WHITE       2
@@ -43,7 +38,11 @@
 #define COL_HIGHLIGHT   6
 #define COL_SHADOW      7
 
-/** Set up graphx and the placeholder palette. Call once at startup. */
+/**
+ * Starts graphx. Call once at startup, after assets_init() has already
+ * loaded gfx_palette -- this does not touch the palette itself, so it
+ * won't clobber that load.
+ */
 void render_init(void);
 
 /** Tear down graphx. */

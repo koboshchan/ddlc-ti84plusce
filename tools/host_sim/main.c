@@ -245,7 +245,9 @@ static bool load_vnb(const char *path, const uint8_t **code_out, size_t *code_si
         }
         uint16_t len = read_u16le(buf + pos);
         pos += 2;
-        if (pos + len > (size_t)total) {
+        /* +1: each string carries a trailing NUL in the container (see
+         * vnasm.py's to_chunk_bytes) that isn't counted in len. */
+        if (pos + len + 1 > (size_t)total) {
             fprintf(stderr, "%s: truncated string data at entry %u\n", path, i);
             return false;
         }
@@ -253,7 +255,7 @@ static bool load_vnb(const char *path, const uint8_t **code_out, size_t *code_si
         memcpy(s, buf + pos, len);
         s[len] = '\0';
         strings[i] = s;
-        pos += len;
+        pos += len + 1;
     }
 
     vnb_strings = strings;

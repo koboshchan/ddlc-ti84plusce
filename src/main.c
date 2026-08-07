@@ -3,14 +3,16 @@
  * @brief Entry point: wires the VM to graphx rendering and keypad input.
  */
 
+#include "assets.h"
 #include "chars.h"
-#include "demo.h"
 #include "render.h"
 #include "text.h"
 #include "vn.h"
 
 #include <graphx.h>
 #include <keypadc.h>
+#include <ti/getcsc.h>
+#include <ti/screen.h>
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -77,7 +79,7 @@ static void wait_for_advance(void)
 static const char *host_string(void *ctx, uint16_t index)
 {
     (void)ctx;
-    return index < demo_string_count ? demo_strings[index] : "";
+    return assets_string(index);
 }
 
 static void host_update(void *ctx, const vn_scene_t *scene, uint8_t trans)
@@ -182,14 +184,43 @@ static const vn_host_t host = {
 
 /* ------------------------------------------------------------------------ */
 
+/** Plain OS-text screen so a missing asset bundle is legible without
+ * having touched graphx (whose font/palette assets_init() itself is
+ * responsible for loading). */
+static void show_missing_assets_screen(void)
+{
+    os_ClrHome();
+    os_PutStrFull("DDLC-CE: assets not found.");
+    os_NewLine();
+    os_NewLine();
+    os_PutStrFull("Send the AppVars from:");
+    os_NewLine();
+    os_PutStrFull("make bundle GAME_DIR=...");
+    os_NewLine();
+    os_NewLine();
+    os_PutStrFull("(see docs/FORMAT.md)");
+    while (!os_GetCSC()) {
+        /* wait for a keypress */
+    }
+}
+
 int main(void)
 {
     vn_vm_t vm;
+    const uint8_t *code;
+    size_t code_size;
 
     chars_init();
+
+    if (!assets_init()) {
+        show_missing_assets_screen();
+        return 1;
+    }
+
     render_init();
 
-    vn_init(&vm, demo_code, demo_code_size, &host);
+    code = assets_script(&code_size);
+    vn_init(&vm, code, code_size, &host);
     vn_run(&vm);
 
     /* Hold the final frame so an error or the closing line stays readable. */

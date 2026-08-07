@@ -64,8 +64,18 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
 
     if sprite_files:
         converts.append({
+            # No zx0 here (unlike backgrounds below): a compressed sprite's
+            # decompressed size isn't known ahead of a decompress call, and
+            # zx0_Decompress has no bounds-checked API to guard against a
+            # too-small destination -- rather than track per-sprite
+            # uncompressed sizes just to size a scratch buffer safely, ship
+            # sprites as plain rlet. src/assets.c then points a
+            # gfx_rletsprite_t directly at the AppVar's flash bytes (it's
+            # archived) and draws from there with zero copying and zero
+            # decompression -- simpler and faster, at some archive size
+            # cost that's affordable at the current bundle size.
             "name": "sprites", "palette": "pal_game", "style": "rlet",
-            "transparent-index": 0, "compress": "zx0", "dither": 0.4,
+            "transparent-index": 0, "dither": 0.4,
             "images": sprite_files,
         })
         outputs_converts.append("sprites")

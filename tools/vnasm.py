@@ -205,6 +205,12 @@ class Assembler:
             per string, in pool order (matches OP_SAY/OP_MENU's u16 index):
                 u16 byte_length
                 <byte_length bytes of UTF-8 text>
+                1 trailing NUL byte (not counted in byte_length)
+
+        The trailing NUL lets src/assets.c point vn_host_t.string() directly
+        at the string's bytes inside the (archived, directly-addressable)
+        AppVar instead of copying it to a NUL-terminated scratch buffer --
+        the rest of the engine already expects a plain `const char *`.
 
         This is what actually gets zx0-compressed and packed into a TI
         AppVar; docs/FORMAT.md's "Chunking" section documents this layout.
@@ -223,6 +229,7 @@ class Assembler:
                 raise AsmError(f"string exceeds u16 length: {len(encoded)} bytes: {s[:40]!r}")
             out += struct.pack("<H", len(encoded))
             out += encoded
+            out += b"\x00"
         return bytes(out)
 
     def to_c(self, name: str, header: str) -> str:
