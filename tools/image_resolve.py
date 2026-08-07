@@ -50,6 +50,50 @@ SPRITE_TARGET_HEIGHT = 176   # tuned against render.c's scene area (320x180)
 BG_SIZE = (320, 180)
 CG_SIZE = (320, 180)
 
+# --- title screen ------------------------------------------------------------
+#
+# DDLC's title screen is authored on its own 1280x720 canvas and shares no art
+# with the dialogue sprites -- it has dedicated `gui/menu_art_*.png` files, a
+# logo bitmap, a nav panel, and a tiling background (see docs/FORMAT.md).
+#
+# TITLE_SCALE maps that canvas onto the calculator uniformly: x 1280 -> 320
+# exactly, with no cropping and no stretching. The screen is 4:3 rather than
+# 16:9, so the extra vertical room simply reveals *more* of each character --
+# their source art is 1080 tall and already cut off by DDLC's own frame bottom,
+# so showing further down is what a taller frame should do.
+TITLE_SCALE = 0.25
+TITLE_SCREEN = (320, 240)
+
+# DDLC's frame is 16:9 and the calculator's is 4:3, so a width-matching 0.25
+# scale leaves 60 rows spare. Those rows go *above* the cast: the girls are
+# composed standing on the frame's bottom edge, so anchoring them downward
+# keeps their feet at the screen bottom instead of leaving them floating over
+# a strip of empty background. The logo and nav panel are anchored to the
+# screen instead (they're UI, not art) and don't take this offset.
+CAST_DY = TITLE_SCREEN[1] - int(720 * TITLE_SCALE)   # 60
+
+# The logo is scaled to the *screen*, not the art: at a proportional
+# 0.25 it would be 77px across and the wordmark inside it unreadable.
+LOGO_PX = 104
+LOGO_POS = (8, -12)   # top-clipped, matching DDLC's own ~11% crop of the badge
+
+# gfx_rletsprite_t stores width/height as uint8_t, so nothing may bake taller
+# or wider than this. Monika lands at 270px before cropping -- see title_art().
+SPRITE_MAX_DIM = 255
+
+# gui/menu_bg.png is a heart lattice that repeats exactly (verified: zero pixel
+# difference at both a 200px horizontal and a 200px vertical shift), which is
+# what makes the scrolling background affordable at all: instead of a 320x240
+# screen-sized image (76,800 bytes -- over the 65,535-byte AppVar ceiling), one
+# period is baked and repeated into a short strip. 200 source px scales to
+# exactly 50 calculator px, so the repeat stays seamless. The strip is one tile
+# wider than the screen so any horizontal scroll offset of 0..TILE_W-1 is still
+# one flat memcpy per row; the vertical wrap is a modulo on the source row
+# (src/assets.c's assets_title_bg).
+BG_TILE_PERIOD = 200                              # source px, one full repeat
+BG_TILE_W = int(BG_TILE_PERIOD * TITLE_SCALE)     # 50
+BG_STRIP_SIZE = (TITLE_SCREEN[0] + BG_TILE_W, BG_TILE_W)      # 370x50
+
 
 # --- image definition table --------------------------------------------------
 
@@ -256,6 +300,8 @@ class ImageResolver:
         self._scene_ids: dict = {}
 
         self.sprites: list = []      # manifest rows, index == id
+        self.title_items: list = [] # title screen art, index == id (see title_art())
+        self.title_bg: dict = {}     # the scrolling background strip (see title_bg_strip())
         # backgrounds and CGs share ONE id space here: OP_SCENE has a single
         # `bg:u8` operand with no room for a bucket discriminator, so the
         # engine (Milestone 3) tells them apart by each entry's "palette"
@@ -303,6 +349,167 @@ class ImageResolver:
         self.scenes.append(entry)
         self._scene_ids[imgname] = idx
         return idx
+
+    # -- title screen ---------------------------------------------------------
+
+    def _title_entry(self, name: str, rel_path: str, img, x: int, y: int,
+                     dx: int, dy: int) -> int:
+        """Saves a baked title image and records its resting position and
+        entrance offset. Positions are computed here rather than hardcoded in
+        render.c because alpha-cropping shifts them -- src/assets.c reads them
+        back from the DTILPOS AppVar so the two can't drift apart."""
+        idx = len(self.title_items)
+        filename = f"title_{idx:02d}_{name}.png"
+        img.save(self.img_dir / filename)
+
+        if img.width > SPRITE_MAX_DIM or img.height > SPRITE_MAX_DIM:
+            raise ValueError(
+                f"title art {name!r} baked to {img.width}x{img.height}, over "
+                f"gfx_rletsprite_t's {SPRITE_MAX_DIM}px uint8_t dimension limit")
+
+        self.title_items.append({"name": name, "source": rel_path, "file": filename,
+                               "w": img.width, "h": img.height,
+                               "x": x, "y": y, "dx": dx, "dy": dy})
+        return idx
+
+    def title_art(self, name: str, rel_path: str,
+                  xcenter: int, ycenter: int, zoom: float) -> Optional[int]:
+        """Bakes one title-screen cast member (a plain `gui/...` path, not a
+        Ren'Py image name -- no dialogue references these, so sprite_id() and
+        scene_id() never reach them). Returns its id.
+
+        @xcenter/@ycenter/@zoom are DDLC's own image-level ATL constants from
+        splash.rpyc, against the 1280x720 canvas, anchoring the *zoomed* size.
+        """
+        art = self.raw_dir / rel_path
+        if not art.is_file():
+            self._log_unsupported((rel_path,), "title art file not found")
+            return None
+
+        img = PILImage.open(art).convert("RGBA")
+        full_w, full_h = img.size
+
+        # Crop the empty margin: these are 1080-tall sheets with the figure
+        # occupying only part of the canvas, and the untrimmed sheet would
+        # both waste flash and (for Monika) blow the 255px sprite limit.
+        bbox = img.getchannel("A").getbbox()
+        if bbox is None:
+            self._log_unsupported((rel_path,), "title art fully transparent")
+            return None
+        img = img.crop(bbox)
+
+        # Where the cropped region lands, in screen px: the sheet is centered
+        # on (xcenter, ycenter) at `zoom`, so its top-left corner sits at
+        # center - full*zoom/2, and the crop starts bbox*zoom further in.
+        x = round(TITLE_SCALE * (xcenter - full_w * zoom / 2 + bbox[0] * zoom))
+        y = round(TITLE_SCALE * (ycenter - full_h * zoom / 2 + bbox[1] * zoom)) + CAST_DY
+
+        scale = zoom * TITLE_SCALE
+        w = max(1, round(img.width * scale))
+        h = max(1, round(img.height * scale))
+
+        # Trim anything below the screen edge rather than baking pixels that
+        # can never be drawn -- this is also what keeps Monika (270px tall
+        # untrimmed) inside the uint8_t sprite height limit.
+        if y + h > TITLE_SCREEN[1]:
+            h = TITLE_SCREEN[1] - y
+            img = img.crop((0, 0, img.width, max(1, round(h / scale))))
+
+        scaled = img.resize((w, max(1, h)), PILImage.LANCZOS)
+
+        # DDLC's entrance: the cast rises from +1200*zoom while sliding
+        # horizontally from (740 - xcenter) * zoom * 0.5 (see menu_art_move).
+        dy = round(1200 * zoom * TITLE_SCALE)
+        dx = round((740 - xcenter) * zoom * 0.5 * TITLE_SCALE)
+        return self._title_entry(name, rel_path, scaled, x, y, dx, dy)
+
+    def title_logo(self, rel_path: str = "gui/logo.png") -> Optional[int]:
+        """Bakes the logo badge. Unlike the cast this is scaled to the
+        *screen*, not proportionally to the art: at a proportional 0.25 it
+        would be 77px across and the wordmark inside it illegible."""
+        art = self.raw_dir / rel_path
+        if not art.is_file():
+            self._log_unsupported((rel_path,), "title logo not found")
+            return None
+
+        img = PILImage.open(art).convert("RGBA").resize(
+            (LOGO_PX, LOGO_PX), PILImage.LANCZOS)
+        # Drops in from above (menu_logo_move: yoffset -300 -> 0).
+        return self._title_entry("logo", rel_path, img, LOGO_POS[0], LOGO_POS[1],
+                                 0, -round(300 * TITLE_SCALE))
+
+    def splash_scene(self, rel_path: str) -> Optional[int]:
+        """Bakes a full-screen splash frame (currently just the Team Salvato
+        logo, `bg/splash.png`) as an ordinary background scene: letterboxed
+        onto BG_SIZE, centered, quantized against the shared game palette.
+
+        Deliberately reuses the existing DSCNn/DPALGAME pipeline rather than
+        the title's own -- this needs no title-style positioning or its own
+        palette, so riding assets_scene() as-is means zero new C code. Like
+        title_art(), this is a plain file path bypass: no dialogue references
+        it, so scene_id() never reaches it.
+
+        Must be called before any dialogue is compiled (see do_compile()) so
+        its id is deterministic -- callers hardcode the resulting index
+        rather than threading a lookup through to src/main.c.
+        """
+        art = _find_art_file(self.raw_dir, rel_path)
+        if art is None:
+            self._log_unsupported((rel_path,), "splash art not found")
+            return None
+
+        img = PILImage.open(art).convert("RGBA")
+        canvas = PILImage.new("RGBA", BG_SIZE, (255, 255, 255, 255))
+        ratio = min(BG_SIZE[0] / img.width, BG_SIZE[1] / img.height)
+        size = (max(1, round(img.width * ratio)), max(1, round(img.height * ratio)))
+        scaled = img.resize(size, PILImage.LANCZOS)
+        canvas.alpha_composite(scaled, ((BG_SIZE[0] - size[0]) // 2,
+                                        (BG_SIZE[1] - size[1]) // 2))
+
+        idx = len(self.scenes)
+        filename = f"bg_{idx:03d}_splash_{Path(rel_path).stem}.png"
+        canvas.save(self.img_dir / filename)
+
+        self.scenes.append({"imgname": ["__splash__", rel_path], "file": filename,
+                            "w": BG_SIZE[0], "h": BG_SIZE[1],
+                            "palette": "shared", "cg_palette_index": None})
+        return idx
+
+    def title_bg_strip(self, rel_path: str = "gui/menu_bg.png") -> Optional[dict]:
+        """Bakes the scrolling title background as a short repeating strip.
+
+        Takes one BG_TILE_PERIOD-sized period of the (exactly periodic) source
+        pattern, scales it to BG_TILE_W, and repeats it horizontally to
+        BG_STRIP_SIZE -- wide enough that any horizontal scroll offset up to
+        one tile can be read as a single flat row copy. See BG_TILE_PERIOD.
+        """
+        art = self.raw_dir / rel_path
+        if not art.is_file():
+            self._log_unsupported((rel_path,), "title background not found")
+            return None
+
+        src = PILImage.open(art).convert("RGB")
+        # Downscale a 3x3 block of periods and keep the middle tile, rather
+        # than resizing a lone period: LANCZOS clamps at the image edge, and
+        # that edge error would leave a 1px seam that is very visible once the
+        # background starts scrolling. Sampling from the middle means every
+        # output pixel sees real neighbouring pattern on all sides.
+        block = BG_TILE_PERIOD * 3
+        period = src.crop((0, 0, block, block)).resize(
+            (BG_TILE_W * 3, BG_TILE_W * 3), PILImage.LANCZOS)
+        tile = period.crop((BG_TILE_W, BG_TILE_W, BG_TILE_W * 2, BG_TILE_W * 2))
+
+        strip = PILImage.new("RGB", BG_STRIP_SIZE)
+        for x in range(0, BG_STRIP_SIZE[0], BG_TILE_W):
+            for y in range(0, BG_STRIP_SIZE[1], BG_TILE_W):
+                strip.paste(tile, (x, y))
+
+        filename = "title_bg_strip.png"
+        strip.save(self.img_dir / filename)
+        entry = {"source": rel_path, "file": filename,
+                 "w": BG_STRIP_SIZE[0], "h": BG_STRIP_SIZE[1], "tile": BG_TILE_W}
+        self.title_bg = entry
+        return entry
 
     # -- baking --------------------------------------------------------------
 
@@ -405,6 +612,8 @@ class ImageResolver:
         return {
             "sprites": self.sprites,
             "scenes": self.scenes,
+            "title_art": self.title_items,
+            "title_bg": self.title_bg,
             "unsupported": [{"imgname": list(name), "reason": reason}
                             for name, reason in self.unsupported],
         }

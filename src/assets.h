@@ -2,10 +2,17 @@
  * @file assets.h
  * @brief Loads the AppVars tools/import_game.py packages (see docs/FORMAT.md).
  *
- * Everything here is read-only, zero-copy where possible: strings and
- * sprites are pointers straight into the (archived) AppVar's flash bytes,
- * never buffered in RAM. Only backgrounds are decompressed, into a
- * caller-supplied destination (the graphx draw buffer).
+ * DSCRIPT/DSPRLUT/DSCNLUT/DPALGAME are read once in assets_init() into
+ * private RAM copies (a few KB total); script text and the sprite/scene
+ * tables are zero-copy *within that private buffer*, not the original
+ * AppVar -- see assets.c's file comment for why a pointer straight into the
+ * AppVar isn't safe to hold across the many DSPRn/DSCNn opens a play
+ * session does. Per-image sprite data stays a direct pointer into its
+ * AppVar for the brief window it's actually being drawn. Backgrounds are
+ * copied into a caller-supplied destination (the graphx draw buffer) --
+ * uncompressed on disk, not decompressed here, since this runs every frame
+ * a scene redraws and a per-frame decode was the actual bottleneck behind
+ * sluggish rendering (see assets.c's assets_scene()).
  */
 
 #ifndef ASSETS_H
@@ -17,13 +24,27 @@
 
 #include <graphx.h>
 
+/** Which step assets_init() got to before failing, for on-device diagnosis
+ * (the AppVars can be present per the OS's own variable list yet loading
+ * still fail, e.g. a corrupt/truncated transfer or a format mismatch --
+ * a plain bool can't tell those apart from "not sent at all"). */
+typedef enum {
+    ASSETS_OK = 0,
+    ASSETS_ERR_SCRIPT_OPEN,     /* DSCRIPT missing/unreadable */
+    ASSETS_ERR_TOO_MANY_STRINGS,/* DSCRIPT's string_count > MAX_STRINGS */
+    ASSETS_ERR_SPRITE_LUT,      /* DSPRLUT missing/unreadable */
+    ASSETS_ERR_SCENE_LUT,       /* DSCNLUT missing/unreadable */
+    ASSETS_ERR_PALETTE,         /* DPALGAME missing/unreadable */
+} assets_status_t;
+
 /**
  * Opens the DSCRIPT, DSPRn, DSCNn, and DPALGAME AppVars and loads
- * gfx_palette. Call once before vn_init(). Returns false if any required
- * AppVar is missing -- e.g. the user sent the program but not the asset
- * bundle.
+ * gfx_palette. Call once before vn_init().
  */
-bool assets_init(void);
+assets_status_t assets_init(void);
+
+/** Human-readable form of @p status, for an on-device error screen. */
+const char *assets_status_str(assets_status_t status);
 
 /** Zero-copy pointer to the loaded chunk's bytecode, plus its size. */
 const uint8_t *assets_script(size_t *size_out);
@@ -32,16 +53,78 @@ const uint8_t *assets_script(size_t *size_out);
 const char *assets_string(uint16_t index);
 
 /**
- * Zero-copy pointer to sprite @p id, ready for gfx_RLETSprite(). Returns
- * NULL if @p id is out of range or its AppVar is missing.
+ * Draws sprite @p id with its center-bottom anchored at
+ * (@p center_x, @p feet_y). Returns false if @p id is out of range or its
+ * AppVar is missing.
+ *
+ * Draws internally (rather than handing back a gfx_rletsprite_t*) so the
+ * sprite's AppVar handle can be opened, used, and closed within this one
+ * call -- see assets.c's file comment for why that matters.
  */
-const gfx_rletsprite_t *assets_sprite(uint8_t id);
+bool assets_draw_sprite(uint8_t id, int center_x, int feet_y);
 
 /**
- * Decompresses background/CG @p id's raw 320x180 palette-index pixels
- * directly into @p dest (typically the graphx draw buffer). Returns false
+ * Copies background/CG @p id's raw 320x180 palette-index pixels directly
+ * into @p dest (typically the graphx draw buffer). Returns false
  * if @p id is out of range or its AppVar is missing.
  */
 bool assets_scene(uint8_t id, uint8_t *dest);
+
+/* ---------------------------------------------------------------------------
+ * Title screen
+ *
+ * DDLC's title screen has its own art set (`gui/menu_art_*.png`, the logo),
+ * its own palette, and its own scrolling background -- it shares nothing with
+ * the dialogue sprites. All of it is optional: a bundle built without it still
+ * boots into a playable game, and these calls just fail cleanly.
+ *
+ * Ids match tools/import_game.py's TITLE_ART order, with the logo appended.
+ * ------------------------------------------------------------------------ */
+
+enum {
+    TITLE_YURI = 0,
+    TITLE_NATSUKI,
+    TITLE_SAYORI,
+    TITLE_MONIKA,
+    TITLE_LOGO,
+    TITLE_ART_COUNT,
+};
+
+/**
+ * Swaps @c gfx_palette between the title screen's palette and the game's.
+ * No-op when @p on is true but no title palette was shipped.
+ *
+ * Safe to leave loaded across the help/save-slot screens: both palettes pin
+ * the same reserved entries 0..7 (tools/convert_images.py's FIXED_ENTRIES),
+ * so every COL_* in render.h means the same color either way.
+ */
+void assets_use_title_palette(bool on);
+
+/**
+ * Title art @p id's resting top-left position and its entrance offset (the
+ * delta it animates *from*, per DDLC's menu_art_move / menu_logo_move).
+ * False if @p id has no entry. Computed at bake time rather than in render.c
+ * because alpha-cropping shifts it -- see tools/image_resolve.py.
+ */
+bool assets_title_layout(uint8_t id, int *x, int *y, int *dx, int *dy);
+
+/** Draws title art @p id with its **top-left** at (@p left_x, @p top_y).
+ * Coordinates are signed and clipped, so partly-offscreen is fine.
+ *
+ * Keeps the underlying AppVar open between calls so a whole frame's worth of
+ * art costs one open instead of one per piece; call assets_title_end() once
+ * the frame is done. */
+bool assets_draw_title(uint8_t id, int left_x, int top_y);
+
+/** Releases the AppVar assets_draw_title() left open. Call once per frame,
+ * after the last title draw. */
+void assets_title_end(void);
+
+/**
+ * Fills @p dest (a full 320x240 screen) with the title's tiling background,
+ * scrolled by (@p px, @p py). Both offsets wrap, so a caller can just count
+ * up forever. False if the background AppVar is missing.
+ */
+bool assets_title_bg(uint8_t px, uint8_t py, uint8_t *dest);
 
 #endif /* ASSETS_H */

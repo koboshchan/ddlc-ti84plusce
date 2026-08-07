@@ -38,10 +38,19 @@
 #define COL_HIGHLIGHT   6
 #define COL_SHADOW      7
 
+/* Title-palette-only entries (tools/convert_images.py's TITLE_FIXED_ENTRIES).
+ * These are DDLC's nav panel colors, which render_title_screen() draws as two
+ * rectangles instead of shipping the panel as art. They mean nothing while the
+ * game palette is loaded -- only use them behind assets_use_title_palette(). */
+#define COL_NAV_FILL    8
+#define COL_NAV_EDGE    9
+
 /**
- * Starts graphx. Call once at startup, after assets_init() has already
- * loaded gfx_palette -- this does not touch the palette itself, so it
- * won't clobber that load.
+ * Starts graphx. Call once at startup, *before* assets_init() -- palette
+ * writes before gfx_Begin() don't reliably stick (its docs say it must run
+ * before any other graphx routine). This function itself never touches the
+ * palette, so it's safe to run first without clobbering assets_init()'s
+ * load right after.
  */
 void render_init(void);
 
@@ -62,5 +71,70 @@ void render_menu(const char *const *choices, uint8_t count, uint8_t selected);
 
 /** Present the back buffer, optionally with a fade (enum vn_trans). */
 void render_present(uint8_t trans);
+
+/**
+ * Fade the screen to black, hold, and (render_fade_in) back up.
+ *
+ * These ramp the palette rather than redrawing, so render_fade_out() darkens
+ * whatever is already displayed -- call it *before* drawing the new scene,
+ * then draw and present under the blacked-out palette, then render_fade_in().
+ * That sequence reproduces DDLC's scene transitions, which are all
+ * dissolve-to-black, pause, dissolve-back (see transforms.rpy).
+ */
+void render_fade_out(void);
+void render_fade_in(void);
+
+/* ---------------------------------------------------------------------------
+ * Title / pause / menu screens
+ *
+ * These are plain composable primitives (fill, text, list) rather than one
+ * function per screen -- main.c composes the title screen, pause overlay,
+ * help card, and save/load slot picker out of them, so adding or reordering
+ * a screen doesn't mean adding a render.c function for it.
+ * ------------------------------------------------------------------------ */
+
+/** Flat-fills the whole screen with a reserved palette color (COL_*). */
+void render_backdrop(uint8_t color);
+
+/** One string at a fixed position in a reserved palette color. */
+void render_text(const char *s, int x, int y, uint8_t color);
+
+/** Like render_text(), but horizontally centered on the screen. */
+void render_text_centered(const char *s, int y, uint8_t color);
+
+/**
+ * A vertical list of items, one per line starting at (@p x, @p y); the
+ * @p selected item is prefixed with ">" and drawn in @p selected_color,
+ * everything else in @p normal_color. Caller picks the colors so this reads
+ * correctly on either a light backdrop (title) or a dark one (pause).
+ */
+void render_list_menu(const char *const *items, uint8_t count, uint8_t selected,
+                      int x, int y, uint8_t normal_color, uint8_t selected_color);
+
+/** Milliseconds the title intro runs for; past this everything is at rest. */
+#define TITLE_INTRO_MS 900
+
+/**
+ * Draws the whole title screen -- scrolling background, cast, nav panel, menu
+ * items, and logo -- in DDLC's z-order, with @p selected highlighted.
+ *
+ * @p t is real elapsed milliseconds since the intro started (not a frame
+ * count -- frames don't arrive at a fixed rate, and driving the entrance off
+ * one would let a busy frame skip right over a whole animation window; see
+ * the "Title screen" file comment above). It drives both the one-shot
+ * entrance (pass >= TITLE_INTRO_MS to skip straight to the resting layout)
+ * and the perpetual background scroll, so callers should keep it growing
+ * rather than stopping at TITLE_INTRO_MS.
+ *
+ * Unlike the gameplay screens this draws its own menu rather than deferring
+ * to render_list_menu(): DDLC's title highlights the selection with a filled
+ * bar over the nav panel, not with the ">" prefix that suits the in-scene
+ * choice menu. Requires the title palette (assets_use_title_palette()).
+ */
+void render_title_screen(uint8_t selected, unsigned t);
+
+/** A bordered box for the pause overlay, drawn over an already-rendered
+ * game scene. Content (header text, list menu) is the caller's job. */
+void render_pause_box(int x, int y, int w, int h);
 
 #endif /* RENDER_H */

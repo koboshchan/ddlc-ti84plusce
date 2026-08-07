@@ -30,7 +30,9 @@ y 240 └───────────────────────�
 ## Reserved palette indices
 
 Pinned via convimg `fixed-entries` so UI colors never shift when the palette
-is regenerated. The quantizer fills 8..255.
+is regenerated. The quantizer fills 8..255 in the game palette (`DPALGAME`).
+The title palette (`DPALTTL`) additionally pins 8-9 for its own use -- see
+"Title screen" -- so its quantizer fills 10..255 instead.
 
 | Index | Name | Use |
 |---|---|---|
@@ -71,8 +73,18 @@ Comparison selectors for `OP_IF`: `0` EQ, `1` NE, `2` LT, `3` LE, `4` GT, `5` GE
 Sprite anchors for `OP_SHOW`: `0` left, `1` center, `2` right, `3` far-left,
 `4` far-right.
 
-Transitions for `OP_SCENE`: `0` cut, `1` fade. Fade currently presents as a cut
-until the palette-ramp pass lands.
+Transitions for `OP_SCENE`: `0` cut, `1` fade -- a real dissolve-to-black,
+hold, dissolve-back (`src/render.c`'s `render_fade_out()`/`render_fade_in()`),
+matching what DDLC's own scene-level transitions all reduce to. See "Scene
+transitions" below. `compile_script.py`'s `_emit_With` maps any transition
+name containing `_scene` to fade and everything else to cut: DDLC names
+every scene-level transition `*_scene*` (`dissolve_scene_full`,
+`wipeleft_scene`, ...), and each one is a `MultipleTransition` built the same
+way -- dissolve/wipe out to `Solid("#000")`, pause, dissolve/wipe back in --
+so matching the name catches the black hold regardless of which visual
+effect surrounds it. A bare `dissolve`/`wipeleft` between images (not a
+scene change) has no black step and needs alpha blending the 8bpp renderer
+doesn't have, so those stay cuts.
 
 ### Limits
 
@@ -135,6 +147,12 @@ matched by `src/assets.c`:
 | `DSCN0`, `DSCN1`, … | Background/CG bytes, packed the same way |
 | `DSCNLUT` | Lookup table for scene ids |
 | `DPALGAME` | The 256-entry shared palette, loaded whole into `gfx_palette` |
+| `DTIL0`, `DTIL1`, … + `DTILLUT` | Title screen art (the four cast members, then the logo), packed like sprites |
+| `DTILPOS` | Title art layout: `i16 x, y, dx, dy` per id — see "Title screen" |
+| `DTILBG` | The title's 370x50 scrolling background strip — see "Title screen" |
+| `DPALTTL` | The title screen's own 256-entry palette |
+| `DSAVE1`, `DSAVE2`, `DSAVE3` | One player save slot each -- see "Save data" |
+| `DNAME` | The saved player name, raw bytes, no NUL -- see "Startup sequence" |
 
 **Lookup table format** (`tools/import_game.py: build_lut()`), little-endian:
 
@@ -190,10 +208,159 @@ reader never has to stitch bytes across two AppVars for one image — one
   palette, swapped in on display and restored afterward — see the palette
   gap noted above.
 
+## Scene transitions
+
+`render_fade_out()`/`render_fade_in()` (`src/render.c`) reproduce DDLC's
+scene-level transitions by ramping the palette toward black and back with
+`gfx_Darken()`, rather than by drawing anything. On an 8bpp display that is
+enough: darkening every palette entry darkens the whole screen without
+touching a single pixel of the framebuffer, so a fade is 256 palette writes
+per step instead of a full redraw. `main.c`'s `host_update()` calls
+`render_fade_out()` *before* drawing the new scene (fading out whatever is
+still displayed, which is the previous one) and `render_fade_in()` after
+presenting the new one under the blacked-out palette.
+
+Pacing this needed `msleep()` (`sys/timers.h`), not the `gfx_Wait()` used
+everywhere else in the engine: `gfx_Wait()` only blocks on a pending
+`gfx_SwapDraw()`, and a fade never swaps -- it only re-tints an
+already-presented frame. Pacing it with `gfx_Wait()` would have made the
+whole fade, hold included, collapse into a handful of back-to-back palette
+writes with no visible time passing.
+
 ## Save data
 
-A single appvar holding the chunk id, `pc`, the variable table, and the current
-scene state.
+Each `DSAVEn` is one fixed-layout `save_blob_t` (`src/save.c`), written with a
+single `ti_Write`: `pc`, the call stack + `sp`, the story `vars[]`, and the
+current scene (background, `actors[]`, speaker, and the *string-pool index*
+of the current line -- not a pointer, since `vn_scene_t.text` points into
+this run's malloc'd `DSCRIPT` copy (`src/assets.c`), which won't land at the
+same address next launch).
+
+This is a position in the *compiled bytecode*, not an abstract story
+checkpoint: loading just overwrites those fields on the live `vn_vm_t` and
+lets `vn_step()` carry on from `pc` as if nothing happened, since it always
+re-reads `pc` fresh rather than caching it across steps. That also means a
+save only replays correctly against the exact `script.vnb` (and engine
+build) it was written against -- re-running the import pipeline with a
+different `--files` selection changes the bytecode layout and invalidates
+old saves.
+
+## Title screen
+
+DDLC's main menu shares **nothing** with the in-game sprites — it has its own
+art (`gui/menu_art_{s,n,y,m}.png`), logo, background, and nav panel. None of it
+is referenced by any dialogue, so `image_resolve.py` resolves these by explicit
+path (`title_art()` / `title_logo()` / `title_bg_strip()`) rather than through
+the script-driven `sprite_id()`/`scene_id()` used for everything else.
+
+**Layout.** DDLC composes on 1280x720; a uniform 0.25 scale maps that to
+320x180, and the remaining 60 rows of the 4:3 screen go *above* the cast
+(`CAST_DY`) so the girls stay standing on the bottom edge instead of floating.
+The logo is the exception — it's scaled to the *screen* (104px), not
+proportionally, because at 0.25 it would be 77px and its wordmark unreadable.
+
+Positions are computed at bake time and shipped in `DTILPOS` rather than being
+rederived in C: each sheet is alpha-cropped first (they're 1080-tall canvases
+with the figure occupying part of it), which shifts the placement by an amount
+only the baker knows. That crop is also load-bearing for a hard limit —
+`gfx_rletsprite_t` stores width/height as `uint8_t`, and Monika bakes to 270px
+tall untrimmed, over the 255 ceiling. Anything extending past the screen edge is
+trimmed for the same reason.
+
+**Background.** `gui/menu_bg.png` is a heart lattice that repeats *exactly* on a
+200x200 period (verified: zero pixel difference at both a 200px horizontal and a
+200px vertical shift). That is what makes the scroll affordable: a screen-sized
+320x240 image would be 76,800 bytes, over the 65,535-byte AppVar ceiling, but one
+period scales to exactly 50x50 calculator px, so `DTILBG` ships a 370x50 strip
+(one tile wider than the screen) instead — 18,500 bytes. Each screen row is then
+a single 320-byte copy from `strip + ((y + py) % 50) * 370 + px`, and DDLC's
+infinite diagonal scroll is just advancing `px`/`py`. The strip is downscaled
+from the *middle* of a 3x3 block of periods, not from a lone period, because
+LANCZOS clamps at image edges and that error would show as a moving seam.
+
+**Palette.** The title uses its own `DPALTTL`, swapped into `gfx_palette` on
+entry and swapped back on exit (`assets_use_title_palette()`). Both palettes pin
+the same reserved entries 0-7, so every `COL_*` keeps its meaning under either
+one and the shared help/save-slot screens render identically. The title palette
+additionally pins indices 8-9 (`TITLE_FIXED_ENTRIES`) — the nav panel's two flat
+colors. The panel's source overlay turns out to be exactly two opaque
+rectangles, so `render.c` fills them rather than shipping ~18KB of art, and its
+slide-in animation costs nothing.
+
+**Animation.** DDLC's entrance is reproduced from the ATL in `splash.rpyc`: the
+cast rises and slides in, the nav panel slides from the left, and the logo
+bounce-drops -- compressed from DDLC's own ~3.45s down to under a second
+(`render.c`'s `F_*` keyframe constants), since a homebrew title screen doesn't
+need DDLC's patience-testing intro length and the player sees it every time
+they back out to the title. Easing uses 32-entry integer LUTs (the eZ80 has no
+FPU), linearly interpolated between samples (`render.c`'s `ease()`) rather than
+snapped to the nearest one -- 32 samples spread across the intro is coarse
+enough that snapping visibly steps the motion, and the bounce curve in
+particular has enough high-frequency detail near its end that snapping reads
+as jitter instead of a bounce. DDLC also *zooms* the cast during the
+entrance; that is deliberately dropped, since graphx has no cheap runtime
+scaler for rlet sprites and baking a second scaled set would cost ~35KB to
+produce what reads as a jump cut. The background scroll is the only
+perpetual motion, matching the real game.
+
+`render_title_screen()`'s time parameter is real elapsed milliseconds
+(`clock()`/`CLOCKS_PER_SEC`, `main.c`'s `run_title_screen()`), not a frame
+count. An earlier version counted rendered frames on the assumption that
+frames arrive at a roughly fixed rate. They don't: the title's per-frame cost
+(a full background copy plus five sprite draws) varies enough that a
+fixed-duration animation window could span fewer real frames than it had
+steps, jumping straight from "not started" to "done" between two draws --
+observed as both a "too slow" character entrance and a nav panel that
+appeared to snap into place instead of sliding. Driving every curve off
+wall-clock time means each frame shows the position correct for the moment
+it was drawn, however many or few frames that turns out to be.
+
+Title art is drawn with the underlying AppVar handle kept open across a whole
+frame's worth of draws (`assets_draw_title()`/`assets_title_end()`), unlike
+`assets_draw_sprite()`'s open-draw-close per call. The title redraws all five
+pieces every single frame (the gameplay screens redraw far less densely, and
+only ever a few sprites at a time), so five `ti_Open`/`ti_Close` pairs a frame
+was worth avoiding. This still never holds a `ti_GetDataPtr` pointer across an
+*unrelated* AppVar open -- see `assets.c`'s file comment for why that matters.
+
+## Startup sequence
+
+Before the title screen ever shows, `main()` runs, in order: the Team Salvato
+logo, DDLC's content warning, and (only if no name is saved yet) the
+player-name entry screen.
+
+The logo is `bg/splash.png`, baked as an ordinary background scene
+(`ImageResolver.splash_scene()`) rather than through the title's own art
+pipeline -- it needs no title-style positioning or palette, so riding the
+existing `DSCNn`/`DPALGAME`/`assets_scene()` path as-is costs zero new C code.
+It's baked *first*, before any dialogue is compiled, specifically so its scene
+id is always 0 (`src/main.c`'s `SPLASH_LOGO_SCENE`) regardless of which
+chapters get compiled in.
+
+The content warning is DDLC's real line (`splash.rpy`'s
+`splash_message_default`): "This game is not suitable for children / or those
+who are easily disturbed." It's plain text over a white backdrop, not a baked
+image -- DDLC itself renders it as text (`ParameterizedText`), so there was
+nothing to bake.
+
+Both screens fade in, hold, and fade out (`render_fade_out()`/`render_fade_in()`,
+see "Scene transitions"); any key skips ahead to the next screen rather than
+past both at once.
+
+**Player name.** DDLC asks for this once, at the start of Act 1
+(`renpy.input()`), and substitutes it into every later `[player]` in dialogue
+(confirmed: exactly the literal token, no Ren'Py formatting tags, 10
+occurrences across `script`+`script-ch0`, never more than one per line).
+There's no bytecode support for suspending mid-script for player text input --
+`OP_SAY`/`OP_MENU`'s fixed operand shapes have no room for it, and adding one
+would mean a new opcode for what's really a one-time setup question. Instead,
+`src/main.c` asks once at startup (whenever `DNAME` doesn't exist yet, i.e.
+first launch) via a classic name-entry-screen letter picker, and every
+`host_string()` call substitutes `[player]` for the saved name before the
+engine ever sees the text -- `assets_string()`/`vn.c` are unaware substitution
+happens at all. `save.c`'s `save_load()` goes through `vm->host->string()`
+rather than `assets_string()` directly for the same reason: a loaded line
+needs the substitution exactly as much as one reached by playing forward does.
 
 ## Character presence AppVars
 

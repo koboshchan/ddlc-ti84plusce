@@ -43,7 +43,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import convert_images
 import extract
-from compile_script import CompileError, Compiler
+from compile_script import CompileError, Compiler, load_transform_positions
 from image_resolve import ImageResolver
 
 # Full Act 1 (ch0-ch4) plus the labels it calls into that live in other
@@ -66,6 +66,26 @@ RAM_BUDGET = 150 * 1024     # conservative usable-RAM ceiling for the resident c
 
 MAXVARSIZE = 65000  # safely under the 65535-byte TI variable cap
 
+# Title screen cast, with DDLC's own image-level ATL constants from
+# splash.rpyc (xcenter, ycenter, zoom against the 1280x720 canvas).
+#
+# The list index IS the id src/render.c draws by (see assets.h's title enum),
+# so this order must stay in sync with it. The logo is appended after these
+# (id 4) by resolver.title_logo(). The actual z-order is render.c's business
+# and is not this list's order -- it interleaves: yuri, natsuki, nav panel,
+# menu text, logo, sayori, monika.
+#
+# The nav panel is deliberately absent: its source overlay turns out to be two
+# flat opaque rectangles (#FFE6F4 out to x=279, #FFBDE1 to x=309), so render.c
+# draws it with two fills instead of shipping ~18KB of art -- which also makes
+# its slide-in animation free.
+TITLE_ART = [
+    ("yuri",    "gui/menu_art_y.png",  600, 335, 0.60),  # behind the nav panel
+    ("natsuki", "gui/menu_art_n.png",  750, 385, 0.58),  # behind the nav panel
+    ("sayori",  "gui/menu_art_s.png",  510, 500, 0.68),  # in front of the logo
+    ("monika",  "gui/menu_art_m.png", 1000, 640, 1.00),  # frontmost
+]
+
 
 def step(msg: str) -> None:
     print(f"\n=== {msg} ===")
@@ -83,7 +103,14 @@ def do_compile(raw_dir: Path, build_dir: Path,
                files: list[str]) -> tuple[Compiler, ImageResolver, list[str]]:
     step("compile script + resolve images")
     resolver = ImageResolver(raw_dir, build_dir)
-    compiler = Compiler(resolver=resolver)
+    compiler = Compiler(resolver=resolver,
+                        transform_positions=load_transform_positions(raw_dir))
+
+    # The startup splash (Team Salvato's logo, from splash.rpyc's `intro`
+    # ATL). Baked first and unconditionally so its scene id is always 0,
+    # matching src/main.c's SPLASH_LOGO_SCENE -- everything dialogue bakes
+    # afterward gets whatever id comes next.
+    resolver.splash_scene("bg/splash.png")
 
     for name in files:
         path = raw_dir / f"{name}.rpyc"
@@ -91,6 +118,15 @@ def do_compile(raw_dir: Path, build_dir: Path,
             print(f"  ! {name}.rpyc not found in {raw_dir}, skipping")
             continue
         compiler.compile_file(path)
+
+    # The title screen's own art set (see TITLE_ART). These are plain `gui/`
+    # files, not Ren'Py image names -- no dialogue references them, so the
+    # resolver's script-driven sprite_id()/scene_id() never reach them and
+    # they have to be named explicitly here.
+    for name, rel_path, xcenter, ycenter, zoom in TITLE_ART:
+        resolver.title_art(name, rel_path, xcenter, ycenter, zoom)
+    resolver.title_logo()
+    resolver.title_bg_strip()
 
     missing = compiler.finish()
     resolver.write_manifest()
@@ -250,6 +286,26 @@ def do_package(build_dir: Path, appvar_dir: Path, manifest: dict) -> list[Path]:
     appvars += package_group(scene_files, "DSCN", "DSCNLUT", build_dir, appvar_dir)
 
     appvars.append(write_appvar((gfx_dir / "pal_game.bin").read_bytes(), "DPALGAME", appvar_dir))
+
+    # Title screen: art + its layout table + the scrolling background strip,
+    # all quantized against their own palette (see convert_images.py).
+    title_art = manifest.get("title_art") or []
+    if title_art:
+        title_files = [bin_for(t["file"]) for t in title_art]
+        appvars += package_group(title_files, "DTIL", "DTILLUT", build_dir, appvar_dir)
+
+        # Resting position and entrance offset per title art id, computed at
+        # bake time (alpha-cropping shifts them, so render.c can't rederive
+        # them from DDLC's ATL constants alone): i16 x, y, dx, dy.
+        pos = b"".join(struct.pack("<hhhh", t["x"], t["y"], t["dx"], t["dy"])
+                       for t in title_art)
+        appvars.append(write_appvar(pos, "DTILPOS", appvar_dir))
+        appvars.append(write_appvar((gfx_dir / "pal_title.bin").read_bytes(),
+                                    "DPALTTL", appvar_dir))
+
+    if manifest.get("title_bg"):
+        appvars.append(write_appvar(
+            bin_for(manifest["title_bg"]["file"]).read_bytes(), "DTILBG", appvar_dir))
 
     cg_count = sum(1 for s in manifest["scenes"] if s["palette"] == "own")
     if cg_count:

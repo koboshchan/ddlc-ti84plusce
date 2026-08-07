@@ -40,12 +40,26 @@ FIXED_ENTRIES = [
     (7, "#201020"),  # shadow
 ]
 
+# Pinned only in the title palette, on top of FIXED_ENTRIES. These are the two
+# flat colors DDLC's nav panel overlay turns out to be made of -- render.c
+# draws that panel as two rectangles rather than shipping ~18KB of art, which
+# needs their indices to be known ahead of time (and exact, so the panel
+# doesn't band against the background). Valid only while the title palette is
+# loaded; see render.h.
+TITLE_FIXED_ENTRIES = [
+    (8, "#FFE6F4"),  # nav panel fill  -- main_menu.png x 0..279
+    (9, "#FFBDE1"),  # nav panel edge  -- main_menu.png x 280..309
+]
+
 
 def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -> dict:
     sprite_files = [str((img_dir / s["file"]).resolve()) for s in manifest["sprites"]]
     shared_files = [str((img_dir / s["file"]).resolve())
                     for s in manifest["scenes"] if s["palette"] == "shared"]
     own_scenes = [s for s in manifest["scenes"] if s["palette"] == "own"]
+    title_files = [str((img_dir / t["file"]).resolve()) for t in manifest.get("title_art", [])]
+    title_bg = manifest.get("title_bg") or {}
+    title_bg_file = str((img_dir / title_bg["file"]).resolve()) if title_bg else None
 
     palettes = [{
         "name": "pal_game",
@@ -86,11 +100,60 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
             # per axis (max 255), but backgrounds/CGs are a fixed 320x180 --
             # over the limit, and redundant anyway since BG_SIZE/CG_SIZE in
             # image_resolve.py already fix the size at conversion time.
+            #
+            # No zx0 (this used to compress backgrounds -- sprites were
+            # already uncompressed, see the comment above): assets_scene()
+            # ran zx0_Decompress every single frame draw_background() is
+            # called, i.e. every typewriter tick and every idle-bob redraw,
+            # and that decode was the actual bottleneck behind "laggy" text
+            # and a "slow" breathing animation -- not frame pacing. A raw
+            # background is a plain memcpy instead, at the cost of more
+            # archive space (affordable: the .b84 was at 27% of budget).
             "name": "backgrounds", "palette": "pal_game", "style": "palette",
-            "compress": "zx0", "dither": 0.4, "width-and-height": False,
+            "dither": 0.4, "width-and-height": False,
             "images": shared_files,
         })
         outputs_converts.append("backgrounds")
+
+    # The title screen gets its own palette rather than sharing pal_game.
+    # Its art is a separate DDLC asset set (pastel pinks, the logo's flat
+    # brand colors) with little overlap with in-game classroom scenes, so
+    # folding it into the shared palette would cost color fidelity on both
+    # sides. It can afford a private palette where a CG can't easily: the
+    # title is a distinct screen mode, so src/assets.c swaps the whole
+    # palette on entry/exit rather than mid-scene.
+    #
+    # FIXED_ENTRIES is pinned here too, so index 0 stays the rlet transparent
+    # sentinel and render.c's COL_* UI colors (menu text, highlight) keep
+    # meaning the same thing while the title palette is loaded.
+    if title_files or title_bg_file:
+        palettes.append({
+            "name": "pal_title", "max-entries": 256, "quality": quality,
+            "fixed-entries": [{"color": {"index": i, "hex": h}}
+                              for i, h in FIXED_ENTRIES + TITLE_FIXED_ENTRIES],
+            "images": title_files + ([title_bg_file] if title_bg_file else []),
+        })
+        outputs_palettes.append("pal_title")
+
+    if title_files:
+        converts.append({
+            # rlet like sprites: the character art, logo, and nav panel are
+            # all alpha-cut shapes drawn over the background.
+            "name": "title", "palette": "pal_title", "style": "rlet",
+            "transparent-index": 0, "dither": 0.4,
+            "images": title_files,
+        })
+        outputs_converts.append("title")
+
+    if title_bg_file:
+        converts.append({
+            # Flat raw indices, like backgrounds -- assets_title_bg() copies
+            # rows straight out of it every frame, so no decode step.
+            "name": "title_bg", "palette": "pal_title", "style": "palette",
+            "dither": 0.4, "width-and-height": False,
+            "images": [title_bg_file],
+        })
+        outputs_converts.append("title_bg")
 
     # One palette + convert block per CG: each needs its own palette, so a
     # shared block (like sprites/backgrounds above) can't express this.
@@ -102,7 +165,7 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
         })
         converts.append({
             "name": name, "palette": f"pal_{name}", "style": "palette",
-            "compress": "zx0", "width-and-height": False, "images": [path],
+            "width-and-height": False, "images": [path],
         })
         outputs_palettes.append(f"pal_{name}")
         outputs_converts.append(name)

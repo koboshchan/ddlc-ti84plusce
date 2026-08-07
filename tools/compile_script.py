@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ast
 import itertools
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -29,6 +30,58 @@ from rpyc_ast import kind, load_rpyc, pycode_source
 # Character ids match src/main.c's render.c placeholder order.
 TAG_TO_CHAR = {"sayori": 0, "natsuki": 1, "yuri": 2, "monika": 3}
 CODE_TO_TAG = {"s": "sayori", "n": "natsuki", "y": "yuri", "m": "monika"}
+
+# DDLC positions characters via named ATL transforms (transforms.rpy) rather
+# than the simple built-in left/right/truecenter keywords. Each one turns out
+# to be a single call like `tcommon(640)` / `focus(880)` / `sink(240)` --
+# different visual effects (appear, focus-zoom, sink-in, ...) that all take
+# the same thing: an absolute X position on Ren'Py's 1280-wide canvas. This
+# regex pulls that X back out without needing to know what the effect does.
+_POS_EXPR_RE = re.compile(r"^\w+\((\d+)\)$")
+
+
+def load_transform_positions(raw_dir: Path) -> dict[str, int]:
+    """Maps each position-carrying transform's name (e.g. "t21") to its X
+    coordinate in Ren'Py's 1280-wide canvas, by reading transforms.rpyc.
+    Transforms that aren't a single `func(N)` call (e.g. "thide", a hide
+    animation with no position of its own) are simply absent from the map."""
+    path = raw_dir / "transforms.rpyc"
+    if not path.is_file():
+        return {}
+
+    _, top = load_rpyc(path)
+    positions: dict[str, int] = {}
+    for init_node in top:
+        for node in getattr(init_node, "block", None) or []:
+            if kind(node) != "Transform":
+                continue
+            atl = getattr(node, "atl", None)
+            statements = getattr(atl, "statements", None) if atl else None
+            if not statements:
+                continue
+            exprs = getattr(statements[0], "expressions", None)
+            if not exprs:
+                continue
+            expr = exprs[0][0]
+            m = _POS_EXPR_RE.match(expr.strip()) if isinstance(expr, str) else None
+            if m:
+                positions[node.varname] = int(m.group(1))
+    return positions
+
+
+def _pos_from_x(x: int) -> int:
+    """Buckets a 0..1280 canvas X into one of the engine's 5 discrete
+    anchors -- OP_SHOW's pos operand is a fixed enum, not a raw coordinate,
+    so this is a lossy but simple fit rather than a bytecode format change."""
+    if x < 256:
+        return vnasm.POS_FARLEFT
+    if x < 512:
+        return vnasm.POS_LEFT
+    if x < 768:
+        return vnasm.POS_CENTER
+    if x < 1024:
+        return vnasm.POS_RIGHT
+    return vnasm.POS_FARRIGHT
 
 _CMP_MAP = {
     ast.Eq: vnasm.CMP_EQ, ast.NotEq: vnasm.CMP_NE,
@@ -59,6 +112,8 @@ class Compiler:
     asm: vnasm.Assembler = field(default_factory=vnasm.Assembler)
     variables: dict = field(default_factory=dict)         # name -> slot
     last_sprite: dict = field(default_factory=dict)        # char id -> sprite id
+    last_pos: dict = field(default_factory=dict)            # char id -> pos enum
+    transform_positions: dict = field(default_factory=dict) # transform name -> X (0..1280)
     skipped: list = field(default_factory=list)            # [SkipEntry]
     stats: dict = field(default_factory=dict)               # kind -> count
     _pending_scene: int | None = field(default=None, init=False)
@@ -111,6 +166,20 @@ class Compiler:
             self.asm.scene(self._pending_scene, trans)
             self._pending_scene = None
 
+    # -- position tracking --------------------------------------------------
+
+    def _resolve_pos(self, char: int, at_list) -> int:
+        """Looks up @at_list's position transform (if any) and remembers it
+        for this character; a Show/Say that doesn't reposition (a bare show,
+        or a say-attribute change) just keeps wherever they already were."""
+        for name in at_list or []:
+            x = self.transform_positions.get(name)
+            if x is not None:
+                pos = _pos_from_x(x)
+                self.last_pos[char] = pos
+                return pos
+        return self.last_pos.get(char, vnasm.POS_CENTER)
+
     # -- block emission ---------------------------------------------------------
 
     def emit_block(self, nodes, fname: str) -> None:
@@ -151,11 +220,26 @@ class Compiler:
             self._skip(node, fname, "non-literal Say.what")
             return
         speaker = vnasm.SPEAKER_NONE
-        if isinstance(who, str):
-            tag = CODE_TO_TAG.get(who)
-            char = TAG_TO_CHAR.get(tag) if tag else None
-            if char is not None:
-                speaker = char
+        tag = CODE_TO_TAG.get(who) if isinstance(who, str) else None
+        char = TAG_TO_CHAR.get(tag) if tag else None
+        if char is not None:
+            speaker = char
+
+        # `s @5c "text"` -- Ren'Py's say-with-attributes shorthand for an
+        # implicit sprite change tied to this line, used for ~1 in 5 lines
+        # in ch0 (more common than explicit `show` for expression changes).
+        # Missing this meant every attribute-driven expression change was
+        # silently dropped and the sprite looked frozen on whatever the
+        # last *explicit* Show had set.
+        if char is not None and node.attributes:
+            imgname = (tag,) + tuple(node.attributes)
+            sprite = self.resolver.sprite_id(imgname)
+            if sprite is None:
+                self._skip(node, fname, f"unresolved say-attribute sprite {imgname!r}")
+            else:
+                self.asm.show(char, sprite, self._resolve_pos(char, None))
+                self.last_sprite[char] = sprite
+
         self.asm.say(speaker, text)
 
     def _emit_Show(self, node, fname: str) -> None:
@@ -186,12 +270,14 @@ class Compiler:
                 return
             self.last_sprite[char] = sprite
 
-        # Position: DDLC positions shown poses via custom named ATL
-        # transforms (transforms.rpy: 't31', 'f22', ...), not the simple
-        # built-in 'left'/'right'/'truecenter' keywords -- resolving those
-        # to real coordinates needs ATL property parsing this pass doesn't
-        # implement, so position always defaults to POS_CENTER for now.
-        self.asm.show(char, sprite, vnasm.POS_CENTER)
+        # Position: DDLC positions shown poses via named ATL transforms
+        # (transforms.rpy: 't31', 'f22', ...) rather than the simple built-in
+        # left/right/truecenter keywords. Each one turns out to be a single
+        # `func(X)` call on Ren'Py's 1280-wide canvas (see
+        # load_transform_positions) -- bucketed into one of the engine's 5
+        # discrete anchors, not a full ATL property interpreter.
+        at_list = node.imspec[3] if len(node.imspec) > 3 else None
+        self.asm.show(char, sprite, self._resolve_pos(char, at_list))
 
     def _emit_Hide(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)
@@ -214,10 +300,21 @@ class Compiler:
             return
         self._pending_scene = scene_id
         self.last_sprite.clear()  # OP_SCENE clears all actors in the VM too
+        self.last_pos.clear()
 
     def _emit_With(self, node, fname: str) -> None:
+        # DDLC's scene-level transitions (transforms.rpy) are all named
+        # `*_scene*` and are all built the same way: a MultipleTransition that
+        # dissolves/wipes out to Solid("#000"), pauses, then comes back in.
+        # That black hold is the thing worth reproducing, and TRANS_FADE does
+        # exactly it -- so match on the name rather than on "dissolve",
+        # which would catch `dissolve_scene_full` but miss `wipeleft_scene`.
+        #
+        # The non-scene variants (a bare `dissolve` or `wipeleft`) are short
+        # crossfades *between* images with no black, which needs alpha
+        # blending the 8bpp renderer can't do -- those stay cuts.
         expr = node.expr if isinstance(node.expr, str) else ""
-        trans = vnasm.TRANS_FADE if "dissolve" in expr else vnasm.TRANS_CUT
+        trans = vnasm.TRANS_FADE if "_scene" in expr else vnasm.TRANS_CUT
         self._flush_pending_scene(trans)
 
     def _emit_Jump(self, node, fname: str) -> None:
