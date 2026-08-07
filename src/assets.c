@@ -67,6 +67,16 @@ static uint16_t   title_palette[256]; /* swapped into gfx_palette on the title *
 static uint16_t   game_palette[256];  /* kept so it can be swapped back */
 static bool       title_palette_ok;
 
+/* Per-CG palettes: DCGIDX maps a scene id to an index into DCGPLUT (or 0xFF
+ * for a scene that renders under the shared game palette). Both optional --
+ * same reasoning as the title assets above. */
+static uint8_t   *cg_index_buf;
+static uint16_t   cg_index_count;
+static uint8_t   *cgpal_lut_buf;
+static const uint8_t *cgpal_lut;
+static uint16_t   cgpal_lut_count;
+static uint16_t   cg_palette_scratch[256]; /* assets_scene_palette()'s return buffer */
+
 static uint16_t read_u16le(const uint8_t *p)
 {
     return (uint16_t)(p[0] | (uint16_t)(p[1] << 8));
@@ -179,6 +189,11 @@ assets_status_t assets_init(void)
         }
         free(tpal);
     }
+
+    /* Per-CG palettes are optional too -- a bundle with no CGs baked ships
+     * neither AppVar, and every scene just falls back to the game palette. */
+    cg_index_buf = read_whole("DCGIDX", &cg_index_count);
+    load_lut("DCGPLUT", &cgpal_lut_buf, &cgpal_lut, &cgpal_lut_count);
 
     return ASSETS_OK;
 }
@@ -385,4 +400,24 @@ bool assets_scene(uint8_t id, uint8_t *dest)
 
     ti_Close(handle);
     return true;
+}
+
+const uint16_t *assets_scene_palette(uint8_t id)
+{
+    if (cg_index_buf && id < cg_index_count && cg_index_buf[id] != 0xFF) {
+        uint8_t appvar_idx;
+        uint16_t offset;
+        if (lut_lookup(cgpal_lut, cgpal_lut_count, cg_index_buf[id], &appvar_idx, &offset)) {
+            char name[9];
+            sprintf(name, "DCGPAL%u", appvar_idx);
+            uint8_t handle = ti_Open(name, "r");
+            if (handle) {
+                const uint8_t *data = ti_GetDataPtr(handle);
+                memcpy(cg_palette_scratch, data + offset, sizeof(cg_palette_scratch));
+                ti_Close(handle);
+                return cg_palette_scratch;
+            }
+        }
+    }
+    return game_palette;
 }

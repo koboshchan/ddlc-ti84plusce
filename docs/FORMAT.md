@@ -151,6 +151,8 @@ matched by `src/assets.c`:
 | `DTILPOS` | Title art layout: `i16 x, y, dx, dy` per id — see "Title screen" |
 | `DTILBG` | The title's 370x50 scrolling background strip — see "Title screen" |
 | `DPALTTL` | The title screen's own 256-entry palette |
+| `DCGPAL0`, `DCGPAL1`, … + `DCGPLUT` | One 256-entry palette per CG, packed like sprites -- see "Image assets" |
+| `DCGIDX` | Scene id -> `DCGPLUT` index (`0xFF` for a scene with no own palette), one byte per scene in `DSCNLUT` order |
 | `DSAVE1`, `DSAVE2`, `DSAVE3` | One player save slot each -- see "Save data" |
 | `DNAME` | The saved player name, raw bytes, no NUL -- see "Startup sequence" |
 
@@ -177,11 +179,15 @@ reader never has to stitch bytes across two AppVars for one image — one
   `tools/image_resolve.py` allocates backgrounds and CGs from one combined
   list (and therefore one `DSCNn` id space) rather than two. Each manifest
   entry carries a `palette` tag (`"shared"` or `"own"`) recording which it
-  needs — **not yet consumed by the engine**: `assets_init()` only loads
-  `DPALGAME`, so a CG (`palette: "own"`) would currently render with the
-  wrong colors. No CG is reachable from the current default `--files`
-  selection, so this hasn't been hit in practice, but it's a real gap for
-  whenever one is included.
+  needs. `DCGIDX` (see the AppVar table above) is the bridge: it maps a scene
+  id to its `DCGPLUT` index, or `0xFF` for a `"shared"` scene.
+  `assets_scene_palette()` reads it and hands back a pointer to the right
+  256-entry palette, defaulting to the shared game palette whenever a scene
+  has no entry (including every id when no CG was baked at all — the whole
+  `DCGIDX`/`DCGPAL*` group is optional, same as the title assets).
+  `main.c`'s `host_update()` applies the returned pointer to `gfx_palette`,
+  not `assets_scene_palette()` itself — see "Per-CG palettes" below for why
+  that split matters.
 - **Backgrounds** (`palette: "shared"`) — scaled to 320x180, quantized
   against the shared game palette, zx0-compressed (a background's
   decompressed size is always exactly 320x180 — fixed and known, so a
@@ -205,8 +211,10 @@ reader never has to stitch bytes across two AppVars for one image — one
   scratch-buffer sizing right.
 - **CGs** (`palette: "own"`) — rendered full-screen and alone, scaled to fit
   320x180 preserving aspect (letterboxed), so each is meant to carry its own
-  palette, swapped in on display and restored afterward — see the palette
-  gap noted above.
+  palette rather than share the game's. `convert_images.py` quantizes it
+  against its own 256-entry palette (fixed-entries 0-7 pinned, same as
+  `pal_game`/`pal_title`, so the dialogue box drawn over a CG still reads the
+  right colors) and packs it into the `DCGPAL*`/`DCGPLUT` group.
 
 ## Scene transitions
 
@@ -226,6 +234,27 @@ everywhere else in the engine: `gfx_Wait()` only blocks on a pending
 already-presented frame. Pacing it with `gfx_Wait()` would have made the
 whole fade, hold included, collapse into a handful of back-to-back palette
 writes with no visible time passing.
+
+### Per-CG palettes
+
+Most scenes render under the shared game palette, but a CG carries its own
+(see "Image assets"). `main.c`'s `host_update()` looks it up once per update
+via `assets_scene_palette()` and applies it differently depending on `trans`:
+
+- **Cut** (`render_apply_palette()`): writes it straight to `gfx_palette`.
+  Instant, which is what a cut means anyway.
+- **Fade** (`render_fade_retarget()`): called between `render_fade_out()` and
+  drawing the new scene, while the screen is already held at black. It
+  overwrites what `render_fade_in()` will later ramp *up to*, without
+  touching what's currently on screen (it re-applies the same full-black
+  hold, just computed from the new palette's values instead of the old
+  one's). Applying the new palette directly at this point instead — the same
+  thing `render_apply_palette()` does for a cut — would pop it to full
+  brightness immediately: the *pixels* on screen are still the old scene's
+  (the new one hasn't been drawn yet), so they'd flash under a palette that
+  doesn't correspond to them, for exactly one frame, before drawing catches
+  up. Sandwiching the retarget inside the black hold instead means the
+  palette and the pixel data change together, both hidden.
 
 ## Save data
 
@@ -289,10 +318,11 @@ slide-in animation costs nothing.
 
 **Animation.** DDLC's entrance is reproduced from the ATL in `splash.rpyc`: the
 cast rises and slides in, the nav panel slides from the left, and the logo
-bounce-drops -- compressed from DDLC's own ~3.45s down to under a second
-(`render.c`'s `F_*` keyframe constants), since a homebrew title screen doesn't
-need DDLC's patience-testing intro length and the player sees it every time
-they back out to the title. Easing uses 32-entry integer LUTs (the eZ80 has no
+bounce-drops, at close to DDLC's own ~3.45s pace (`render.c`'s `F_*` keyframe
+constants, `TITLE_INTRO_MS` in `render.h`) -- an earlier version compressed
+this to under a second, which read as the cast popping into place rather than
+animating: eased motion needs enough real time on screen to actually show the
+curve. Easing uses 32-entry integer LUTs (the eZ80 has no
 FPU), linearly interpolated between samples (`render.c`'s `ease()`) rather than
 snapped to the nearest one -- 32 samples spread across the intro is coarse
 enough that snapping visibly steps the motion, and the bounce curve in
@@ -355,9 +385,16 @@ There's no bytecode support for suspending mid-script for player text input --
 `OP_SAY`/`OP_MENU`'s fixed operand shapes have no room for it, and adding one
 would mean a new opcode for what's really a one-time setup question. Instead,
 `src/main.c` asks once at startup (whenever `DNAME` doesn't exist yet, i.e.
-first launch) via a classic name-entry-screen letter picker, and every
-`host_string()` call substitutes `[player]` for the saved name before the
-engine ever sees the text -- `assets_string()`/`vn.c` are unaware substitution
+first launch), typed directly on the keypad rather than picked from a list:
+`run_name_entry()` reads `os_GetCSC()` (`ti/getcsc.h`) and looks each
+scancode up in the exact table given in that header's own doc comment, which
+is also what the TI-OS's own text-entry routines use -- the same mapping
+printed above each key in ALPHA mode (`MATH`=A, `APPS`=B, `PRGM`=C, …), so a
+name types the same way it would from the OS's own `Input`/`Prompt`. `Del`
+erases, `Enter`/`2nd` confirms once at least one letter's been typed, `Clear`
+quits like everywhere else. Every `host_string()` call then substitutes
+`[player]` for the saved name before the engine ever sees the text --
+`assets_string()`/`vn.c` are unaware substitution
 happens at all. `save.c`'s `save_load()` goes through `vm->host->string()`
 rather than `assets_string()` directly for the same reason: a loaded line
 needs the substitution exactly as much as one reached by playing forward does.

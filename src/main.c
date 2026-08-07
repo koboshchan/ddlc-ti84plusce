@@ -371,13 +371,28 @@ static void host_update(void *ctx, const vn_scene_t *scene, uint8_t trans)
 {
     (void)ctx;
 
+    /* Most scenes share the game palette (assets_scene_palette() just hands
+     * back a pointer to it), but a CG scene needs its own -- see
+     * src/assets.c. Applying it here, once per update rather than every
+     * draw_background() call, is also what makes the fade case below safe:
+     * a fade needs to control *when* the swap becomes visible, which a
+     * per-frame write inside render_scene() couldn't do. */
+    const uint16_t *palette = assets_scene_palette(scene->background);
+
     /* Fade out first: the VM has already swapped in the new scene, but the
      * *displayed* buffer still holds the old one, so darkening the palette
      * here fades out what the player is actually looking at. The new scene is
      * then drawn and presented while the palette is still black, and faded
-     * up -- matching DDLC's dissolve-to-black / pause / dissolve-back. */
+     * up -- matching DDLC's dissolve-to-black / pause / dissolve-back.
+     *
+     * If the new scene also changes palette (a CG), retargeting here rather
+     * than popping it straight to gfx_palette keeps the screen black through
+     * the swap -- see render_fade_retarget()'s doc comment. */
     if (trans == TRANS_FADE) {
         render_fade_out();
+        render_fade_retarget(palette);
+    } else {
+        render_apply_palette(palette);
     }
 
     render_scene(scene);

@@ -161,7 +161,12 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
         name = f"cg_{i:03d}"
         path = str((img_dir / scene["file"]).resolve())
         palettes.append({
-            "name": f"pal_{name}", "max-entries": 256, "quality": 10, "images": [path],
+            # FIXED_ENTRIES pinned here too (like pal_title): the dialogue box
+            # stays on screen over a CG, so its COL_* indices need to mean the
+            # same thing under this palette as they do under pal_game.
+            "name": f"pal_{name}", "max-entries": 256, "quality": 10,
+            "fixed-entries": [{"color": {"index": i, "hex": h}} for i, h in FIXED_ENTRIES],
+            "images": [path],
         })
         converts.append({
             "name": name, "palette": f"pal_{name}", "style": "palette",

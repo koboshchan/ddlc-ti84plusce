@@ -70,6 +70,23 @@ bool assets_draw_sprite(uint8_t id, int center_x, int feet_y);
  */
 bool assets_scene(uint8_t id, uint8_t *dest);
 
+/**
+ * The 256-entry RGB565 palette scene/background @p id should render under --
+ * the shared game palette for an ordinary background, or a CG's own private
+ * one if @p id was baked with one (tools/convert_images.py's per-CG palette
+ * group; see docs/FORMAT.md). Never fails: falls back to the game palette if
+ * @p id has no CG palette, or if one is expected but its AppVar is missing.
+ *
+ * Returns a pointer into a private buffer this module owns (or into the
+ * loaded game palette, when there's no CG involved) -- valid only until the
+ * next assets_scene_palette() call. Callers apply it to @c gfx_palette
+ * themselves (render_apply_palette() / render_fade_retarget()) rather than
+ * this function writing it directly, since *when* that write should become
+ * visible depends on whether a fade is in progress -- see main.c's
+ * host_update().
+ */
+const uint16_t *assets_scene_palette(uint8_t id);
+
 /* ---------------------------------------------------------------------------
  * Title screen
  *

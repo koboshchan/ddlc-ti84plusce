@@ -312,6 +312,13 @@ def do_package(build_dir: Path, appvar_dir: Path, manifest: dict) -> list[Path]:
         cg_pal_files = [gfx_dir / f"pal_cg_{i:03d}.bin" for i in range(cg_count)]
         appvars += package_group(cg_pal_files, "DCGPAL", "DCGPLUT", build_dir, appvar_dir)
 
+        # Scene id -> index into DCGPLUT, one byte per scene in DSCNLUT order
+        # (0xFF for a "shared"/background scene, which has no own palette).
+        # src/assets.c's assets_scene_palette() is the reader.
+        cg_index = bytes(s["cg_palette_index"] if s["cg_palette_index"] is not None else 0xFF
+                         for s in manifest["scenes"])
+        appvars.append(write_appvar(cg_index, "DCGIDX", appvar_dir))
+
     total = sum(p.stat().st_size for p in appvars)
     print(f"{len(appvars)} AppVars, {total} bytes total "
           f"({len(sprite_files)} sprites + {len(scene_files)} scenes)")

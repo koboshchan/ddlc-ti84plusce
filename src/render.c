@@ -466,6 +466,17 @@ void render_fade_in(void)
     memcpy(gfx_palette, fade_saved, sizeof(fade_saved));
 }
 
+void render_apply_palette(const uint16_t *palette)
+{
+    memcpy(gfx_palette, palette, 256 * sizeof(uint16_t));
+}
+
+void render_fade_retarget(const uint16_t *palette)
+{
+    memcpy(fade_saved, palette, sizeof(fade_saved));
+    fade_apply(0); /* re-hold at full black under the new palette's values */
+}
+
 void render_pause_box(int x, int y, int w, int h)
 {
     gfx_SetColor(COL_BOX_FILL);

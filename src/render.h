@@ -84,6 +84,22 @@ void render_present(uint8_t trans);
 void render_fade_out(void);
 void render_fade_in(void);
 
+/** Writes @p palette (256 RGB565 entries, e.g. from assets_scene_palette())
+ * straight to @c gfx_palette -- an instant pop, visible immediately (no
+ * fade in progress). */
+void render_apply_palette(const uint16_t *palette);
+
+/**
+ * Changes what render_fade_in() ramps up *to*, without touching what's
+ * currently on screen. Call between render_fade_out() and render_fade_in()
+ * when the scene being faded to also changes palette (a CG): the screen is
+ * already held at black at that point, and this keeps it there while
+ * swapping in the new target -- writing @p palette straight to gfx_palette
+ * instead would pop it to full brightness while the *old* scene's pixels are
+ * still what's on screen (render_scene() for the new one hasn't run yet).
+ */
+void render_fade_retarget(const uint16_t *palette);
+
 /* ---------------------------------------------------------------------------
  * Title / pause / menu screens
  *
