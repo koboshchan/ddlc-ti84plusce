@@ -3,6 +3,9 @@
 
     python3 tools/import_game.py /path/to/DDLC-1.1.1-pc/game
 
+Or, to also build the engine first and guarantee it's the one that ends up
+in the bundle: `make bundle GAME_DIR=/path/to/DDLC-1.1.1-pc/game`.
+
 Orchestrates, against the user's own legally obtained copy of the game:
   extract.py       (unrpa)              .rpa archives -> assets/raw/
   image_resolve.py (Pillow)             Show/Scene names -> baked PNGs + manifest
@@ -223,10 +226,9 @@ def do_bundle(prog_8xp: Path, appvars: list[Path], out_path: Path) -> None:
     step("bundle .b84")
     require("convbin", 'export PATH="$HOME/CEdev/bin:$PATH"')
     if not prog_8xp.is_file():
-        print(f"  ! {prog_8xp} not found -- run `make` first; bundling AppVars alone")
-        inputs = appvars
-    else:
-        inputs = [prog_8xp] + appvars
+        sys.exit(f"{prog_8xp} not found -- build the engine first (`make`, or "
+                 f"`make bundle GAME_DIR=...` to do both in one step)")
+    inputs = [prog_8xp] + appvars
 
     args = ["convbin"]
     for f in inputs:
