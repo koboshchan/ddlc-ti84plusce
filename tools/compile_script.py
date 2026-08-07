@@ -109,6 +109,14 @@ _AUDIO_PREFIXES = ("play ", "stop ", "queue ", "voice ")
 
 VN_MAX_VARS = 64
 
+# Conservative threshold for compile_file_chunked()'s mid-file split: leaves
+# headroom under import_game.py's MAXVARSIZE (65000) for the chunk
+# container's own overhead (u16 code_length/string_count, plus a u16 length
+# + NUL per string -- 3 bytes/string not counted by this raw code+string
+# sum) and for however much more the file grows before the next top-level
+# Label boundary (the only point a split is allowed) is reached.
+CHUNK_SIZE_BUDGET = 58000
+
 
 class CompileError(Exception):
     """A hard failure -- unlike a logged skip, this aborts the build."""
@@ -141,6 +149,42 @@ class Compiler:
         _, top = load_rpyc(path)
         self.emit_block(top, path.name)
         self._flush_pending_scene(vnasm.TRANS_CUT)
+
+    def compile_file_chunked(self, path: Path, chunk_id_start: int,
+                             budget: int = CHUNK_SIZE_BUDGET) -> list[vnasm.Assembler]:
+        """Like compile_file(), but splits @path across multiple chunks if it
+        grows past @budget bytes (code + string pool) -- only one file has
+        needed this so far (script-ch30, 67954 bytes combined, just over the
+        65535 single-AppVar ceiling every other file measured comfortably
+        under). Assumes self.asm is already the first chunk to write into
+        (matching compile_file()'s calling convention in do_compile()) and
+        that @chunk_id_start is that assembler's own chunk_id.
+
+        Only ever splits right before a top-level Label -- the one place
+        DDLC's own file structure treats as a safe jump target: sequential
+        top-level labels already fall through into each other with no
+        explicit Jump between them, so inserting one at a chosen split point
+        is behaviorally identical to the fall-through it replaces, not a
+        semantic change. Splitting inside a label's own block (a nested
+        If/Menu/etc.) isn't attempted -- those aren't valid cross-chunk jump
+        targets on their own and no single label has come close to the
+        budget by itself yet.
+        """
+        _, top = load_rpyc(path)
+        assemblers = [self.asm]
+
+        for node in top:
+            is_label = kind(node) == "Label" and isinstance(node.name, str)
+            size = len(self.asm.code) + sum(len(s.encode("utf-8")) for s in self.asm.strings)
+            if is_label and size > budget:
+                self._flush_pending_scene(vnasm.TRANS_CUT)
+                self.asm.jump(node.name)
+                self.asm = vnasm.Assembler(chunk_id=chunk_id_start + len(assemblers))
+                assemblers.append(self.asm)
+            self.emit_node(node, path.name)
+
+        self._flush_pending_scene(vnasm.TRANS_CUT)
+        return assemblers
 
     # -- bookkeeping ------------------------------------------------------------
 

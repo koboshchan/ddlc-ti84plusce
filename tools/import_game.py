@@ -57,6 +57,22 @@ ACT1_FILES = [
     "script-ch10", "script-ch20", "script-ch21", "script-ch22", "script-ch23",
     "script-poemgame", "script-poemresponses", "script",
 ]
+
+# Every real script file DDLC ships (all three acts, every exclusive route,
+# both poem-response files) -- available via --files=all. script-ch30 (Act
+# 3's finale) is the one file that alone exceeds a single AppVar's 65535
+# bytes (67954 measured); compile_script.py's compile_file_chunked() splits
+# it across chunks automatically, so this doesn't need special-casing here.
+ALL_FILES = [
+    "script-ch0", "script-ch1", "script-ch2", "script-ch3", "script-ch4",
+    "script-ch5", "script-ch10", "script-ch20", "script-ch21", "script-ch22",
+    "script-ch23", "script-ch30", "script-ch40",
+    "script-exclusives-sayori", "script-exclusives-natsuki", "script-exclusives-yuri",
+    "script-exclusives2-natsuki", "script-exclusives2-yuri",
+    "script-poemgame", "script-poemresponses", "script-poemresponses2",
+    "script",
+]
+
 DEFAULT_FILES = ["script", "script-ch0"]
 
 ARCHIVE_BUDGET = 2_500_000  # ~2.5MB target, from the plan
@@ -116,10 +132,12 @@ def do_compile(raw_dir: Path, build_dir: Path,
     resolver.explicit_bg_scene("bg/splash.png")     # Team Salvato logo (splash.rpyc's `intro` ATL)
     resolver.explicit_bg_scene("bg/notebook.png")    # poem minigame background
 
-    # One Assembler (chunk) per compiled file -- compiler.variables/
-    # last_sprite/last_pos stay on the shared Compiler instance across all of
-    # them (see compile_script.py's Compiler docstring), only compiler.asm
-    # gets swapped out before each file.
+    # One Assembler (chunk) per compiled file, or more than one for a file
+    # too big to fit a single chunk (compile_file_chunked() -- only
+    # script-ch30 needs this today). compiler.variables/last_sprite/last_pos
+    # stay on the shared Compiler instance across all of them (see
+    # compile_script.py's Compiler docstring), only compiler.asm gets
+    # swapped out before each new chunk.
     assemblers: list[vnasm.Assembler] = []
     for name in files:
         path = raw_dir / f"{name}.rpyc"
@@ -127,8 +145,7 @@ def do_compile(raw_dir: Path, build_dir: Path,
             print(f"  ! {name}.rpyc not found in {raw_dir}, skipping")
             continue
         compiler.asm = vnasm.Assembler(chunk_id=len(assemblers))
-        compiler.compile_file(path)
-        assemblers.append(compiler.asm)
+        assemblers.extend(compiler.compile_file_chunked(path, len(assemblers)))
 
     # The title screen's own art set (see TITLE_ART). These are plain `gui/`
     # files, not Ren'Py image names -- no dialogue references them, so the
@@ -430,16 +447,23 @@ def main() -> int:
     ap.add_argument("--out", type=Path, default=Path("build/DDLC.b84"))
     ap.add_argument("--quality", type=int, default=8)
     ap.add_argument("--files", default="script,script-ch0",
-                    help="comma-separated .rpyc stems to compile/bundle, or 'act1' "
-                         "for the full ch0-ch4 set. Each file becomes its own "
-                         "resident chunk, swapped in on demand -- see the module "
+                    help="comma-separated .rpyc stems to compile/bundle, 'act1' "
+                         "for the full ch0-ch4 set, or 'all' for every script "
+                         "file DDLC ships (all three acts, every exclusive route). "
+                         "Each file becomes its own resident chunk (or several, "
+                         "for the one file too big for one -- see the module "
                          "docstring. Default: script,script-ch0")
     ap.add_argument("--skip-extract", action="store_true")
     ap.add_argument("--skip-convimg", action="store_true")
     args = ap.parse_args()
 
     args.build_dir.mkdir(parents=True, exist_ok=True)
-    files = ACT1_FILES if args.files == "act1" else args.files.split(",")
+    if args.files == "act1":
+        files = ACT1_FILES
+    elif args.files == "all":
+        files = ALL_FILES
+    else:
+        files = args.files.split(",")
 
     try:
         do_extract(args.game_dir.expanduser().resolve(), args.raw_dir, args.skip_extract)
