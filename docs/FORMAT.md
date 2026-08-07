@@ -14,7 +14,7 @@ The TI-84 Plus CE imposes three hard limits that shape everything here:
 | Screen | 320x240, 8bpp palette | One global palette; images pre-quantized on the host |
 | Max TI variable size | 65,535 bytes | Assets split across appvars via `convbin --oformat 8xv-split` |
 | User archive | ~3 MB | ~140 MB of source art must reduce ~60x |
-| RAM | ~64 KB usable | Only one script chunk and one sprite resident at a time |
+| RAM | ~150 KB usable | Only one script chunk and one sprite resident at a time -- see "Chunking" |
 
 ## Screen layout
 
@@ -47,15 +47,18 @@ The title palette (`DPALTTL`) additionally pins 8-9 for its own use -- see
 
 ## Bytecode
 
-Little-endian throughout. `u24` operands are absolute offsets into the chunk's
-code section. Strings are `u16` indices into the chunk's string pool.
+Little-endian throughout. `u24` operands (`OP_JUMP`/`OP_CALL`/`OP_IF`/
+`OP_MENU`'s `tgt`) are **packed cross-chunk addresses**, not plain offsets --
+`(chunk_id << 16) | local_offset` -- see "Chunking" below. Strings are `u16`
+indices into the *currently resident* chunk's string pool (chunk-local, not
+global).
 
 | Op | Value | Operands | Behavior |
 |---|---|---|---|
 | `OP_NOP` | `0x00` | — | Ignored. Unsupported Ren'Py nodes lower to this |
 | `OP_SAY` | `0x01` | `spk:u8 text:u16` | Show a line; blocks for player input. `spk=0xFF` is narration |
 | `OP_SCENE` | `0x02` | `bg:u8 trans:u8` | Change background and **clear all actors** (Ren'Py semantics) |
-| `OP_SHOW` | `0x03` | `ch:u8 sprite:u8 pos:u8` | Place/update an actor. `sprite` is a single pre-baked image id — see "Image assets" below |
+| `OP_SHOW` | `0x03` | `ch:u8 sprite:u16 pos:u8` | Place/update an actor. `sprite` is a single pre-baked image id — see "Image assets" below |
 | `OP_HIDE` | `0x04` | `ch:u8` | Remove an actor |
 | `OP_MENU` | `0x05` | `n:u8` then `n` x (`text:u16 tgt:u24`) | Choice menu; jumps to the chosen target |
 | `OP_JUMP` | `0x06` | `tgt:u24` | Unconditional jump |
@@ -67,6 +70,11 @@ code section. Strings are `u16` indices into the chunk's string pool.
 | `OP_SOUND` | `0x0C` | `id:u8` | Reserved. Always a no-op — the CE has no audio hardware. The operand is still consumed so the stream stays aligned |
 | `OP_END` | `0x0D` | — | Halt |
 | `OP_ADD` | `0x0E` | `var:u8 delta:i16` | Add to a story variable, **saturating** at the `i16` bounds. Lowers Ren'Py's `$ x += 1` |
+| `OP_MINIGAME` | `0x0F` | `result_var:u8` | Runs a host-side minigame screen; stores its outcome in `vars[result_var]`. Only the poem word-picking game exists today — see "Poem minigame" |
+
+`sprite:u16` (not `u8`): the full game needs 406 distinct sprite ids across
+Act 1, over a byte's range. Scene/background ids stay `u8` -- only 17 are
+ever needed.
 
 Comparison selectors for `OP_IF`: `0` EQ, `1` NE, `2` LT, `3` LE, `4` GT, `5` GE.
 
@@ -119,10 +127,59 @@ with `VN_ERR_BOUNDS` rather than reading past the buffer.
 
 ## Chunking
 
-Scripts are split so that **code + string pool stays under 16 KB decompressed**,
-keeping one resident chunk comfortably within RAM. Each chunk is zx0-compressed
-into its own appvar; `OP_JUMP`/`OP_CALL` targets are chunk-local, and
-cross-chunk transitions are resolved by the loader in `assets.c`.
+`tools/compile_script.py` gives every *selected* source file
+(`import_game.py --files`, default `script,script-ch0`) its own chunk --
+its own code, its own string pool, its own `vnasm.Assembler`. Only one
+chunk is ever resident on-calc at a time (`src/assets.c`'s
+`assets_load_chunk()`, ~150KB budget for one resident buffer); a Jump/Call
+that crosses a chunk boundary swaps the resident one out.
+
+This wasn't always true: an earlier version compiled every selected file
+into one combined chunk. That worked for a small selection (the default
+`script,script-ch0`) but broke down for anything bigger -- the full Act 1
+set's combined chunk measured 254,842 bytes, well over one resident
+buffer's budget, and (separately) needed 406 distinct sprite ids against
+`OP_SHOW`'s then-`u8` `sprite` operand (fixed alongside this, see the
+Bytecode table above). Per-file chunking sidesteps both: every file
+measured so far fits in one AppVar with room to spare (ch0=20242 bytes,
+the largest, `script-poemresponses`, is 62004), so `--files=act1` is a
+valid, working selection now, not just a compiles-but-can't-run one.
+
+**Packed addresses.** `OP_JUMP`/`OP_CALL`/`OP_IF`/`OP_MENU`'s `u24` target,
+`vn_vm_t.pc`, and `vn_vm_t.stack[]` all encode `(chunk_id << 16) |
+local_offset` (`vn.h`'s `VN_PACK_ADDR`/`VN_CHUNK_ID`/`VN_CHUNK_OFFSET`) --
+free, not an added cost: the chunk container's `code_length` is already
+capped at `u16` (65535 below), so 16 bits was already the most any local
+offset could need, and a single-chunk build (chunk_id always 0) packs to
+exactly the same value a flat offset would have. `src/vn.c`'s `vn_step()`
+compares the resident chunk against a target's packed chunk_id on every
+step and calls the host's `load_chunk` to swap when they differ --
+optional (`NULL` means a single-chunk build; any cross-chunk target then
+fails with `VN_ERR_BOUNDS`, same as any other invalid address).
+
+**Compiling and linking.** `tools/import_game.py`'s `do_compile()` gives
+each file its own `vnasm.Assembler(chunk_id=N)` in `--files` order; the
+`Compiler` instance (and its `variables`/`last_sprite`/`last_pos`) stays
+shared across all of them, since `vars[]` is one flat array regardless of
+which chunk is resident. `compile_script.py`'s `link_chunks()` then merges
+every chunk's local labels into one `name -> (chunk_id, offset)` table and
+resolves every chunk's pending Jump/Call/If/Menu targets against it --
+Ren'Py enforces globally-unique label names, so this can't collide. A name
+missing from every chunk (content outside the compiled `--files` set) is
+stubbed to a local `OP_END` in whichever chunk references it first (same
+"content wasn't imported" idea as before), registered into the merged
+table so a second chunk referencing the same missing name lands on that
+same stub instead of getting a second one.
+
+**Entry point.** Ren'Py's real entry, `label start`, lives in the `script`
+file -- but `--files` order doesn't guarantee which chunk that ends up in
+(`ACT1_FILES` puts `script` last; the default file list puts it first), so
+assuming pc=0 isn't safe. `find_entry_point()` looks it up by name instead
+and packages the result as `DENTRY` (see the AppVar table below); `src/
+main.c` reads it at startup and before every "New Game"/"Continue" (a
+previous session may have swapped to a different chunk, and
+`assets_load_chunk()` frees the old buffer on every swap, so re-using a
+`code`/`code_size` pointer captured earlier would be stale).
 
 **Chunk container** (`tools/vnasm.py: Assembler.to_chunk_bytes()`), before
 zx0 compression — little-endian throughout:
@@ -141,17 +198,6 @@ The trailing NUL lets `src/assets.c` hand out `const char *` pointers straight
 into the AppVar (archived, so `ti_GetDataPtr` addresses it directly with no
 copy) instead of copying every accessed string into a scratch buffer first.
 
-**Current status**: `tools/compile_script.py` compiles every *selected*
-source file (`import_game.py --files`, default `script,script-ch0`) into
-one combined chunk. `src/assets.c` loads exactly one such chunk resident and
-`src/main.c` runs it — real, on-device gameplay, not just a pipeline
-self-test. What's still missing is a loader that can hold multiple chunks
-and stitch a jump from one into another: the full Act 1 set (`--files
-act1`) compiles fine, but at ~240KB it's well over the ~150KB usable-RAM
-ceiling `import_game.py` enforces, so it isn't a valid `--files` selection
-yet. Picking a subset that already fits (a chapter, or a few) is how real
-assets ship today.
-
 ## AppVar naming and lookup tables
 
 `tools/import_game.py` packages everything under 8-character TI names,
@@ -159,7 +205,9 @@ matched by `src/assets.c`:
 
 | AppVar(s) | Contents |
 |---|---|
-| `DSCRIPT` | One chunk container (above), whole — the compiled selection always fits one AppVar in practice |
+| `DSCR0`, `DSCR1`, … | One chunk container (above) per compiled file, whole — every chunk measured so far fits one AppVar; see "Chunking" |
+| `DENTRY` | Packed `(chunk_id << 16) \| offset` for `label start` — see "Chunking" |
+| `DPOEM` | The poem minigame's word bank — see "Poem minigame" |
 | `DSPR0`, `DSPR1`, … | Sprite bytes, greedily packed so no sprite's bytes ever straddle an AppVar boundary |
 | `DSPRLUT` | Lookup table: which `DSPRn` holds sprite id *i*, and where |
 | `DSCN0`, `DSCN1`, … | Background/CG bytes, packed the same way |
@@ -178,7 +226,7 @@ matched by `src/assets.c`:
 
 ```
 u16  entry_count
-per entry, indexed by sprite/scene id (this is OP_SHOW's sprite:u8 or
+per entry, indexed by sprite/scene id (this is OP_SHOW's sprite:u16 or
 OP_SCENE's bg:u8):
     u8   appvar_index    -- e.g. 2 means DSPR2 / DSCN2
     u16  offset           -- byte offset within that AppVar
@@ -300,14 +348,18 @@ Each `DSAVEn` is one fixed-layout `save_blob_t` (`src/save.c`), written with a
 single `ti_Write`: `pc`, the call stack + `sp`, the story `vars[]`, and the
 current scene (background, `actors[]`, speaker, and the *string-pool index*
 of the current line -- not a pointer, since `vn_scene_t.text` points into
-this run's malloc'd `DSCRIPT` copy (`src/assets.c`), which won't land at the
-same address next launch).
+this run's malloc'd chunk copy (`src/assets.c`'s `assets_load_chunk()`),
+which won't land at the same address next launch).
 
 This is a position in the *compiled bytecode*, not an abstract story
 checkpoint: loading just overwrites those fields on the live `vn_vm_t` and
 lets `vn_step()` carry on from `pc` as if nothing happened, since it always
-re-reads `pc` fresh rather than caching it across steps. That also means a
-save only replays correctly against the exact `script.vnb` (and engine
+re-reads `pc` fresh rather than caching it across steps. `pc`/`stack[]` are
+already the packed chunk-aware values (see "Chunking"), so a save whose
+`pc` names a different chunk than the one currently resident needs no
+special handling either -- the next `vn_step()` notices the mismatch and
+swaps chunks exactly like any other cross-chunk jump would. That also means
+a save only replays correctly against the exact compiled chunks (and engine
 build) it was written against -- re-running the import pipeline with a
 different `--files` selection changes the bytecode layout and invalidates
 old saves.
@@ -398,12 +450,14 @@ logo, DDLC's content warning, and (only if no name is saved yet) the
 player-name entry screen.
 
 The logo is `bg/splash.png`, baked as an ordinary background scene
-(`ImageResolver.splash_scene()`) rather than through the title's own art
+(`ImageResolver.explicit_bg_scene()`) rather than through the title's own art
 pipeline -- it needs no title-style positioning or palette, so riding the
 existing `DSCNn`/`DPALGAME`/`assets_scene()` path as-is costs zero new C code.
 It's baked *first*, before any dialogue is compiled, specifically so its scene
 id is always 0 (`src/main.c`'s `SPLASH_LOGO_SCENE`) regardless of which
-chapters get compiled in.
+chapters get compiled in. `explicit_bg_scene()` is called a second time right
+after, for the poem minigame's notebook background (`src/poem.c`'s
+`POEM_BG_SCENE`, always scene id 1) -- see "Poem minigame".
 
 The content warning is DDLC's real line (`splash.rpy`'s
 `splash_message_default`): "This game is not suitable for children / or those
@@ -447,6 +501,55 @@ and `chars_present()` lets the engine ask the filesystem directly rather than
 tracking deletion state separately. `chars_init()` only creates AppVars that
 are missing, so a deletion from a prior session persists across restarts.
 
+## Poem minigame
+
+The real `label poem:` (`script-poemgame.rpy`) is a custom interactive
+screen (`ui.textbutton`/`ui.interact()` in a Python `while True` loop) --
+fundamentally not expressible in this VM's linear bytecode model, unlike
+most of the compiler's gaps, which are about *unsupported syntax* rather
+than *a different execution model entirely*. `compile_script.py`'s
+`_emit_Label` special-cases the label by name: instead of walking the real
+body, it emits `label("poem"); minigame(var_slot("poem_winner")); ret()` --
+a call into the real (C-side) minigame, `src/poem.c`, via `OP_MINIGAME`
+(see the Bytecode table above).
+
+**Reproduced faithfully**, from the real Python (`PoemWord` class,
+`poemwords.txt`): 20 rounds, 10 words shown per round (2 columns x 5 rows,
+matching DDLC's real layout) drawn from the real 228-word bank
+(`assets/raw/poemwords.txt`, packaged as `DPOEM`: `u16 count` then per word
+`u8 len, word bytes (no NUL), u8 sPoint, u8 nPoint, u8 yPoint`) -- all 10
+shown each round are removed from the pool regardless of which one is
+picked (200 of 228 consumed over a full game, 28 spare, so there's no need
+to shrink the word count to fit). Cumulative `sPoint`/`nPoint`/`yPoint`
+totals; winner = highest total, `TAG_TO_CHAR` order (0 sayori, 1 natsuki,
+2 yuri) -- matching DDLC's own `persistent.playthrough == 0` branch (max of
+the three). This engine has no persistent multi-playthrough state, so it
+always takes that branch, never DDLC's `playthrough > 0` one
+(natsuki/yuri-only, sayori excluded).
+
+**Not reproduced:** the real body's Monika's-eyes jump-scare and
+word-corruption easter egg (gated behind `persistent.playthrough == 2/3`)
+and the animated reaction "stickers" / ambient wandering background
+characters (cosmetic ATL, same category as the title screen's already-
+dropped zoom -- see "The speaking pop"). The playthrough-gated content
+isn't a cosmetic simplification like the stickers are: it's structurally
+unreachable, the same way the eyes/corruption branches are dead code under
+this project's single-playthrough model regardless of whether the compiler
+walks the real body at all. Kept: the real `bg/notebook.png` background
+(`explicit_bg_scene()`, always scene id 1 -- see "Startup sequence") and
+the "N/20" progress counter DDLC also shows.
+
+**`poem_winner` is a synthetic variable, and it's write-only today.** Real
+DDLC's downstream reaction to the poem's winner
+(`poemwinner[chapter]`/`exec(poemwinner[chapter][0] + "_appeal += 1")`) is
+Python-dict/`exec()`-driven -- already unreachable by this project's
+AST-structural compiler regardless of minigame support, the same category
+of gap as the `Menu` item-condition one below. `poem_winner` exists so
+compiled content *could* branch on it (`OP_IF` doesn't care where a
+variable's value came from), but nothing in the currently-translatable
+script does yet -- this is infrastructure for future hand-authored content,
+not a claim that DDLC's own poem-outcome branching is reproduced.
+
 ## Known compiler gap: `Menu` item conditions are not evaluated
 
 `renpy.ast.Menu.items` is a list of `(caption, condition, block)`.
@@ -460,12 +563,15 @@ with a naive "always pick option 0" auto-player, an unnarrowed menu never
 exhausts, so the poem-sharing sequence loops until the simulator's line-count
 safety cap trips it — not a crash or an unknown opcode, but not a clean
 finish either. Verified independently of this: `script-ch0.rpyc` alone
-replays to a real `OP_RETURN` finish, and the full combined chunk correctly
-plays real dialogue and a real menu selection from `label start` before
+replays to a real `OP_RETURN` finish, and a full `--files=act1` replay
+correctly plays real dialogue, real menu selections, and real cross-chunk
+Jump/Call/Return round trips (see "Chunking") from `label start` before
 reaching this section.
 
 Fixing this needs per-item conditions evaluated at menu-*display* time (story
 state can change between visits to the same menu), which the current
-`OP_MENU n:u8 [text:u16 tgt:u24]*` encoding has no room for. Deferred
-alongside the rest of the poem minigame (see README's Status list) rather
-than extending the bytecode format for it now.
+`OP_MENU n:u8 [text:u16 tgt:u24]*` encoding has no room for. Deferred rather
+than extending the bytecode format for it now -- unlike the poem minigame
+(which this project now implements, see "Poem minigame" above), this one
+doesn't have a clean host-callback escape hatch: it's a bytecode format
+change, not a new opcode.
