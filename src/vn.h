@@ -24,11 +24,16 @@ enum vn_op {
     OP_NOP      = 0x00, /*                                    unsupported node */
     OP_SAY      = 0x01, /* spk:u8 text:u16                                     */
     OP_SCENE    = 0x02, /* bg:u8 trans:u8                                      */
-    OP_SHOW     = 0x03, /* ch:u8 sprite:u16 overlay:u16 pos:u8 -- overlay is
-                          * VN_NO_OVERLAY for a single-layer sprite, or a
-                          * second pre-baked atom (an expression) drawn on
-                          * top of `sprite` (a body pose) at its own baked-in
-                          * offset -- see docs/FORMAT.md's "Layered sprites"*/
+    OP_SHOW     = 0x03, /* ch:u8 sprite:u16 overlay:u16 pos:u8 flags:u8 --
+                          * overlay is VN_NO_OVERLAY for a single-layer
+                          * sprite, or a second pre-baked atom (an
+                          * expression) drawn on top of `sprite` (a body
+                          * pose) at its own baked-in offset -- see
+                          * docs/FORMAT.md's "Layered sprites". flags is
+                          * VN_FLAG_ZOOM/VN_FLAG_HOP, DDLC's real per-line
+                          * speaking signal (which named ATL transform --
+                          * "f11" vs "t11" vs "h11" -- authored this Show) --
+                          * see "The speaking pop" in docs/FORMAT.md        */
     OP_HIDE     = 0x04, /* ch:u8                                               */
     OP_MENU     = 0x05, /* n:u8 [text:u16 tgt:u24]*  (tgt packed, see below)   */
     OP_JUMP     = 0x06, /* tgt:u24  (packed, see below)                        */
@@ -88,6 +93,11 @@ enum vn_trans { TRANS_CUT = 0, TRANS_FADE = 1 };
 #define VN_NO_SPRITE     0xFF   /* "unset" sprite/background id               */
 #define VN_NO_OVERLAY    0xFFFF /* actor has no second (expression) layer     */
 
+/* OP_SHOW's flags:u8 bitmask -- see docs/FORMAT.md's "The speaking pop". */
+#define VN_FLAG_ZOOM     0x01 /* authored "at f.." / "at hf.." -- speaking  */
+#define VN_FLAG_HOP      0x02 /* authored "at h.." / "at hf.." -- one-shot
+                                * bounce, triggered fresh each real OP_SHOW */
+
 /* ---------------------------------------------------------------------------
  * Host interface
  * ------------------------------------------------------------------------ */
@@ -113,6 +123,15 @@ typedef struct {
     uint16_t overlay;   /* second layer, or VN_NO_OVERLAY                    */
     uint8_t  pos;       /* half the on-screen center X: center_x = pos * 2
                           * (tools/compile_script.py's _pos_from_x) */
+    uint8_t  flags;     /* VN_FLAG_ZOOM/VN_FLAG_HOP, as authored -- wire format */
+    uint8_t  show_seq;  /* bumped once per real OP_SHOW targeting this slot --
+                          * NOT part of the wire format. Distinguishes a
+                          * genuine re-Show (possibly of the identical sprite,
+                          * e.g. `hop` used purely for emphasis on an
+                          * unchanged pose) from render_scene()'s many redraws
+                          * of unchanged state (every typewriter tick, menu,
+                          * pause) -- the renderer needs the former to know
+                          * when to (re)trigger the one-shot hop bounce. */
 } vn_actor_t;
 
 /** Everything the renderer needs to draw a frame. Owned by the VM. */

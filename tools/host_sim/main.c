@@ -173,9 +173,10 @@ static void host_update(void *ctx, const vn_scene_t *scene, uint8_t trans)
     printf("[scene bg=%u trans=%u actors=", scene->background, trans);
     for (int i = 0; i < VN_MAX_CHARS; i++) {
         if (scene->actors[i].character != VN_NO_SPRITE) {
-            printf("{ch=%u sprite=%u overlay=%u pos=%u}",
+            printf("{ch=%u sprite=%u overlay=%u pos=%u flags=%u seq=%u}",
                    scene->actors[i].character, scene->actors[i].sprite,
-                   scene->actors[i].overlay, scene->actors[i].pos);
+                   scene->actors[i].overlay, scene->actors[i].pos,
+                   scene->actors[i].flags, scene->actors[i].show_seq);
         }
     }
     printf("]\n");
