@@ -532,6 +532,8 @@ class Compiler:
                 break
 
             expr = _parse_condition_expr(cond_str) if isinstance(cond_str, str) else None
+            if expr is not None:
+                expr = _fold_constants(expr)
             if expr is None or not _condition_supported(expr):
                 # Documented degrade: unsupported condition's branch is taken
                 # unconditionally, and later entries in this chain (which can
@@ -589,6 +591,12 @@ class Compiler:
 
         if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.Not):
             self._emit_condition(expr.operand, false_label, true_label)
+            return
+
+        if isinstance(expr, ast.Constant) and isinstance(expr.value, bool):
+            # Compile-time-resolved (see _fold_constants()) -- no comparison
+            # to run, just an unconditional jump to whichever side holds.
+            self.asm.jump(true_label if expr.value else false_label)
             return
 
         if isinstance(expr, (ast.Name, ast.Attribute)):
@@ -707,6 +715,42 @@ def _parse_condition_expr(cond_str: str) -> "ast.expr | None":
         return None
 
 
+def _is_music_get_playing_call(node) -> bool:
+    """True for `renpy.music.get_playing(...)` (any args/kwargs). This
+    engine has no audio -- OP_SOUND is a permanent no-op (see vn.h) -- so
+    nothing is *ever* currently playing here. Every real condition gating on
+    this call is provably always the same answer on this engine, not merely
+    unsupported syntax, which is why _fold_constants() below resolves it at
+    compile time instead of leaving it to degrade like a genuinely unknown
+    condition would."""
+    return isinstance(node, ast.Call) and _ident_name(node.func) == "renpy.music.get_playing"
+
+
+def _fold_constants(expr):
+    """Rewrites any recognized always-constant sub-expression (currently
+    just renpy.music.get_playing(...) and comparisons against it -- see
+    _is_music_get_playing_call) to a literal ast.Constant(bool), recursing
+    through and/or/not so a fold anywhere in the tree is found regardless of
+    nesting. Run once, before _condition_supported()/_emit_condition() ever
+    see the expression, so neither has to know about this specific call
+    pattern -- they just treat the result as an ordinary constant leaf.
+    """
+    if isinstance(expr, ast.BoolOp):
+        return ast.BoolOp(op=expr.op, values=[_fold_constants(v) for v in expr.values])
+    if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.Not):
+        return ast.UnaryOp(op=expr.op, operand=_fold_constants(expr.operand))
+    if _is_music_get_playing_call(expr):
+        # A bare boolean use, e.g. `if renpy.music.get_playing():`.
+        return ast.Constant(value=False)
+    if (isinstance(expr, ast.Compare) and len(expr.ops) == 1
+            and isinstance(expr.ops[0], (ast.Eq, ast.NotEq))
+            and _is_music_get_playing_call(expr.left)):
+        # `renpy.music.get_playing(...) == X` -- always None on this engine,
+        # and None never equals a real audio-track reference.
+        return ast.Constant(value=isinstance(expr.ops[0], ast.NotEq))
+    return expr
+
+
 def _condition_supported(expr) -> bool:
     """True if _emit_condition() (Compiler method, below) can compile @p expr:
     any and/or/not tree of `IDENT <cmp> CONST` leaves. Real Ren'Py condition
@@ -726,6 +770,10 @@ def _condition_supported(expr) -> bool:
         return all(_condition_supported(v) for v in expr.values)
     if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.Not):
         return _condition_supported(expr.operand)
+    if isinstance(expr, ast.Constant) and isinstance(expr.value, bool):
+        # A compile-time-resolved leaf, e.g. from _fold_constants() --
+        # never present in a raw, unfolded condition string.
+        return True
     if isinstance(expr, (ast.Name, ast.Attribute)):
         # A bare flag (`if s_readpoem:`, `not y_ranaway`) -- treated as
         # `var != 0`, the same truthiness a real Python `if` would use for a
