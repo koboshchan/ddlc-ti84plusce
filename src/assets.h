@@ -82,6 +82,17 @@ const char *assets_string(uint16_t index);
 bool assets_draw_sprite(uint16_t id, int center_x, int feet_y);
 
 /**
+ * Like assets_draw_sprite(), but scaled 1.05x (DDLC's real speaking zoom --
+ * see docs/FORMAT.md's "The speaking pop"). Costs a real decode+resample
+ * instead of assets_draw_sprite()'s zero-copy blit, so it can fail (returns
+ * false) where assets_draw_sprite() wouldn't -- a malloc failure alongside a
+ * large resident script chunk is expected sometimes on real hardware, not
+ * just a theoretical edge case. Callers should fall back to
+ * assets_draw_sprite() on a false return, never treat it as fatal.
+ */
+bool assets_draw_sprite_zoomed(uint16_t id, int center_x, int feet_y);
+
+/**
  * Copies background/CG @p id's raw 320x180 palette-index pixels directly
  * into @p dest (typically the graphx draw buffer). Returns false
  * if @p id is out of range or its AppVar is missing.

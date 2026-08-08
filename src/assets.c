@@ -24,6 +24,7 @@
  */
 
 #include "assets.h"
+#include "render.h"
 
 #include <compression.h>
 #include <fileioc.h>
@@ -292,11 +293,32 @@ static bool lut_lookup(const uint8_t *lut, uint16_t count, uint16_t id,
     return true;
 }
 
+/* Shared by assets_draw_sprite() and assets_draw_sprite_zoomed(): resolves
+ * @p id to its LUT entry plus its DSPROFF draw offset (0,0 if DSPROFF is
+ * missing or doesn't cover this id -- see the DSPROFF load in
+ * assets_init()). */
+static bool sprite_lookup(uint16_t id, uint8_t *appvar_out, uint16_t *offset_out,
+                          int16_t *dx_out, int16_t *dy_out)
+{
+    if (!lut_lookup(sprite_lut, sprite_lut_count, id, appvar_out, offset_out)) {
+        return false;
+    }
+    *dx_out = 0;
+    *dy_out = 0;
+    if (id < sprite_off_count) {
+        const uint8_t *e = sprite_off_buf + (size_t)id * 4;
+        *dx_out = (int16_t)read_u16le(e);
+        *dy_out = (int16_t)read_u16le(e + 2);
+    }
+    return true;
+}
+
 bool assets_draw_sprite(uint16_t id, int center_x, int feet_y)
 {
     uint8_t appvar_idx;
     uint16_t offset;
-    if (!lut_lookup(sprite_lut, sprite_lut_count, id, &appvar_idx, &offset)) {
+    int16_t dx, dy;
+    if (!sprite_lookup(id, &appvar_idx, &offset, &dx, &dy)) {
         return false;
     }
 
@@ -307,18 +329,119 @@ bool assets_draw_sprite(uint16_t id, int center_x, int feet_y)
         return false;
     }
 
-    int16_t dx = 0, dy = 0;
-    if (id < sprite_off_count) {
-        const uint8_t *e = sprite_off_buf + (size_t)id * 4;
-        dx = (int16_t)read_u16le(e);
-        dy = (int16_t)read_u16le(e + 2);
-    }
-
     const uint8_t *data = ti_GetDataPtr(handle);
     const gfx_rletsprite_t *sprite = (const gfx_rletsprite_t *)(data + offset);
     gfx_RLETSprite(sprite, center_x - sprite->width / 2 + dx, feet_y - sprite->height + dy);
 
     ti_Close(handle);
+    return true;
+}
+
+/* Zoom is always exactly 1.05x -- DDLC's real `focus`/`hopfocus` speaking
+ * zoom, the only scale this engine ever needs -- so this is a fixed 21:20
+ * nearest-neighbor resample rather than a general scaler: no per-pixel
+ * division beyond that one fixed ratio, and no dependency on graphx's
+ * gfx_RotateScaleSprite (which requires a *square* input sprite -- see its
+ * own doc comment in graphx.h -- and character atoms never are). */
+#define ZOOM_NUM 21
+#define ZOOM_DEN 20
+
+static int zoom_scale_dim(int v)
+{
+    return (v * ZOOM_NUM + ZOOM_DEN / 2) / ZOOM_DEN;
+}
+
+/* Round-half-away-from-zero, unlike zoom_scale_dim() above (a dimension is
+ * never negative) -- dx/dy frequently are (an atom cropped up/left of the
+ * naive centered position), and scaling a negative offset the same way as a
+ * positive one keeps a body atom and its overlay from drifting a stray
+ * pixel apart from inconsistent rounding between the two. */
+static int zoom_scale_off(int v)
+{
+    return (v >= 0) ? (v * ZOOM_NUM + ZOOM_DEN / 2) / ZOOM_DEN
+                    : -((-v * ZOOM_NUM + ZOOM_DEN / 2) / ZOOM_DEN);
+}
+
+/* Real 1.05x pixel scaling of a body/overlay atom -- unlike
+ * assets_draw_sprite(), which points gfx_RLETSprite() directly at the
+ * AppVar's own flash bytes with zero copying, this has to actually
+ * materialize pixels: RLE data can't be scaled in place. Decodes once into
+ * one malloc'd plain buffer (gfx_ConvertFromRLETSprite() -- graphx has no
+ * incremental/streaming decode, so this is unavoidable), then writes scaled
+ * pixels straight into gfx_vbuffer as they're computed, deliberately never
+ * building a second (scaled) sprite buffer -- a two-buffer version peaks
+ * with both alive at once, which measured against this project's real
+ * builds is more than fits alongside the largest resident script chunk plus
+ * the graphics draw buffer in ordinary scenes, not just pathological ones.
+ * This is the "scale in chunks" design: the chunking is per-pixel-row
+ * against the one source buffer, never a second full-size destination.
+ *
+ * Returns false (falls back to the caller's non-zoomed path) on any lookup
+ * or allocation failure -- never partially draws, never crashes. This is
+ * expected to happen sometimes on real hardware, not just in theory: see
+ * docs/FORMAT.md's "The speaking pop" for the measured RAM numbers. */
+bool assets_draw_sprite_zoomed(uint16_t id, int center_x, int feet_y)
+{
+    uint8_t appvar_idx;
+    uint16_t offset;
+    int16_t dx, dy;
+    if (!sprite_lookup(id, &appvar_idx, &offset, &dx, &dy)) {
+        return false;
+    }
+
+    char name[9];
+    sprintf(name, "DSPR%u", appvar_idx);
+    uint8_t handle = ti_Open(name, "r");
+    if (!handle) {
+        return false;
+    }
+
+    const uint8_t *data = ti_GetDataPtr(handle);
+    const gfx_rletsprite_t *sprite = (const gfx_rletsprite_t *)(data + offset);
+
+    uint8_t *plain_buf = malloc((size_t)2 + (size_t)sprite->width * sprite->height);
+    if (!plain_buf) {
+        ti_Close(handle);
+        return false;
+    }
+    gfx_sprite_t *plain = (gfx_sprite_t *)plain_buf;
+    gfx_ConvertFromRLETSprite(sprite, plain);
+    ti_Close(handle);
+
+    int zw = zoom_scale_dim(plain->width);
+    int zh = zoom_scale_dim(plain->height);
+    int x0 = center_x - zw / 2 + zoom_scale_off(dx);
+    int y0 = feet_y - zh + zoom_scale_off(dy);
+
+    for (int y = 0; y < zh; y++) {
+        int py = y0 + y;
+        if (py < 0 || py >= SCREEN_H) {
+            continue;
+        }
+        int sy = y * ZOOM_DEN / ZOOM_NUM;
+        if (sy >= plain->height) {
+            sy = plain->height - 1;
+        }
+        const uint8_t *srow = plain->data + (size_t)sy * plain->width;
+        uint8_t *drow = (uint8_t *)gfx_vbuffer + (size_t)py * SCREEN_W;
+
+        for (int x = 0; x < zw; x++) {
+            int px = x0 + x;
+            if (px < 0 || px >= SCREEN_W) {
+                continue;
+            }
+            int sx = x * ZOOM_DEN / ZOOM_NUM;
+            if (sx >= plain->width) {
+                sx = plain->width - 1;
+            }
+            uint8_t pixel = srow[sx];
+            if (pixel != COL_TRANSPARENT) {
+                drow[px] = pixel;
+            }
+        }
+    }
+
+    free(plain_buf);
     return true;
 }
 
