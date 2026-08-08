@@ -34,11 +34,22 @@ Check the sum of `build/appvars/*.8xv` sizes, not `build/DDLC.b84`'s.
 ```
 y   0 ┌────────────────────────────────┐
       │  scene area, 320x180           │   1280x720 source scales exactly 4:1
-      │  sprites anchor feet to y=180  │
-y 180 ├────────────────────────────────┤
+      │  sprite canvases hang from     │   render.c's ACTOR_BASELINE
+y 180 ├──  y=185, DDLC's ypos 1.03  ───┤
       │  dialogue box, 320x60          │   opaque, so no alpha blending
-y 240 └────────────────────────────────┘
+y 240 └────────────────────────────────┘   (and painted over the overshoot)
 ```
+
+Characters deliberately overshoot the scene area: DDLC anchors every
+character transform at `yanchor 1.0, ypos 1.03`, so the sprite canvas's
+bottom edge sits 3% of the screen height *below* the screen bottom and the
+lower body is cut off. Here that overshoot falls under the dialogue box,
+which is drawn afterwards. Sprites are scaled by a fixed
+`image_resolve.py`'s `SPRITE_SCALE` (DDLC's own `z=0.80` character zoom
+times the 4:1 background ratio), *not* normalized to a common on-screen
+height — the characters are genuinely different heights in the source art
+(Natsuki 781 canvas px against Yuri's 899) and normalizing flattened that
+out, lining all four heads up along the top of the screen.
 
 ## Reserved palette indices
 
@@ -324,18 +335,16 @@ reader never has to stitch bytes across two AppVars for one image — one
   which falls back to one full flattened bake exactly as before layering
   existed.
 
-  Alignment: every atom for one character is scaled by the same reference
-  (established from the first full composite baked for that character) and
-  gets a baked-in `(dx, dy)` — see `DSPROFF` in the AppVar table —
-  chosen so `src/assets.c`'s existing `center_x - w/2, feet_y - h` anchor
-  math reproduces the atom's true position with only a `+ dx`/`+ dy` added
-  (0, 0 for a non-layered sprite, so this is a no-op for anything baked the
-  old way). This isn't pixel-exact for every combo — direct comparison
-  against the old per-combo-independent bake found ~4% of Act 1's sprites
-  (18 of 406) off by a handful of pixels, from expression/pose variants
-  whose true content box differs slightly from the character's reference —
-  but every case checked was either exact or differed only in edge
-  antialiasing; no case showed real misalignment or corruption.
+  Alignment: every atom is scaled by the fixed `SPRITE_SCALE` and gets a
+  baked-in `(dx, dy)` — see `DSPROFF` in the AppVar table — chosen so
+  `src/assets.c`'s existing `center_x - w/2, feet_y - h` anchor math
+  reproduces the atom's position *within its own composite canvas*
+  (`_canvas_offsets`). Measuring against the canvas rather than against the
+  character's content box is what Ren'Py itself does — `xcenter` centers
+  the displayable and `yanchor` pins its edge, both regardless of where the
+  drawn pixels fall inside it — and it means two atoms cropped from the
+  same canvas line up automatically, with no shared per-character reference
+  to establish or keep consistent.
 
   Stored `rlet` (transparent-run encoded) but **not** zx0-compressed: a
   sprite's decompressed size varies per image and isn't recorded anywhere,

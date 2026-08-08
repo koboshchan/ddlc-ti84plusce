@@ -7,7 +7,10 @@
  *   y   0..179   scene area  (1280x720 source scales exactly 4:1 to 320x180)
  *   y 180..239   dialogue box (60px, opaque -- no alpha blending needed)
  *
- * Sprites anchor their feet to y=180 so they never intrude on the box.
+ * Sprites hang from a baseline just *below* the scene area (render.c's
+ * ACTOR_BASELINE, DDLC's own `ypos 1.03`), so a character's lower body runs
+ * off the bottom of the scene exactly as it does in the real game. The
+ * overshoot lands under the dialogue box, which is drawn afterwards.
  */
 
 #ifndef RENDER_H

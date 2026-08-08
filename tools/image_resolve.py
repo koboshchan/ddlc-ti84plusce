@@ -46,7 +46,21 @@ _KNOWN_IMAGE_FILES = ("definitions.rpyc", "cgs.rpyc", "poems.rpyc", "effects.rpy
 
 _HEX_COLOR = re.compile(r"^#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$")
 
-SPRITE_TARGET_HEIGHT = 176   # tuned against render.c's scene area (320x180)
+# DDLC's real character scale, not a tuned one. Every character transform in
+# transforms.rpy (`tcommon`/`focus`/`hop`/`sink`, all of them) takes `z=0.80`
+# and applies `zoom z*1.00`, so a sprite's 960x960 canvas is drawn at 768x768
+# on Ren'Py's 1280x720 screen. That screen maps to this engine's scene area at
+# 0.25 (BG_SIZE below, 1280x720 -> 320x180), so canvas px reach the calculator
+# at 0.80 * 0.25.
+#
+# This is applied as a *fixed* scale, deliberately. An earlier version instead
+# normalized every character to one on-screen height (176px, the scene area
+# less a margin), which silently threw away DDLC's real height differences --
+# Natsuki's art is 781 canvas px tall against Yuri's 899, so normalizing drew
+# them the same height and lined all four heads up along the top of the
+# screen. It also had to guess an anchor, and put every character ~5px too
+# high and up to ~10px off horizontally (see _bake_layer_atom).
+SPRITE_SCALE = 0.80 * 0.25
 BG_SIZE = (320, 180)
 POEM_BG_SIZE = (320, 240)   # full screen -- the poem minigame has no dialogue
                             # box reserving the bottom 60px, unlike an
@@ -303,7 +317,6 @@ class ImageResolver:
         self._scene_ids: dict = {}
         self._layer_result: dict = {}   # imgname -> (base_id, overlay_id) -- sprite_layers()
         self._layer_ids: dict = {}      # dedup key -> sprite id -- see _bake_layer_atom()
-        self._char_ref: dict = {}       # character tag -> reference bbox/scale, see _char_reference()
 
         self.sprites: list = []      # manifest rows, index == id
         self.title_items: list = [] # title screen art, index == id (see title_art())
@@ -389,21 +402,6 @@ class ImageResolver:
         overlay_canvas = PILImage.new("RGBA", defn.canvas, (0, 0, 0, 0))
         overlay_canvas.alpha_composite(overlay_img, (0, 0))
 
-        if char not in self._char_ref:
-            # The reference has to come from the FULL composite (base +
-            # overlay), not the base alone: confirmed by direct measurement
-            # that for at least one character, the "expression" layer is
-            # actually the whole head (it extends well above the "body"
-            # layers' own bbox, which stop at the neck) -- using a
-            # base-only bbox here would under-measure the character's true
-            # height and scale everything too large.
-            full = PILImage.alpha_composite(base_canvas, overlay_canvas)
-            bbox = full.getbbox()
-            if bbox is None:
-                self._log_unsupported(imgname, "fully transparent composite")
-                return (None, None)
-            self._establish_char_reference(char, bbox)
-
         base_id = self._bake_layer_atom(base_key, base_canvas, char)
         overlay_id = self._bake_layer_atom(overlay_key, overlay_canvas, char)
         if base_id is None and overlay_id is None:
@@ -418,44 +416,40 @@ class ImageResolver:
 
         return (base_id, overlay_id)
 
-    def _establish_char_reference(self, char: str, bbox: tuple) -> None:
-        """Anchors every base/overlay atom baked for @p char to one shared
-        (scale, top-left) reference so they draw in visual alignment despite
-        being scaled/cropped independently. @p bbox is the first-encountered
-        base layer's content box (original, unscaled canvas pixels) for this
+    def _canvas_offsets(self, canvas_size: tuple, bbox: tuple,
+                        size: tuple) -> tuple:
+        """The (dx, dy) that makes src/assets.c's `center_x - w/2 + dx,
+        feet_y - h + dy` anchor math place a cropped, scaled atom exactly
+        where it sits inside its own (scaled) composite canvas.
+
+        Everything is measured against the *canvas*, not against the
+        character's content box, because that is what Ren'Py positions:
+        `xcenter` centers the displayable -- the full 960-wide canvas --
+        and `yanchor 1.0` pins its bottom edge, both regardless of where
+        the drawn pixels happen to fall inside it. Measuring from content
+        instead (as this used to) drifts by however much the art is
+        off-center in its canvas, which for these sprites runs to ~50
+        canvas px horizontally, and re-derives a different anchor for every
         character.
 
-        Using the first base seen rather than re-deriving one per pose is
-        safe: direct measurement across a character's actual body-pose
-        layers (see docs/FORMAT.md's "Layered sprites") found the content
-        box's top and height identical to the pixel across poses -- only
-        its left edge/width shift slightly (a few px, from arm position),
-        which lands as a sub-pixel-to-1px horizontal difference once scaled
-        down to on-screen size. Imperceptible, and it's what lets every
-        expression atom be baked once and reused across every pose rather
-        than once per (pose, expression) pair.
+        It also means atoms of one character need no shared per-character
+        reference to line up: two atoms cropped out of the same canvas land
+        correctly relative to each other because both are placed relative
+        to that canvas.
         """
-        scale = SPRITE_TARGET_HEIGHT / (bbox[3] - bbox[1])
-        self._char_ref[char] = {
-            "scale": scale,
-            "left": bbox[0],
-            "top": bbox[1],
-            "width_scaled": round((bbox[2] - bbox[0]) * scale),
-        }
+        cw = max(1, round(canvas_size[0] * SPRITE_SCALE))
+        ch = max(1, round(canvas_size[1] * SPRITE_SCALE))
+        dx = -(cw // 2) + round(bbox[0] * SPRITE_SCALE) + size[0] // 2
+        dy = -ch + round(bbox[1] * SPRITE_SCALE) + size[1]
+        return (dx, dy)
 
     def _bake_layer_atom(self, key: tuple, canvas: "PILImage.Image", char: str) -> Optional[int]:
         """Crop @p canvas (a full composite-canvas-sized render of just one
         atom -- a base's flattened layers, or one overlay layer alone) to
-        its own content, scale it by @p char's shared reference scale (not
-        its own bbox height, unlike _bake_sprite -- see
-        _establish_char_reference), and register it as a sprite with a
-        baked-in (dx, dy) draw offset. dx/dy are chosen so that
-        src/assets.c's existing `center_x - w/2, feet_y - h` anchor math,
-        given only a `+ dx`/`+ dy` nudge, reproduces this atom's true
-        position relative to every other atom of the same character --
-        derived once here so the on-calc side needs no per-character state,
-        just a per-sprite (dx, dy) it adds unconditionally (0, 0 for a
-        non-layered sprite reproduces today's behavior exactly).
+        its own content, scale it by DDLC's real SPRITE_SCALE, and register
+        it as a sprite with a baked-in (dx, dy) draw offset -- derived here
+        so the on-calc side needs no per-character state, just a per-sprite
+        (dx, dy) it adds unconditionally.
 
         Returns None if @p canvas is fully transparent (e.g. an overlay
         layer that happens to be blank for this combo).
@@ -467,18 +461,13 @@ class ImageResolver:
         if bbox is None:
             return None
 
-        ref = self._char_ref[char]
-        scale = ref["scale"]
         cropped = canvas.crop(bbox)
-        size = (max(1, round(cropped.width * scale)), max(1, round(cropped.height * scale)))
+        size = (max(1, round(cropped.width * SPRITE_SCALE)),
+                max(1, round(cropped.height * SPRITE_SCALE)))
+        if size[0] > SPRITE_MAX_DIM or size[1] > SPRITE_MAX_DIM:
+            return None
         scaled = cropped.resize(size, PILImage.LANCZOS)
-
-        ref_left_scaled = round(ref["left"] * scale)
-        ref_top_scaled = round(ref["top"] * scale)
-        left_scaled = round(bbox[0] * scale)
-        top_scaled = round(bbox[1] * scale)
-        dx = -(ref["width_scaled"] // 2) + (left_scaled - ref_left_scaled) + (size[0] // 2)
-        dy = -SPRITE_TARGET_HEIGHT + (top_scaled - ref_top_scaled) + size[1]
+        dx, dy = self._canvas_offsets(canvas.size, bbox, size)
 
         paths = key[1]
         flat_paths = paths if isinstance(paths, tuple) else (paths,)
@@ -773,17 +762,22 @@ class ImageResolver:
             return None
         cropped = canvas.crop(bbox)
 
-        scale = SPRITE_TARGET_HEIGHT / cropped.height
-        size = (max(1, round(cropped.width * scale)), SPRITE_TARGET_HEIGHT)
+        size = (max(1, round(cropped.width * SPRITE_SCALE)),
+                max(1, round(cropped.height * SPRITE_SCALE)))
+        if size[0] > SPRITE_MAX_DIM or size[1] > SPRITE_MAX_DIM:
+            self._log_unsupported(
+                imgname, f"scaled to {size[0]}x{size[1]}, over gfx_rletsprite_t's "
+                         f"{SPRITE_MAX_DIM}px uint8_t dimension limit")
+            return None
         scaled = cropped.resize(size, PILImage.LANCZOS)
+        dx, dy = self._canvas_offsets(canvas.size, bbox, size)
 
         name = "_".join(imgname).replace("/", "-") or "sprite"
         filename = f"sprite_{len(self.sprites):03d}_{name}.png"
         scaled.save(self.img_dir / filename)
 
         return {"imgname": list(imgname), "file": filename,
-                "w": size[0], "h": size[1], "dx": 0, "dy": 0,
-                "origin_x": bbox[0], "origin_y": bbox[1]}
+                "w": size[0], "h": size[1], "dx": dx, "dy": dy}
 
     def _bake_flat(self, imgname: tuple, size: tuple, fit: bool) -> Optional[dict]:
         defn = self.table.get(imgname)

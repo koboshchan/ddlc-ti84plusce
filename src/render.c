@@ -273,6 +273,22 @@ static void draw_background(uint8_t bg)
     }
 }
 
+/* Where a sprite canvas's bottom edge rests. DDLC's character transforms all
+ * carry `yanchor 1.0, ypos 1.03` (confirmed in transforms.rpy -- tcommon,
+ * focus, hop and sink every one of them), i.e. the canvas bottom sits 3% of
+ * the screen height *below* the bottom of the screen, so a character's lower
+ * body is deliberately cut off. Here that overshoot lands under the dialogue
+ * box, which render_box() paints over afterwards.
+ *
+ * SINK_PX/HOP_PX are the same 0.25 scaling of the same source numbers, so
+ * they compose with this correctly: sink's ypos 1.03 -> 1.06 is exactly
+ * +5px from here, and hop's yoffset -20 exactly -5px.
+ *
+ * Anchoring at SCENE_H instead (as this used to) squeezed every character
+ * entirely above the box, which is not how the game frames them -- see
+ * tools/image_resolve.py's SPRITE_SCALE for the other half of that fix. */
+#define ACTOR_BASELINE ((SCENE_H * 103) / 100)
+
 /** Decodes vn_actor_t.pos (half the screen-space center X) back to a real
  * screen X. Not a bucketed anchor -- see vn.h and compile_script.py's
  * _pos_from_x. */
@@ -293,11 +309,11 @@ static void draw_actor(const vn_actor_t *actor, unsigned t)
      * return value went unused. */
     int fallback_off = zoom_fallback_offset(actor->character, zoom_wanted, t);
 
-    /* feet anchored to the box edge, plus the one-shot hop if this Show
-     * authored one and the persistent sink drift if it's currently sunk --
-     * both the real zoom and its fallback anchor from this same feet_y, so
-     * both apply identically either way. */
-    int feet_y = SCENE_H;
+    /* The resting baseline, plus the one-shot hop if this Show authored one
+     * and the persistent sink drift if it's currently sunk -- both the real
+     * zoom and its fallback anchor from this same feet_y, so both apply
+     * identically either way. */
+    int feet_y = ACTOR_BASELINE;
     if (actor->flags & VN_FLAG_HOP) {
         feet_y += hop_offset(actor->character, actor->show_seq, t);
     }
