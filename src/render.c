@@ -11,6 +11,7 @@
 #include <sys/timers.h>
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -352,6 +353,156 @@ static void draw_actor(const vn_actor_t *actor, unsigned t)
 }
 
 /* ---------------------------------------------------------------------------
+ * The moving-actor plate
+ *
+ * What made the hop/sink/rise animations stutter wasn't the easing -- it was
+ * the frame rate underneath them. Every animating frame redrew the whole
+ * scene, and the dominant cost there is draw_background(): a zx0 decode of
+ * all 57,600 bytes of the scene area, dwarfing the sprite blits on top of
+ * it. At that price only a handful of frames fit inside a 200ms hop, so a
+ * motion with six distinct pixel positions got shown as two or three.
+ *
+ * Caching the decoded background outright was tried and reverted (commit
+ * 5c5604a): at 57.6KB it does not fit beside the ~77KB draw buffer and a
+ * resident script chunk. But a whole background is far more than an
+ * animation needs. Only one actor moves, by a few pixels, so the only
+ * region that can change is that actor's own rectangle.
+ *
+ * So: during a full redraw, once the background and every actor *behind*
+ * the mover are down, copy that rectangle out. Subsequent frames paste it
+ * back -- restoring background and rearward actors in one memcpy -- and
+ * redraw the mover and whatever draws in front of it. No decode, no
+ * full-scene pass, and z-order is preserved because the split is made at
+ * the mover's own position in the draw order.
+ *
+ * The plate is best-effort like every other allocation here: if it can't be
+ * had, animating frames just stay full redraws, which is what they were.
+ * It's freed the moment the scene settles, so it holds nothing while the
+ * player is simply reading.
+ * ------------------------------------------------------------------------ */
+
+/* Vertical slack around the resting sprite box, covering every offset the
+ * three animations can add: hop reaches -HOP_PX, the fallback rise
+ * -SPEAK_POP_PX, sink +SINK_PX, and they can stack. Rounded up so the
+ * rectangle stays valid for the whole animation without being recaptured. */
+#define PLATE_SLACK (HOP_PX + SPEAK_POP_PX + SINK_PX)
+
+static uint8_t *plate;
+static int      plate_x, plate_y, plate_w, plate_h;
+static int      plate_slot = -1;   /* actor slot the plate was captured before */
+static bool     plate_valid;
+
+static void plate_free(void)
+{
+    free(plate);
+    plate      = NULL;
+    plate_valid = false;
+    plate_slot  = -1;
+}
+
+/* Screen rectangle actor @p a can occupy over the course of an animation:
+ * the union of its layers, at both scales (whether the zoom succeeds is
+ * decided per frame, and the scaled draw is the larger but not a superset
+ * -- it is centred differently), grown by PLATE_SLACK vertically.
+ *
+ * Measured from ACTOR_BASELINE rather than the actor's current animated
+ * feet_y, so the answer doesn't depend on when during the animation this is
+ * asked. */
+static bool actor_rect(const vn_actor_t *a, int *rx, int *ry, int *rw, int *rh)
+{
+    int center_x = pos_center(a->pos);
+    int x0 = SCREEN_W, y0 = SCREEN_H, x1 = 0, y1 = 0;
+    uint16_t ids[2] = { a->sprite, a->overlay };
+
+    for (int i = 0; i < 2; i++) {
+        if (i == 1 && a->overlay == VN_NO_OVERLAY) {
+            continue;
+        }
+        int w, h, dx, dy;
+        if (!assets_sprite_bounds(ids[i], &w, &h, &dx, &dy)) {
+            return false;
+        }
+        /* plain draw */
+        int px = center_x - w / 2 + dx, py = ACTOR_BASELINE - h + dy;
+        if (px < x0) x0 = px;
+        if (py < y0) y0 = py;
+        if (px + w > x1) x1 = px + w;
+        if (py + h > y1) y1 = py + h;
+        /* 1.05x draw -- assets.c's zoom_scale_dim/zoom_scale_off, inlined
+         * here as the same 21:20 ratio rather than exported, since this only
+         * needs a bound and not the exact pixel. */
+        int zw = (w * 21 + 10) / 20, zh = (h * 21 + 10) / 20;
+        int zdx = (dx >= 0) ? (dx * 21 + 10) / 20 : -((-dx * 21 + 10) / 20);
+        int zdy = (dy >= 0) ? (dy * 21 + 10) / 20 : -((-dy * 21 + 10) / 20);
+        px = center_x - zw / 2 + zdx;
+        py = ACTOR_BASELINE - zh + zdy;
+        if (px < x0) x0 = px;
+        if (py < y0) y0 = py;
+        if (px + zw > x1) x1 = px + zw;
+        if (py + zh > y1) y1 = py + zh;
+    }
+
+    y0 -= PLATE_SLACK;
+    y1 += PLATE_SLACK;
+
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > SCREEN_W) x1 = SCREEN_W;
+    /* Nothing below the scene area needs saving: render_box() repaints all
+     * of y >= BOX_Y opaquely every frame regardless. */
+    if (y1 > SCENE_H) y1 = SCENE_H;
+
+    if (x1 <= x0 || y1 <= y0) {
+        return false;
+    }
+    *rx = x0;
+    *ry = y0;
+    *rw = x1 - x0;
+    *rh = y1 - y0;
+    return true;
+}
+
+static void plate_blit(bool save)
+{
+    for (int r = 0; r < plate_h; r++) {
+        uint8_t *fb = (uint8_t *)gfx_vbuffer + (size_t)(plate_y + r) * SCREEN_W + plate_x;
+        uint8_t *st = plate + (size_t)r * plate_w;
+        if (save) {
+            memcpy(st, fb, (size_t)plate_w);
+        } else {
+            memcpy(fb, st, (size_t)plate_w);
+        }
+    }
+}
+
+/* Captures the plate for actor @p a, sizing (or resizing) the buffer to fit.
+ * Call with the background and every rearward actor already drawn. */
+static bool plate_capture(const vn_actor_t *a, int slot)
+{
+    int rx, ry, rw, rh;
+    if (!actor_rect(a, &rx, &ry, &rw, &rh)) {
+        return false;
+    }
+
+    if (plate == NULL || rw != plate_w || rh != plate_h) {
+        free(plate);
+        plate = malloc((size_t)rw * rh);
+        if (plate == NULL) {
+            plate_valid = false;
+            plate_slot  = -1;
+            return false;
+        }
+    }
+    plate_x = rx;
+    plate_y = ry;
+    plate_w = rw;
+    plate_h = rh;
+    plate_slot = slot;
+    plate_blit(true);
+    return true;
+}
+
+/* ---------------------------------------------------------------------------
  * Public drawing
  * ------------------------------------------------------------------------ */
 
@@ -360,6 +511,27 @@ static void draw_actor(const vn_actor_t *actor, unsigned t)
  * to decide it can skip -- see it below. */
 static bool scene_settled;
 static bool have_drawn_once;
+
+/* Which actor slot moved during the last full redraw, or -1 if none did --
+ * or if more than one did. The plate reconstructs exactly one moving actor,
+ * so a second mover disables it and everything falls back to full redraws;
+ * replaying Act 1 through host_sim finds no scene state where that happens
+ * (at most one actor ever carries a zoom/hop/sink flag), but correctness
+ * shouldn't rest on that holding for Acts 2 and 3 as well. */
+static int mover_slot = -1;
+
+/* Anything that paints over the composed scene -- a choice menu, the pause
+ * overlay, a full-screen backdrop -- leaves the draw buffer no longer
+ * showing the scene, so neither of render_scene_lazy()'s shortcuts is valid
+ * afterwards: skipping would strand the overlay on screen, and the plate
+ * would repair only one actor's rectangle of it.
+ *
+ * The overlay routines call this themselves rather than their callers doing
+ * it, so a new one can't forget. It matters because the lazy path's other
+ * gate is "has the scene settled?", and a player pauses or is offered a
+ * choice precisely when it has -- an earlier version gated on wall-clock
+ * time instead and papered over this by redrawing for 500ms regardless. */
+static void scene_obscured(void);
 
 void render_scene(const vn_scene_t *scene)
 {
@@ -374,21 +546,89 @@ void render_scene(const vn_scene_t *scene)
      * one of those call sites. */
     unsigned t = (unsigned)(clock() * 1000UL / CLOCKS_PER_SEC);
 
+    /* Capturing the plate needs the actor's rear neighbours already drawn
+     * and the actor itself not yet -- so it happens mid-loop, at the slot
+     * that moved last time. That the target comes from the *previous* full
+     * redraw is why an animation's first frame or two are still full ones:
+     * nothing knows who is moving until someone has moved. */
+    int  capture_at = mover_slot;
+    int  movers = 0;
+    int  first_mover = -1;
+    bool captured = false;
+
     for (int i = 0; i < VN_MAX_CHARS; i++) {
+        const vn_actor_t *actor = &scene->actors[i];
+        if (actor->character == VN_NO_SPRITE) {
+            continue;
+        }
+        if (i == capture_at) {
+            captured = plate_capture(actor, i);
+        }
+
+        bool was_moving = anim_moving;
+        draw_actor(actor, t);
+        if (!was_moving && anim_moving) {
+            movers++;
+            if (first_mover < 0) {
+                first_mover = i;
+            }
+        }
+    }
+
+    mover_slot  = (movers == 1) ? first_mover : -1;
+    plate_valid = captured && movers == 1 && first_mover == capture_at;
+
+    scene_settled   = !anim_moving;
+    have_drawn_once = true;
+    if (scene_settled) {
+        /* Reading, not animating -- give the memory back. The next
+         * animation re-captures, and a chunk load in between (the largest
+         * allocation this program makes) gets the room. */
+        plate_free();
+    }
+}
+
+/* The fast path: paste the plate back and redraw only from the moving actor
+ * forward. Everything outside that rectangle is already correct in the draw
+ * buffer, which render_present() keeps in step with the screen. */
+static void render_scene_moving(const vn_scene_t *scene)
+{
+    if (plate == NULL || plate_slot < 0) {   /* can't happen; cheap insurance */
+        render_scene(scene);
+        return;
+    }
+    plate_blit(false);
+
+    unsigned t = (unsigned)(clock() * 1000UL / CLOCKS_PER_SEC);
+    anim_moving = false;
+
+    for (int i = plate_slot; i < VN_MAX_CHARS; i++) {
         const vn_actor_t *actor = &scene->actors[i];
         if (actor->character != VN_NO_SPRITE) {
             draw_actor(actor, t);
         }
     }
 
-    scene_settled   = !anim_moving;
-    have_drawn_once = true;
+    scene_settled = !anim_moving;
+    if (scene_settled) {
+        plate_free();
+    }
+}
+
+static void scene_obscured(void)
+{
+    have_drawn_once = false;
+    plate_free();
 }
 
 void render_scene_lazy(const vn_scene_t *scene)
 {
     if (!have_drawn_once || !scene_settled) {
-        render_scene(scene);
+        if (plate_valid) {
+            render_scene_moving(scene);
+        } else {
+            render_scene(scene);
+        }
         return;
     }
 
@@ -466,6 +706,7 @@ void render_box(const vn_scene_t *scene, const char *text, size_t visible)
 
 void render_menu(const char *const *choices, uint8_t count, uint8_t selected)
 {
+    scene_obscured();
     const int h    = 14;
     const int w    = SCREEN_W - 60;
     const int x    = 30;
@@ -500,6 +741,7 @@ void render_present(uint8_t trans)
 
 void render_backdrop(uint8_t color)
 {
+    scene_obscured();
     gfx_SetColor(color);
     gfx_FillRectangle_NoClip(0, 0, SCREEN_W, SCREEN_H);
 }
@@ -595,6 +837,7 @@ static void draw_title_art(uint8_t id, int dx_left, int dy_left)
 
 void render_title_screen(uint8_t selected, unsigned t)
 {
+    scene_obscured();
     static const char *const items[] = { "New Game", "Load Game", "Help", "Quit" };
     const uint8_t count = sizeof(items) / sizeof(items[0]);
 
@@ -714,6 +957,7 @@ void render_fade_retarget(const uint16_t *palette)
 
 void render_pause_box(int x, int y, int w, int h)
 {
+    scene_obscured();
     gfx_SetColor(COL_BOX_FILL);
     gfx_FillRectangle_NoClip(x, y, w, h);
     gfx_SetColor(COL_BOX_EDGE);

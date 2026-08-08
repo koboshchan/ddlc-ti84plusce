@@ -70,10 +70,22 @@ void render_end(void);
 void render_scene(const vn_scene_t *scene);
 
 /**
- * Like render_scene(), but skips the real redraw (a real background zx0
- * decode plus a full pass over every actor) once the last render_scene()
- * left every actor's zoom/hop/sink offset at rest -- the draw buffer
- * already holds the correct pixels in that case, since render_present()
+ * Like render_scene(), but avoids the real redraw (a background zx0 decode
+ * plus a full pass over every actor) in the two cases where it isn't needed:
+ *
+ *  - Nothing is animating. The draw buffer already holds the correct pixels,
+ *    so this does nothing at all.
+ *  - Exactly one actor is animating. Its rectangle is restored from a saved
+ *    plate and only it (and anything drawn in front of it) is redrawn, which
+ *    is what lets hop/sink/rise run at a frame rate that looks smooth rather
+ *    than stepped. See the plate section in render.c.
+ *
+ * Only safe for a caller redrawing the *same* logical scene it last passed
+ * to render_scene() -- see below. Drawing any overlay (render_menu(),
+ * render_pause_box(), render_backdrop(), render_title_screen()) cancels both
+ * shortcuts automatically, so the next call here is a full redraw.
+ *
+ * The buffer stays correct because render_present()
  * keeps it in sync with
  * whatever's actually on screen every frame. Only safe for a caller that
  * redraws the *same* logical scene every call (no Show/Scene/Hide can have

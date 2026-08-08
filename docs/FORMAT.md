@@ -470,14 +470,46 @@ rather than merely slow:
   handles that at blit time.
 
 Redraw frequency matters as much as redraw cost here, which is
-`render_scene_lazy()`'s job (see `src/render.h`): it skips the whole
+`render_scene_lazy()`'s job (see `src/render.h`). It skips the whole
 background-decode-plus-actor-pass when the previous `render_scene()` left
 every offset above at rest. The three offset helpers each report whether
 their own ease is still in flight, so "at rest" is exact. An earlier version
-instead waited out a fixed 500ms -- the longest transition any of them can
-run -- after every `OP_SHOW`, which meant a full rebuild of the scene on
+instead waited out a fixed 500ms — the longest transition any of them can
+run — after every `OP_SHOW`, which meant a full rebuild of the scene on
 every typewriter tick for half a second even in the common case where
 nothing was easing at all and the first frame drawn was already final.
+
+**The moving-actor plate.** When something *is* easing, the frame rate is
+what decides whether the motion reads as smooth or stepped, and the cost is
+almost entirely `draw_background()`: a zx0 decode of all 57,600 bytes of the
+scene area, dwarfing the sprite blits over it. At that price only two or
+three frames fit inside a 200ms hop, so a motion with six distinct pixel
+positions showed as two or three.
+
+Caching the decoded background outright was tried and reverted (commit
+`5c5604a`) — at 57.6KB it does not fit beside the ~77KB draw buffer and a
+resident script chunk. But an animation doesn't change a whole background:
+one actor moves, by a few pixels, so the only region that can differ is that
+actor's own rectangle. So `render.c` saves exactly that rectangle during a
+full redraw — taken *after* the background and every actor behind the mover
+are down, which is what preserves z-order — and later frames paste it back
+and redraw only the mover and whatever draws in front of it. No decode, no
+full-scene pass.
+
+The plate reconstructs exactly one moving actor, so a second simultaneous
+mover disables it and everything falls back to full redraws; replaying Act 1
+through `host_sim` finds no scene state carrying more than one
+zoom/hop/sink flag, but correctness doesn't rest on that. It's freed the
+moment the scene settles, so it holds nothing while the player is reading,
+and like every allocation here it's best-effort: no plate simply means
+animating frames stay full redraws.
+
+Both this and the scaled-sprite cache above are why
+`compile_script.py`'s `CHUNK_SIZE_BUDGET` is 24000 rather than sitting just
+under the 65000-byte AppVar ceiling: the resident chunk shares ~150KB with
+the draw buffer, and 58000-budget chunks (which reached 62.8KB) left ~10KB
+free — too little for either allocation to succeed on the busiest chapters,
+which are precisely the ones that need them.
 
 An earlier version still ran a continuous idle sine wobble unrelated to who
 was talking and never settling -- wrong on both counts, and superseded by

@@ -369,6 +369,32 @@ static int zoom_scale_off(int v)
                     : -((-v * ZOOM_NUM + ZOOM_DEN / 2) / ZOOM_DEN);
 }
 
+bool assets_sprite_bounds(uint16_t id, int *w, int *h, int *dx, int *dy)
+{
+    uint8_t appvar_idx;
+    uint16_t offset;
+    int16_t sdx, sdy;
+    if (!sprite_lookup(id, &appvar_idx, &offset, &sdx, &sdy)) {
+        return false;
+    }
+
+    char name[9];
+    sprintf(name, "DSPR%u", appvar_idx);
+    uint8_t handle = ti_Open(name, "r");
+    if (!handle) {
+        return false;
+    }
+
+    const gfx_rletsprite_t *sprite =
+        (const gfx_rletsprite_t *)(ti_GetDataPtr(handle) + offset);
+    *w = sprite->width;
+    *h = sprite->height;
+    ti_Close(handle);
+    *dx = sdx;
+    *dy = sdy;
+    return true;
+}
+
 /* --- the scaled-sprite cache --------------------------------------------
  *
  * Everything below the resample exists because the scale is *constant*.

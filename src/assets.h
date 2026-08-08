@@ -82,6 +82,18 @@ const char *assets_string(uint16_t index);
 bool assets_draw_sprite(uint16_t id, int center_x, int feet_y);
 
 /**
+ * Reports sprite @p id's pixel dimensions and its DSPROFF draw offset,
+ * without drawing it -- enough for a caller to compute the screen rectangle
+ * assets_draw_sprite() would cover. Returns false if @p id is out of range
+ * or its AppVar is missing.
+ *
+ * Costs an AppVar open (the dimensions live in the sprite header), so this
+ * is for occasional layout work -- render.c uses it once per animation to
+ * size a backdrop plate -- not for per-frame use.
+ */
+bool assets_sprite_bounds(uint16_t id, int *w, int *h, int *dx, int *dy);
+
+/**
  * Ensures sprite @p id has a cached 1.05x-scaled bitmap ready, building it
  * if this is the first call for it. Returns false if it can't be built (an
  * unresolvable id, or no room), meaning assets_draw_sprite_zoomed() would
