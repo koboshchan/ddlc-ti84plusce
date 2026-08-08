@@ -621,28 +621,44 @@ variable's value came from), but nothing in the currently-translatable
 script does yet -- this is infrastructure for future hand-authored content,
 not a claim that DDLC's own poem-outcome branching is reproduced.
 
-## Known compiler gap: `Menu` item conditions are not evaluated
+## `If` conditions: compound `and`/`or`/`not` are supported; `Menu` item conditions are not
 
-`renpy.ast.Menu.items` is a list of `(caption, condition, block)`.
-`compile_script.py`'s `_emit_Menu` reads `caption` and `block` but ignores
-`condition` — every item is always offered, regardless of story state.
+`compile_script.py`'s `_emit_If` originally only understood a single bare
+comparison (`IDENT <cmp> CONST`) per branch; anything else -- any `and`/`or`,
+any bare flag check like `if s_readpoem:` -- degraded to "take this branch
+unconditionally, later entries become unreachable". Real DDLC condition
+strings are compound almost everywhere routes/affection/chapter state is
+checked (`poemsread < 3 or (persistent.playthrough == 0 and poemsread < 4)`,
+`not y_readpoem and not y_ranaway`, ...), so this wasn't a rare edge case --
+this specific compound condition is `script-poemresponses.rpyc`'s own
+poem-sharing loop's *exit* check, and degrading it to "unconditionally take
+the loop-again branch" produced a real infinite loop in compiled bytecode,
+not just a wrong-content bug: replayed through the host simulator with a
+naive "always pick option 0" auto-player, the poem-sharing sequence never
+terminated, hitting the simulator's line-count safety cap instead of a clean
+finish.
 
-This showed up concretely in `script-poemresponses.rpyc`'s poem-sharing menu
-("Sayori / Natsuki / Yuri / Monika"), which DDLC narrows as girls are visited
-(a condition like "not yet shared with"). Replayed through the host simulator
-with a naive "always pick option 0" auto-player, an unnarrowed menu never
-exhausts, so the poem-sharing sequence loops until the simulator's line-count
-safety cap trips it — not a crash or an unknown opcode, but not a clean
-finish either. Verified independently of this: `script-ch0.rpyc` alone
-replays to a real `OP_RETURN` finish, and a full `--files=act1` replay
-correctly plays real dialogue, real menu selections, and real cross-chunk
-Jump/Call/Return round trips (see "Chunking") from `label start` before
-reaching this section.
+`_emit_If`/`_emit_condition` now recursively compile any `and`/`or`/`not`
+tree of comparisons (or bare flags, treated as `!= 0`) into short-circuit
+branching bytecode -- `and`'s left side jumping to false on failure, `or`'s
+left side jumping to true on success, `not` swapping its operand's true/false
+targets -- entirely with the existing `OP_IF`/`OP_JUMP` opcodes (negating a
+comparator, e.g. NOT(EQ) = NE, gets the "jump if false" edge `OP_IF` doesn't
+have natively). No bytecode format change. Verified against the real
+poem-sharing loop's exit condition directly (`poemsread`/`playthrough` swept
+across both branches, matched real Python semantics exactly) and end to end:
+a full `--files=all` replay driven by a naive "always pick option 0"
+auto-player now reaches a real `OP_END` finish (2098 real lines, 16 real
+menu picks) instead of the previous infinite loop.
 
-Fixing this needs per-item conditions evaluated at menu-*display* time (story
-state can change between visits to the same menu), which the current
-`OP_MENU n:u8 [text:u16 tgt:u24]*` encoding has no room for. Deferred rather
-than extending the bytecode format for it now -- unlike the poem minigame
-(which this project now implements, see "Poem minigame" above), this one
-doesn't have a clean host-callback escape hatch: it's a bytecode format
-change, not a new opcode.
+**Still open:** `renpy.ast.Menu.items` is a list of `(caption, condition,
+block)`; `_emit_Menu` reads `caption` and `block` but still ignores
+`condition` -- every item is always offered, regardless of story state. The
+poem-sharing menu itself still shows all four girls every time (not narrowed
+as each is visited), it just no longer *loops forever* doing so, since the
+loop's own exit condition (an `If`, not the `Menu` itself) now evaluates
+correctly. Fixing the `Menu` side needs per-item conditions evaluated at
+display time (story state can change between visits to the same menu), which
+the current `OP_MENU n:u8 [text:u16 tgt:u24]*` encoding has no room for --
+unlike the `If` fix above, this one is a bytecode format change, not a purely
+compiler-side one, so it's deferred.

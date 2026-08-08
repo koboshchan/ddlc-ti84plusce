@@ -105,6 +105,15 @@ _CMP_MAP = {
     ast.Gt: vnasm.CMP_GT, ast.GtE: vnasm.CMP_GE,
 }
 
+# The complement of each comparator -- e.g. NOT(x == v) == (x != v). Used to
+# compile a "jump if false" edge (needed for short-circuit and/or) out of
+# OP_IF, which only has a "jump if true" form -- see _emit_condition().
+_CMP_NEGATE = {
+    vnasm.CMP_EQ: vnasm.CMP_NE, vnasm.CMP_NE: vnasm.CMP_EQ,
+    vnasm.CMP_LT: vnasm.CMP_GE, vnasm.CMP_GE: vnasm.CMP_LT,
+    vnasm.CMP_LE: vnasm.CMP_GT, vnasm.CMP_GT: vnasm.CMP_LE,
+}
+
 _AUDIO_PREFIXES = ("play ", "stop ", "queue ", "voice ")
 
 VN_MAX_VARS = 64
@@ -460,16 +469,16 @@ class Compiler:
             return
 
         end_label = self._gensym("if_end")
-        conditional: list[tuple[int, int, int, str, list]] = []
         else_block = None
+        branches: list[tuple["ast.expr", list]] = []
 
         for cond_str, block in entries:
             if isinstance(cond_str, str) and cond_str.strip() == "True":
                 else_block = block
                 break
 
-            parsed = _parse_condition(cond_str) if isinstance(cond_str, str) else None
-            if parsed is None:
+            expr = _parse_condition_expr(cond_str) if isinstance(cond_str, str) else None
+            if expr is None or not _condition_supported(expr):
                 # Documented degrade: unsupported condition's branch is taken
                 # unconditionally, and later entries in this chain (which can
                 # only be reached if this one were false) become unreachable.
@@ -478,25 +487,70 @@ class Compiler:
                 else_block = block
                 break
 
-            var, cmp, val = parsed
-            slot = self._var_slot(var)
-            branch_label = self._gensym("if_branch")
-            conditional.append((slot, cmp, val, branch_label, block))
+            branches.append((expr, block))
 
-        for slot, cmp, val, branch_label, _ in conditional:
-            self.asm.if_(slot, cmp, val, branch_label)
+        for expr, block in branches:
+            true_label = self._gensym("if_branch")
+            next_label = self._gensym("if_next")
+            self._emit_condition(expr, true_label, next_label)
+            self.asm.label(true_label)
+            self.emit_block(block, fname)
+            self.asm.jump(end_label)
+            self.asm.label(next_label)
 
         if else_block is not None:
             self.emit_block(else_block, fname)
-        if conditional:
-            self.asm.jump(end_label)
-
-        for slot, cmp, val, branch_label, block in conditional:
-            self.asm.label(branch_label)
-            self.emit_block(block, fname)
-            self.asm.jump(end_label)
 
         self.asm.label(end_label)
+
+    def _emit_condition(self, expr, true_label: str, false_label: str) -> None:
+        """Emits branching bytecode for @p expr (validated by
+        _condition_supported() first -- this assumes every node is one it
+        already approved), jumping to @p true_label if it holds and
+        @p false_label otherwise.
+
+        `and`/`or` short-circuit via nested checks against gensym'd
+        intermediate labels; `not` just swaps the true/false targets it
+        recurses with. A leaf comparison is the one place OP_IF (jump only if
+        true) is used directly -- getting the false edge out of it means
+        negating the comparator and jumping to false_label unconditionally
+        for the fallthrough (see _CMP_NEGATE), since OP_IF has no native
+        "jump if false" form.
+        """
+        if isinstance(expr, ast.BoolOp) and isinstance(expr.op, ast.And):
+            for sub in expr.values[:-1]:
+                mid = self._gensym("and")
+                self._emit_condition(sub, mid, false_label)
+                self.asm.label(mid)
+            self._emit_condition(expr.values[-1], true_label, false_label)
+            return
+
+        if isinstance(expr, ast.BoolOp) and isinstance(expr.op, ast.Or):
+            for sub in expr.values[:-1]:
+                mid = self._gensym("or")
+                self._emit_condition(sub, true_label, mid)
+                self.asm.label(mid)
+            self._emit_condition(expr.values[-1], true_label, false_label)
+            return
+
+        if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.Not):
+            self._emit_condition(expr.operand, false_label, true_label)
+            return
+
+        if isinstance(expr, (ast.Name, ast.Attribute)):
+            # Bare flag -- `var != 0`, see _condition_supported().
+            slot = self._var_slot(_ident_name(expr))
+            self.asm.if_(slot, vnasm.CMP_NE, 0, true_label)
+            self.asm.jump(false_label)
+            return
+
+        # A leaf ast.Compare -- the only remaining case _condition_supported()
+        # approves.
+        cmp = _CMP_MAP[type(expr.ops[0])]
+        slot = self._var_slot(_ident_name(expr.left))
+        val = _const_int(expr.comparators[0])
+        self.asm.if_(slot, cmp, val, true_label)
+        self.asm.jump(false_label)
 
     def _emit_Menu(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)
@@ -592,19 +646,40 @@ def _const_int(node) -> int | None:
     return None
 
 
-def _parse_condition(cond_str: str) -> tuple[str, int, int] | None:
-    """Match `IDENT <cmp> CONST` / `attr.chain <cmp> CONST`. None if not that shape."""
+def _parse_condition_expr(cond_str: str) -> "ast.expr | None":
     try:
-        expr = ast.parse(cond_str, mode="eval").body
+        return ast.parse(cond_str, mode="eval").body
     except SyntaxError:
         return None
-    if not isinstance(expr, ast.Compare) or len(expr.ops) != 1 or len(expr.comparators) != 1:
-        return None
-    cmp = _CMP_MAP.get(type(expr.ops[0]))
-    if cmp is None:
-        return None
-    var = _ident_name(expr.left)
-    val = _const_int(expr.comparators[0])
-    if var is None or val is None:
-        return None
-    return var, cmp, val
+
+
+def _condition_supported(expr) -> bool:
+    """True if _emit_condition() (Compiler method, below) can compile @p expr:
+    any and/or/not tree of `IDENT <cmp> CONST` leaves. Real Ren'Py condition
+    strings are exactly this shape almost everywhere (affection/route/chapter
+    gates like `poemsread < 3 or (persistent.playthrough == 0 and
+    poemsread < 4)`) -- previously only a single bare comparison was
+    supported, degrading every compound condition's branch to "always taken"
+    and, for a loop's own exit check, an actual infinite loop rather than a
+    cosmetic wrong-branch pick.
+
+    A pure structural check (no bytecode emitted) so _emit_If can validate an
+    entire condition before committing to emitting any of it -- vnasm's
+    Assembler is append-only, so discovering an unsupported sub-expression
+    partway through emission would leave orphaned instructions behind.
+    """
+    if isinstance(expr, ast.BoolOp) and isinstance(expr.op, (ast.And, ast.Or)):
+        return all(_condition_supported(v) for v in expr.values)
+    if isinstance(expr, ast.UnaryOp) and isinstance(expr.op, ast.Not):
+        return _condition_supported(expr.operand)
+    if isinstance(expr, (ast.Name, ast.Attribute)):
+        # A bare flag (`if s_readpoem:`, `not y_ranaway`) -- treated as
+        # `var != 0`, the same truthiness a real Python `if` would use for a
+        # story-tracking int/bool. Just as common in real conditions as an
+        # explicit comparison (e.g. poemresponses.rpy's own item guards).
+        return _ident_name(expr) is not None
+    if isinstance(expr, ast.Compare) and len(expr.ops) == 1 and len(expr.comparators) == 1:
+        if _CMP_MAP.get(type(expr.ops[0])) is None:
+            return False
+        return _ident_name(expr.left) is not None and _const_int(expr.comparators[0]) is not None
+    return False
