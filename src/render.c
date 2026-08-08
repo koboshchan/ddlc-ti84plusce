@@ -126,11 +126,13 @@ static int ease(const uint8_t *lut, int amp, unsigned t, unsigned at, unsigned d
  * ------------------------------------------------------------------------ */
 
 /* The speaking pop: DDLC's own ATL (transforms.rpy's `focus`/`hopfocus` vs.
- * `tcommon`/`hop`) zooms whichever character is currently speaking to 1.05x,
- * and separately bounces briefly for "hop"-flagged lines -- both authored
+ * `tcommon`/`hop`, plus `sink` for the persistent downward drift below)
+ * zooms whichever character is currently speaking to 1.05x, separately
+ * bounces briefly for "hop"-flagged lines, and separately still drifts a
+ * character down and holds for "sink"-flagged lines -- all authored
  * directly per-line in the real script (which named transform, e.g. "f32"
- * vs "t32", compiles a Show), not inferred at runtime from OP_SAY's speaker
- * field the way an earlier version of this engine did (see
+ * vs "t32" vs "s32", compiles a Show), not inferred at runtime from
+ * OP_SAY's speaker field the way an earlier version of this engine did (see
  * tools/compile_script.py's _resolve_anim). assets_draw_sprite_zoomed()
  * does the real 1.05x scale now.
  *
@@ -203,6 +205,45 @@ static int hop_offset(uint8_t character, uint8_t show_seq, unsigned t)
     return ease(ease_remain, -HOP_PX, t, hop_started_at[character] + HOP_MS / 2, HOP_MS / 2);
 }
 
+/* DDLC's real sink: `at s..` eases ypos from 1.03 to 1.06 (a 0.03 fraction
+ * of the 720-tall canvas, ~21.6 canvas px) over .5s and *holds* there --
+ * unlike hop, this isn't a bounce-back, it's a persistent drift that only
+ * reverses when a later Show lands the character back on t/f. That recovery
+ * is authored on the *landing* transform, not on sink itself: both
+ * tcommon's and focus's own "replace" handler eases ypos back to 1.03 over
+ * .15s in parallel with whatever zoom change is also happening, confirmed
+ * by decompiling transforms.rpy. SINK_PX is that 21.6 canvas px scaled by
+ * this engine's existing 0.25 canvas-to-screen ratio, same convention as
+ * HOP_PX/SPEAK_POP_PX.
+ *
+ * Structurally this is zoom_fallback_offset()'s pattern (a persistent
+ * on/off state with an eased transition, not hop's one-shot bounce) --
+ * except the two directions run at different real durations, so the target
+ * value and duration are both picked from `sinking` rather than being
+ * fixed. Called unconditionally every frame, same reasoning as
+ * zoom_fallback_offset(): the eased transition has to keep tracking
+ * correctly even across frames where the value goes unused. */
+#define SINK_PX      5
+#define SINK_DOWN_MS 500
+#define SINK_UP_MS   150
+
+static int sink_offset(uint8_t character, bool sinking, unsigned t)
+{
+    static bool     was_sinking[VN_MAX_CHARS];
+    static unsigned changed_at[VN_MAX_CHARS];
+
+    int old_rest = was_sinking[character] ? SINK_PX : 0;
+    if (sinking != was_sinking[character]) {
+        was_sinking[character] = sinking;
+        changed_at[character] = t;
+    }
+    int new_rest = sinking ? SINK_PX : 0;
+    unsigned dur = sinking ? SINK_DOWN_MS : SINK_UP_MS;
+
+    return new_rest + ease(ease_remain, old_rest - new_rest, t,
+                           changed_at[character], dur);
+}
+
 static void draw_background(uint8_t bg)
 {
     /* assets_scene() copies exactly SCENE_H rows of SCREEN_W palette-index
@@ -236,12 +277,14 @@ static void draw_actor(const vn_actor_t *actor, unsigned t)
     int fallback_off = zoom_fallback_offset(actor->character, zoom_wanted, t);
 
     /* feet anchored to the box edge, plus the one-shot hop if this Show
-     * authored one -- both the real zoom and its fallback anchor from this
-     * same feet_y, so the hop bounce applies identically either way. */
+     * authored one and the persistent sink drift if it's currently sunk --
+     * both the real zoom and its fallback anchor from this same feet_y, so
+     * both apply identically either way. */
     int feet_y = SCENE_H;
     if (actor->flags & VN_FLAG_HOP) {
         feet_y += hop_offset(actor->character, actor->show_seq, t);
     }
+    feet_y += sink_offset(actor->character, (actor->flags & VN_FLAG_SINK) != 0, t);
 
     /* assets_draw_sprite_zoomed() can fail on a real device (a malloc
      * alongside a large resident script chunk -- see its file comment in
