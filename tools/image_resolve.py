@@ -48,6 +48,9 @@ _HEX_COLOR = re.compile(r"^#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$")
 
 SPRITE_TARGET_HEIGHT = 176   # tuned against render.c's scene area (320x180)
 BG_SIZE = (320, 180)
+POEM_BG_SIZE = (320, 240)   # full screen -- the poem minigame has no dialogue
+                            # box reserving the bottom 60px, unlike an
+                            # ordinary VN scene (see poem_background())
 CG_SIZE = (320, 180)
 
 # --- title screen ------------------------------------------------------------
@@ -305,6 +308,7 @@ class ImageResolver:
         self.sprites: list = []      # manifest rows, index == id
         self.title_items: list = [] # title screen art, index == id (see title_art())
         self.title_bg: dict = {}     # the scrolling background strip (see title_bg_strip())
+        self.poem_bg: dict = {}      # the poem minigame's notebook (see poem_background())
         # backgrounds and CGs share ONE id space here: OP_SCENE has a single
         # `bg:u8` operand with no room for a bucket discriminator, so the
         # engine (Milestone 3) tells them apart by each entry's "palette"
@@ -605,9 +609,12 @@ class ImageResolver:
     def explicit_bg_scene(self, rel_path: str) -> Optional[int]:
         """Bakes a full-screen background frame as an ordinary scene:
         letterboxed onto BG_SIZE, centered, quantized against the shared game
-        palette. Used for backgrounds no dialogue references by name -- the
-        startup splash (`bg/splash.png`) and the poem minigame's notebook
-        (`bg/notebook.png`) -- so scene_id() never reaches them.
+        palette. Used for a background no dialogue references by name -- the
+        startup splash (`bg/splash.png`) -- so scene_id() never reaches it.
+        The poem minigame's notebook background is a separate case (see
+        poem_background() below): it fills the whole screen, not just the
+        scene area an ordinary dialogue background shares with the dialogue
+        box, so it can't reuse BG_SIZE/the DSCNn scene pipeline.
 
         Deliberately reuses the existing DSCNn/DPALGAME pipeline rather than
         the title's own -- these need no title-style positioning or their own
@@ -639,6 +646,42 @@ class ImageResolver:
                             "w": BG_SIZE[0], "h": BG_SIZE[1],
                             "palette": "shared", "cg_palette_index": None})
         return idx
+
+    def poem_background(self, rel_path: str = "bg/notebook.png") -> Optional[dict]:
+        """Bakes the poem minigame's notebook background full-screen
+        (POEM_BG_SIZE, 320x240) rather than through the DSCNn scene pipeline
+        (BG_SIZE, 320x180): the poem screen is its own full-screen UI with no
+        dialogue box reserving the bottom 60px, unlike every real dialogue
+        background, and letterboxing it into the shorter BG_SIZE canvas (the
+        original approach) both left a blank strip at the bottom and threw
+        off the ruled-line art's alignment with the word grid drawn over it.
+
+        Quantized against the shared game palette (like an ordinary
+        background, not the title's own) since the poem screen runs under
+        the normal in-game palette. Returned as its own dict, like
+        title_bg_strip(), rather than appended to self.scenes -- it's not
+        addressable through OP_SCENE, so it doesn't belong in that id space.
+        """
+        art = _find_art_file(self.raw_dir, rel_path)
+        if art is None:
+            self._log_unsupported((rel_path,), "poem background art not found")
+            return None
+
+        img = PILImage.open(art).convert("RGBA")
+        canvas = PILImage.new("RGBA", POEM_BG_SIZE, (255, 255, 255, 255))
+        ratio = min(POEM_BG_SIZE[0] / img.width, POEM_BG_SIZE[1] / img.height)
+        size = (max(1, round(img.width * ratio)), max(1, round(img.height * ratio)))
+        scaled = img.resize(size, PILImage.LANCZOS)
+        canvas.alpha_composite(scaled, ((POEM_BG_SIZE[0] - size[0]) // 2,
+                                        (POEM_BG_SIZE[1] - size[1]) // 2))
+
+        filename = f"poem_bg_{Path(rel_path).stem}.png"
+        canvas.save(self.img_dir / filename)
+
+        entry = {"source": rel_path, "file": filename,
+                 "w": POEM_BG_SIZE[0], "h": POEM_BG_SIZE[1]}
+        self.poem_bg = entry
+        return entry
 
     def title_bg_strip(self, rel_path: str = "gui/menu_bg.png") -> Optional[dict]:
         """Bakes the scrolling title background as a short repeating strip.
@@ -779,6 +822,7 @@ class ImageResolver:
             "scenes": self.scenes,
             "title_art": self.title_items,
             "title_bg": self.title_bg,
+            "poem_bg": self.poem_bg,
             "unsupported": [{"imgname": list(name), "reason": reason}
                             for name, reason in self.unsupported],
         }

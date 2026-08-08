@@ -23,10 +23,6 @@
  * (vn_step()'s host->quit() picks it up on the next step). */
 extern bool quit_requested;
 
-/* tools/import_game.py bakes this background second, unconditionally,
- * right after SPLASH_LOGO_SCENE -- see src/main.c's comment by that name. */
-#define POEM_BG_SCENE 1
-
 /* Real DDLC: numWords = 20, 10 words shown per round (2 columns x 5 rows),
  * all 10 removed from the pool each round regardless of pick. 20*10 = 200 of
  * the real word bank's 228 words -- see docs/FORMAT.md's "Poem minigame". */
@@ -171,15 +167,13 @@ static int poem_col_x(uint8_t col)
 
 static void draw_background(void)
 {
-    if (!assets_scene(POEM_BG_SCENE, (uint8_t *)gfx_vbuffer)) {
+    /* Full screen, unlike an ordinary dialogue scene -- the poem minigame
+     * has no dialogue box reserving the bottom 60px, so its background is
+     * baked and stored at the full 320x240 rather than through
+     * assets_scene()'s 320x180 -- see image_resolve.py's poem_background(). */
+    if (!assets_poem_bg((uint8_t *)gfx_vbuffer)) {
         render_backdrop(COL_WHITE);
-        return;
     }
-    /* assets_scene() only ever fills SCENE_H rows (backgrounds are baked at
-     * a fixed 320x180, see image_resolve.py's BG_SIZE) -- same fill-the-rest
-     * pattern main.c's splash screen uses for the same reason. */
-    gfx_SetColor(COL_WHITE);
-    gfx_FillRectangle_NoClip(0, SCENE_H, SCREEN_W, SCREEN_H - SCENE_H);
 }
 
 static void draw_round(const uint16_t *shown, uint8_t round, uint8_t sel_col, uint8_t sel_row)

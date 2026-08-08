@@ -531,8 +531,9 @@ static vn_host_t host = {
 
 /* tools/import_game.py's do_compile() bakes this scene first and
  * unconditionally, specifically so its id is always 0 regardless of which
- * chapters get compiled -- see resolver.explicit_bg_scene(). Scene 1 is the
- * poem minigame's notebook background, src/poem.c's POEM_BG_SCENE. */
+ * chapters get compiled -- see resolver.explicit_bg_scene(). (The poem
+ * minigame's notebook background is baked separately, outside this scene id
+ * space entirely -- see src/poem.c's assets_poem_bg().) */
 #define SPLASH_LOGO_SCENE 0
 #define SPLASH_HOLD_MS 1600
 

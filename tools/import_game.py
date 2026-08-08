@@ -134,13 +134,16 @@ def do_compile(raw_dir: Path, build_dir: Path,
     compiler = Compiler(resolver=resolver,
                         transform_positions=load_transform_positions(raw_dir))
 
-    # Two backgrounds no dialogue references by name, baked first and
-    # unconditionally (regardless of --files) so their scene ids are always
-    # the same two values -- matching src/main.c's SPLASH_LOGO_SCENE=0 and
-    # src/poem.c's POEM_BG_SCENE=1. Everything dialogue bakes afterward gets
-    # whatever id comes next.
-    resolver.explicit_bg_scene("bg/splash.png")     # Team Salvato logo (splash.rpyc's `intro` ATL)
-    resolver.explicit_bg_scene("bg/notebook.png")    # poem minigame background
+    # A background no dialogue references by name, baked first and
+    # unconditionally (regardless of --files) so its scene id is always the
+    # same value -- matching src/main.c's SPLASH_LOGO_SCENE=0. Everything
+    # dialogue bakes afterward gets whatever id comes next.
+    resolver.explicit_bg_scene("bg/splash.png")  # Team Salvato logo (splash.rpyc's `intro` ATL)
+
+    # The poem minigame's notebook background is unconditional too (same
+    # reasoning), but full-screen and outside the DSCNn scene id space --
+    # see poem_background()'s docstring.
+    resolver.poem_background()
 
     # One Assembler (chunk) per compiled file, or more than one for a file
     # too big to fit a single chunk (compile_file_chunked() -- only
@@ -416,6 +419,16 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
     if manifest.get("title_bg"):
         appvars.append(write_appvar(
             bin_for(manifest["title_bg"]["file"]).read_bytes(), "DTILBG", appvar_dir))
+
+    if manifest.get("poem_bg"):
+        # 320x240 raw (76800 bytes) is over the 65535-byte single-AppVar
+        # ceiling -- split at a fixed, MAXVARSIZE-safe boundary rather than
+        # through pack_group()/a LUT (there's only ever this one resource,
+        # a LUT would be pure overhead), matching the split src/assets.c's
+        # assets_poem_bg() expects.
+        poem_bg_bytes = bin_for(manifest["poem_bg"]["file"]).read_bytes()
+        appvars.append(write_appvar(poem_bg_bytes[:MAXVARSIZE], "DPOEMBG0", appvar_dir))
+        appvars.append(write_appvar(poem_bg_bytes[MAXVARSIZE:], "DPOEMBG1", appvar_dir))
 
     cg_count = sum(1 for s in manifest["scenes"] if s["palette"] == "own")
     if cg_count:

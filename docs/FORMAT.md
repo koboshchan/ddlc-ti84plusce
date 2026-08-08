@@ -252,6 +252,7 @@ matched by `src/assets.c`:
 | `DTILPOS` | Title art layout: `i16 x, y, dx, dy` per id — see "Title screen" |
 | `DTILBG` | The title's 370x50 scrolling background strip — see "Title screen" |
 | `DPALTTL` | The title screen's own 256-entry palette |
+| `DPOEMBG0`, `DPOEMBG1` | The poem minigame's notebook background, full-screen (320x240 = 76800 bytes) raw indices under the shared game palette, split in two at a fixed 65000-byte boundary (over the single-AppVar ceiling; no LUT, just the one resource) — see "Poem minigame" |
 | `DCGPAL0`, `DCGPAL1`, … + `DCGPLUT` | One 256-entry palette per CG, packed like sprites -- see "Image assets" |
 | `DCGIDX` | Scene id -> `DCGPLUT` index (`0xFF` for a scene with no own palette), one byte per scene in `DSCNLUT` order |
 | `DSAVE1`, `DSAVE2`, `DSAVE3` | One player save slot each -- see "Save data" |
@@ -524,9 +525,10 @@ pipeline -- it needs no title-style positioning or palette, so riding the
 existing `DSCNn`/`DPALGAME`/`assets_scene()` path as-is costs zero new C code.
 It's baked *first*, before any dialogue is compiled, specifically so its scene
 id is always 0 (`src/main.c`'s `SPLASH_LOGO_SCENE`) regardless of which
-chapters get compiled in. `explicit_bg_scene()` is called a second time right
-after, for the poem minigame's notebook background (`src/poem.c`'s
-`POEM_BG_SCENE`, always scene id 1) -- see "Poem minigame".
+chapters get compiled in. The poem minigame's notebook background is baked
+unconditionally too, right after, but through its own path
+(`ImageResolver.poem_background()`, `DPOEMBG`) rather than as a scene -- see
+"Poem minigame" for why.
 
 The content warning is DDLC's real line (`splash.rpy`'s
 `splash_message_default`): "This game is not suitable for children / or those

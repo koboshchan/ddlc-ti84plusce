@@ -60,6 +60,8 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
     title_files = [str((img_dir / t["file"]).resolve()) for t in manifest.get("title_art", [])]
     title_bg = manifest.get("title_bg") or {}
     title_bg_file = str((img_dir / title_bg["file"]).resolve()) if title_bg else None
+    poem_bg = manifest.get("poem_bg") or {}
+    poem_bg_file = str((img_dir / poem_bg["file"]).resolve()) if poem_bg else None
 
     palettes = [{
         "name": "pal_game",
@@ -70,7 +72,7 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
         # --quality for a final release build.
         "quality": quality,
         "fixed-entries": [{"color": {"index": i, "hex": h}} for i, h in FIXED_ENTRIES],
-        "images": sprite_files + shared_files,
+        "images": sprite_files + shared_files + ([poem_bg_file] if poem_bg_file else []),
     }]
     converts = []
     outputs_converts = []
@@ -103,22 +105,34 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
             #
             # zx0: a background's decompressed size is always exactly
             # SCENE_BYTES (320x180, fixed above), so src/assets.c can
-            # bounds-check a destination safely. An earlier version shipped
-            # these uncompressed because assets_scene() ran
-            # zx0_Decompress every single frame draw_background() was
-            # called -- every typewriter tick, every idle-bob redraw -- and
-            # that decode was the real bottleneck behind "laggy" text. Now
-            # decompressed once into a small cache on an actual scene
-            # change and memcpy'd from there every frame instead, so the
-            # expensive part no longer runs per-frame -- see assets.c's
-            # assets_scene(). Worth it at real game scale: uncompressed,
-            # 24 backgrounds alone need ~1.3MB against a real ~2.9MB
-            # archive.
+            # bounds-check a destination safely. assets_scene() decompresses
+            # on every call (every typewriter tick, every idle-bob redraw --
+            # not just an actual scene change), which is real per-frame cost;
+            # a decompressed-results cache was tried to avoid that but didn't
+            # fit real on-device RAM (graphx's own draw buffer plus a
+            # resident script chunk already use most of it) -- see
+            # assets_scene()'s comment. Compression stays on anyway: at real
+            # game scale, uncompressed 24 backgrounds alone need ~1.3MB
+            # against a real ~2.9MB archive, which doesn't fit at all.
             "name": "backgrounds", "palette": "pal_game", "style": "palette",
             "dither": 0.4, "width-and-height": False, "compress": "zx0",
             "images": shared_files,
         })
         outputs_converts.append("backgrounds")
+
+    if poem_bg_file:
+        converts.append({
+            # Full-screen (POEM_BG_SIZE, 320x240), not the scene area's
+            # BG_SIZE -- see image_resolve.py's poem_background(). Flat raw
+            # indices like title_bg below: src/poem.c redraws this every
+            # frame the minigame loop runs (once per input poll, not just on
+            # a state change), so it can't afford a decode step any more
+            # than title/splash's per-frame art can.
+            "name": "poem_bg", "palette": "pal_game", "style": "palette",
+            "dither": 0.4, "width-and-height": False,
+            "images": [poem_bg_file],
+        })
+        outputs_converts.append("poem_bg")
 
     # The title screen gets its own palette rather than sharing pal_game.
     # Its art is a separate DDLC asset set (pastel pinks, the logo's flat

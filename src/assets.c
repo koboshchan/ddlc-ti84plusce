@@ -424,6 +424,36 @@ bool assets_title_bg(uint8_t px, uint8_t py, uint8_t *dest)
     return true;
 }
 
+/* The poem minigame's notebook background: full-screen (320x240 = 76800
+ * bytes) raw indices, unlike an ordinary scene (see image_resolve.py's
+ * poem_background() for why it isn't one). 76800 bytes is over the
+ * 65535-byte single-AppVar ceiling, so tools/import_game.py splits it in
+ * two at a fixed MAXVARSIZE (65000) boundary rather than through a LUT --
+ * there's only ever this one resource, a LUT would be pure overhead.
+ * Optional, same as the title assets, so a bundle built before the poem
+ * minigame existed still boots. */
+#define POEM_BG_BYTES  (320u * 240u)
+#define POEM_BG_SPLIT  65000u
+
+bool assets_poem_bg(uint8_t *dest)
+{
+    uint8_t handle0 = ti_Open("DPOEMBG0", "r");
+    if (!handle0) {
+        return false;
+    }
+    memcpy(dest, ti_GetDataPtr(handle0), POEM_BG_SPLIT);
+    ti_Close(handle0);
+
+    uint8_t handle1 = ti_Open("DPOEMBG1", "r");
+    if (!handle1) {
+        return false;
+    }
+    memcpy(dest + POEM_BG_SPLIT, ti_GetDataPtr(handle1), POEM_BG_BYTES - POEM_BG_SPLIT);
+    ti_Close(handle1);
+
+    return true;
+}
+
 /* Fixed size of every background/CG (image_resolve.py's BG_SIZE/CG_SIZE) --
  * both are baked to exactly this many raw palette-index bytes, so no length
  * needs reading out of the LUT entry. */

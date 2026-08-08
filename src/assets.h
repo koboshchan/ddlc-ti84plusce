@@ -162,4 +162,10 @@ void assets_title_end(void);
  */
 bool assets_title_bg(uint8_t px, uint8_t py, uint8_t *dest);
 
+/**
+ * Fills @p dest (a full 320x240 screen) with the poem minigame's notebook
+ * background. False if the background AppVar is missing.
+ */
+bool assets_poem_bg(uint8_t *dest);
+
 #endif /* ASSETS_H */
