@@ -429,53 +429,35 @@ bool assets_title_bg(uint8_t px, uint8_t py, uint8_t *dest)
  * needs reading out of the LUT entry. */
 #define SCENE_BYTES (320u * 180u)
 
-/* assets_scene() is called every frame render_scene() runs -- every
- * typewriter tick, every idle-bob redraw (see render.c) -- not just on an
- * actual scene change. An earlier version shipped backgrounds uncompressed
- * because of exactly this: a naive per-call zx0_Decompress() was the real
- * bottleneck behind sluggish text. Caching the decompressed bytes here and
- * only re-decompressing when `id` actually changes gets the archive-space
- * win back without paying that cost again -- every other call is just the
- * memcpy it always was. */
-/* Heap, not a static SCENE_BYTES (57600-byte) array: this module already
- * mallocs everything else it keeps around (script_buf, the LUT copies), and
- * a same-sized extra static buffer overflowed the linker's fixed BSS region
- * -- the heap has room this specific region doesn't. Allocated lazily so a
- * bundle that never shows a background (unlikely, but no reason to require
- * it) doesn't pay for it. */
-static uint8_t *scene_cache_buf;
-static uint8_t  scene_cache_id = 0xFF; /* no scene id this high exists -- nothing cached yet */
-
+/* A same-sized (57600-byte) decompressed-background cache was tried here to
+ * avoid re-decompressing every frame render_scene() runs (every typewriter
+ * tick, every idle-bob redraw -- not just an actual scene change), which is
+ * why backgrounds shipped uncompressed in the first place. That cache
+ * overflowed real RAM on-device even as a lazy malloc() -- graphx's own
+ * draw buffer is already ~77KB, a resident script chunk can be up to 65KB
+ * (see docs/FORMAT.md's "Chunking"), and this project's own ~150KB usable
+ * figure doesn't leave room for another 57.6KB on top of both. Decompressing
+ * straight into @p dest every call, like this, is the correctness-first
+ * fallback: no extra RAM, at the cost of the per-frame decode this module
+ * used to avoid. */
 bool assets_scene(uint8_t id, uint8_t *dest)
 {
-    if (!scene_cache_buf) {
-        scene_cache_buf = malloc(SCENE_BYTES);
-        if (!scene_cache_buf) {
-            return false;
-        }
+    uint8_t appvar_idx;
+    uint16_t offset;
+    if (!lut_lookup(scene_lut, scene_lut_count, id, &appvar_idx, &offset)) {
+        return false;
     }
 
-    if (id != scene_cache_id) {
-        uint8_t appvar_idx;
-        uint16_t offset;
-        if (!lut_lookup(scene_lut, scene_lut_count, id, &appvar_idx, &offset)) {
-            return false;
-        }
-
-        char name[9];
-        sprintf(name, "DSCN%u", appvar_idx);
-        uint8_t handle = ti_Open(name, "r");
-        if (!handle) {
-            return false;
-        }
-
-        const uint8_t *data = ti_GetDataPtr(handle);
-        zx0_Decompress(scene_cache_buf, data + offset);
-        ti_Close(handle);
-        scene_cache_id = id;
+    char name[9];
+    sprintf(name, "DSCN%u", appvar_idx);
+    uint8_t handle = ti_Open(name, "r");
+    if (!handle) {
+        return false;
     }
 
-    memcpy(dest, scene_cache_buf, SCENE_BYTES);
+    const uint8_t *data = ti_GetDataPtr(handle);
+    zx0_Decompress(dest, data + offset);
+    ti_Close(handle);
     return true;
 }
 
