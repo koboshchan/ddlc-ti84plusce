@@ -24,7 +24,11 @@ enum vn_op {
     OP_NOP      = 0x00, /*                                    unsupported node */
     OP_SAY      = 0x01, /* spk:u8 text:u16                                     */
     OP_SCENE    = 0x02, /* bg:u8 trans:u8                                      */
-    OP_SHOW     = 0x03, /* ch:u8 sprite:u16 pos:u8                             */
+    OP_SHOW     = 0x03, /* ch:u8 sprite:u16 overlay:u16 pos:u8 -- overlay is
+                          * VN_NO_OVERLAY for a single-layer sprite, or a
+                          * second pre-baked atom (an expression) drawn on
+                          * top of `sprite` (a body pose) at its own baked-in
+                          * offset -- see docs/FORMAT.md's "Layered sprites"*/
     OP_HIDE     = 0x04, /* ch:u8                                               */
     OP_MENU     = 0x05, /* n:u8 [text:u16 tgt:u24]*  (tgt packed, see below)   */
     OP_JUMP     = 0x06, /* tgt:u24  (packed, see below)                        */
@@ -80,8 +84,9 @@ enum vn_trans { TRANS_CUT = 0, TRANS_FADE = 1 };
 #define VN_MAX_CHOICES   6    /* menu options the UI can display at once      */
 #define VN_MAX_CHARS     4    /* simultaneously shown characters              */
 
-#define VN_SPEAKER_NONE  0xFF /* narration: no name plate                     */
-#define VN_NO_SPRITE     0xFF /* "unset" sprite/background id                 */
+#define VN_SPEAKER_NONE  0xFF   /* narration: no name plate                   */
+#define VN_NO_SPRITE     0xFF   /* "unset" sprite/background id               */
+#define VN_NO_OVERLAY    0xFFFF /* actor has no second (expression) layer     */
 
 /* ---------------------------------------------------------------------------
  * Host interface
@@ -90,15 +95,22 @@ enum vn_trans { TRANS_CUT = 0, TRANS_FADE = 1 };
 /**
  * One on-screen character slot.
  *
- * `sprite` is a single pre-baked, pre-composited image id: the converter
- * flattens each used Ren'Py body+face(+accessory) combo into one sprite at
- * build time (tools/image_resolve.py), since layer counts vary per combo
- * rather than being a fixed 2-layer body/face split. The VM and renderer
- * never composite layers at runtime.
+ * `sprite` and `overlay` are pre-baked image ids (tools/image_resolve.py):
+ * most DDLC character art is a body pose plus an expression layer, and
+ * rather than flattening every body+expression combination into its own
+ * full sprite (the same body shipped over and over, once per expression),
+ * the converter bakes each distinct body ("sprite") and expression
+ * ("overlay") once and this struct carries both. `overlay` is VN_NO_OVERLAY
+ * when a combo didn't fit that shape (see docs/FORMAT.md's "Layered
+ * sprites") and `sprite` alone is the whole, already-flattened image, same
+ * as before layering existed. Either way the renderer just draws `sprite`
+ * then, if present, `overlay` at the same anchor -- no runtime layout logic,
+ * every position is baked in.
  */
 typedef struct {
     uint8_t  character; /* character id, or VN_NO_SPRITE when the slot is free */
     uint16_t sprite;    /* up to 65535 -- the full game needs 406, over a u8 */
+    uint16_t overlay;   /* second layer, or VN_NO_OVERLAY                    */
     uint8_t  pos;       /* half the on-screen center X: center_x = pos * 2
                           * (tools/compile_script.py's _pos_from_x) */
 } vn_actor_t;

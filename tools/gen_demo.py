@@ -44,8 +44,8 @@ def build() -> Assembler:
     a.add(VAR_VISITS, 1)
     a.if_(VAR_VISITS, CMP_GE, 4, "done")
     a.scene(BG_CLUBROOM, TRANS_FADE)
-    a.show(SAYORI, 1, POS_LEFT)
-    a.show(NATSUKI, 2, POS_RIGHT)
+    a.show(SAYORI, 1, pos=POS_LEFT)
+    a.show(NATSUKI, 2, pos=POS_RIGHT)
     a.say(SAYORI, "Two actors are on stage. Check both anchor positions.")
     a.say(NATSUKI, "The number on each block is the pre-baked sprite id from OP_SHOW.")
 

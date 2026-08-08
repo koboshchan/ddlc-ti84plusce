@@ -44,6 +44,7 @@ POS_RIGHT = 880 // 8
 
 SPEAKER_NONE = 0xFF
 NO_SPRITE = 0xFF
+NO_OVERLAY = 0xFFFF  # OP_SHOW's overlay:u16 sentinel -- see docs/FORMAT.md's "Layered sprites"
 
 
 class AsmError(Exception):
@@ -173,10 +174,12 @@ class Assembler:
         self._u8(bg)
         self._u8(trans)
 
-    def show(self, char: int, sprite: int, pos: int = POS_CENTER) -> None:
+    def show(self, char: int, sprite: int, overlay: int | None = None,
+             pos: int = POS_CENTER) -> None:
         self._u8(OP_SHOW)
         self._u8(char)
         self._u16(sprite)
+        self._u16(NO_OVERLAY if overlay is None else overlay)
         self._u8(pos)
 
     def hide(self, char: int) -> None:

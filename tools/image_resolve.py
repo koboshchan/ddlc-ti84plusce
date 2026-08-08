@@ -298,6 +298,9 @@ class ImageResolver:
 
         self._sprite_ids: dict = {}
         self._scene_ids: dict = {}
+        self._layer_result: dict = {}   # imgname -> (base_id, overlay_id) -- sprite_layers()
+        self._layer_ids: dict = {}      # dedup key -> sprite id -- see _bake_layer_atom()
+        self._char_ref: dict = {}       # character tag -> reference bbox/scale, see _char_reference()
 
         self.sprites: list = []      # manifest rows, index == id
         self.title_items: list = [] # title screen art, index == id (see title_art())
@@ -322,6 +325,167 @@ class ImageResolver:
         idx = len(self.sprites)
         self.sprites.append(entry)
         self._sprite_ids[imgname] = idx
+        return idx
+
+    def sprite_layers(self, imgname: tuple) -> tuple:
+        """Resolve @p imgname to (base_id, overlay_id) -- overlay_id is None
+        when the result is a single flattened bake (the old sprite_id()
+        behavior).
+
+        Most DDLC character sprites are `Composite((w,h), (0,0), body,
+        (0,0), body, (0,0), expression)`: the ~10 body layers and ~30
+        expression layers a character has combine multiplicatively into
+        300+ Show-able combos, and flattening each combo into its own full
+        bake ships the same body pixels over and over (see docs/FORMAT.md's
+        "Layered sprites"). When every layer sits at the composite's (0, 0)
+        origin -- true for the large majority, confirmed by direct
+        measurement -- this bakes each distinct body ("base": every layer
+        but the last) and expression ("overlay": the last layer alone) atom
+        exactly once instead, and src/render.c draws them stacked at
+        runtime. Anything that doesn't fit that shape (a non-composite
+        image, a single-layer composite, or any layer positioned off
+        (0, 0) -- a handful of accessory overlays are) falls back to one
+        full flattened bake, unchanged from before.
+        """
+        if imgname in self._layer_result:
+            return self._layer_result[imgname]
+
+        result = self._resolve_layers(imgname)
+        self._layer_result[imgname] = result
+        return result
+
+    def _resolve_layers(self, imgname: tuple) -> tuple:
+        defn = self.table.get(imgname)
+        if defn is None:
+            self._log_unsupported(imgname, "no Image definition found")
+            return (None, None)
+
+        simple = (defn.kind == "composite" and len(defn.layers) >= 2 and
+                  all(layer.x == 0 and layer.y == 0 for layer in defn.layers))
+        if not simple:
+            base = self.sprite_id(imgname)
+            return (base, None)
+
+        char = imgname[0]
+        base_key = (char, tuple(layer.path for layer in defn.layers[:-1]))
+        overlay_key = (char, defn.layers[-1].path)
+
+        base_canvas = PILImage.new("RGBA", defn.canvas, (0, 0, 0, 0))
+        for layer in defn.layers[:-1]:
+            img = self._render_ref(layer.path)
+            if img is None:
+                self._log_unsupported(imgname, f"could not render layer {layer.path!r}")
+                return (None, None)
+            base_canvas.alpha_composite(img, (layer.x, layer.y))
+
+        overlay_img = self._render_ref(defn.layers[-1].path)
+        if overlay_img is None:
+            self._log_unsupported(imgname, f"could not render layer {defn.layers[-1].path!r}")
+            return (None, None)
+        overlay_canvas = PILImage.new("RGBA", defn.canvas, (0, 0, 0, 0))
+        overlay_canvas.alpha_composite(overlay_img, (0, 0))
+
+        if char not in self._char_ref:
+            # The reference has to come from the FULL composite (base +
+            # overlay), not the base alone: confirmed by direct measurement
+            # that for at least one character, the "expression" layer is
+            # actually the whole head (it extends well above the "body"
+            # layers' own bbox, which stop at the neck) -- using a
+            # base-only bbox here would under-measure the character's true
+            # height and scale everything too large.
+            full = PILImage.alpha_composite(base_canvas, overlay_canvas)
+            bbox = full.getbbox()
+            if bbox is None:
+                self._log_unsupported(imgname, "fully transparent composite")
+                return (None, None)
+            self._establish_char_reference(char, bbox)
+
+        base_id = self._bake_layer_atom(base_key, base_canvas, char)
+        overlay_id = self._bake_layer_atom(overlay_key, overlay_canvas, char)
+        if base_id is None and overlay_id is None:
+            self._log_unsupported(imgname, "fully transparent composite")
+            return (None, None)
+        if base_id is None:
+            # Body layers alone happened to be empty for this combo (no
+            # observed case in the real game, but cheap to handle) -- the
+            # overlay is the only visible content, so ship it as the sole
+            # (primary) sprite rather than dropping the Show entirely.
+            return (overlay_id, None)
+
+        return (base_id, overlay_id)
+
+    def _establish_char_reference(self, char: str, bbox: tuple) -> None:
+        """Anchors every base/overlay atom baked for @p char to one shared
+        (scale, top-left) reference so they draw in visual alignment despite
+        being scaled/cropped independently. @p bbox is the first-encountered
+        base layer's content box (original, unscaled canvas pixels) for this
+        character.
+
+        Using the first base seen rather than re-deriving one per pose is
+        safe: direct measurement across a character's actual body-pose
+        layers (see docs/FORMAT.md's "Layered sprites") found the content
+        box's top and height identical to the pixel across poses -- only
+        its left edge/width shift slightly (a few px, from arm position),
+        which lands as a sub-pixel-to-1px horizontal difference once scaled
+        down to on-screen size. Imperceptible, and it's what lets every
+        expression atom be baked once and reused across every pose rather
+        than once per (pose, expression) pair.
+        """
+        scale = SPRITE_TARGET_HEIGHT / (bbox[3] - bbox[1])
+        self._char_ref[char] = {
+            "scale": scale,
+            "left": bbox[0],
+            "top": bbox[1],
+            "width_scaled": round((bbox[2] - bbox[0]) * scale),
+        }
+
+    def _bake_layer_atom(self, key: tuple, canvas: "PILImage.Image", char: str) -> Optional[int]:
+        """Crop @p canvas (a full composite-canvas-sized render of just one
+        atom -- a base's flattened layers, or one overlay layer alone) to
+        its own content, scale it by @p char's shared reference scale (not
+        its own bbox height, unlike _bake_sprite -- see
+        _establish_char_reference), and register it as a sprite with a
+        baked-in (dx, dy) draw offset. dx/dy are chosen so that
+        src/assets.c's existing `center_x - w/2, feet_y - h` anchor math,
+        given only a `+ dx`/`+ dy` nudge, reproduces this atom's true
+        position relative to every other atom of the same character --
+        derived once here so the on-calc side needs no per-character state,
+        just a per-sprite (dx, dy) it adds unconditionally (0, 0 for a
+        non-layered sprite reproduces today's behavior exactly).
+
+        Returns None if @p canvas is fully transparent (e.g. an overlay
+        layer that happens to be blank for this combo).
+        """
+        if key in self._layer_ids:
+            return self._layer_ids[key]
+
+        bbox = canvas.getbbox()
+        if bbox is None:
+            return None
+
+        ref = self._char_ref[char]
+        scale = ref["scale"]
+        cropped = canvas.crop(bbox)
+        size = (max(1, round(cropped.width * scale)), max(1, round(cropped.height * scale)))
+        scaled = cropped.resize(size, PILImage.LANCZOS)
+
+        ref_left_scaled = round(ref["left"] * scale)
+        ref_top_scaled = round(ref["top"] * scale)
+        left_scaled = round(bbox[0] * scale)
+        top_scaled = round(bbox[1] * scale)
+        dx = -(ref["width_scaled"] // 2) + (left_scaled - ref_left_scaled) + (size[0] // 2)
+        dy = -SPRITE_TARGET_HEIGHT + (top_scaled - ref_top_scaled) + size[1]
+
+        paths = key[1]
+        flat_paths = paths if isinstance(paths, tuple) else (paths,)
+        name = char + "_" + "-".join(Path(p).stem for p in flat_paths)
+        filename = f"sprite_{len(self.sprites):03d}_{name}.png"
+        scaled.save(self.img_dir / filename)
+
+        idx = len(self.sprites)
+        self.sprites.append({"imgname": [char, name], "file": filename,
+                             "w": size[0], "h": size[1], "dx": dx, "dy": dy})
+        self._layer_ids[key] = idx
         return idx
 
     def scene_id(self, imgname: tuple) -> Optional[int]:
@@ -575,7 +739,7 @@ class ImageResolver:
         scaled.save(self.img_dir / filename)
 
         return {"imgname": list(imgname), "file": filename,
-                "w": size[0], "h": size[1],
+                "w": size[0], "h": size[1], "dx": 0, "dy": 0,
                 "origin_x": bbox[0], "origin_y": bbox[1]}
 
     def _bake_flat(self, imgname: tuple, size: tuple, fit: bool) -> Optional[dict]:

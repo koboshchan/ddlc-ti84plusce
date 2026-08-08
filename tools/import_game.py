@@ -75,7 +75,17 @@ ALL_FILES = [
 
 DEFAULT_FILES = ["script", "script-ch0"]
 
-ARCHIVE_BUDGET = 2_500_000  # ~2.5MB target, from the plan
+ARCHIVE_BUDGET = 2_900_000  # ~2.9MB real hardware archive capacity, confirmed
+                             # on-device (see docs/FORMAT.md's "Design
+                             # constraints") -- checked against the raw sum
+                             # of every packaged AppVar's own bytes, NOT the
+                             # .b84 size: .b84 is a ZIP container, so its size
+                             # reflects deflate compression on top of
+                             # everything already inside it. A build that
+                             # looks well under budget by .b84 size can still
+                             # be several times over what actually has to
+                             # land in archive -- confirmed as a real failure
+                             # on-hardware, not just a docs gap.
 
 MAXVARSIZE = 65000  # safely under the 65535-byte TI variable cap; also the
                      # real per-chunk ceiling now, since each chunk ships as
@@ -370,6 +380,18 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
     sprite_files = [bin_for(s["file"]) for s in manifest["sprites"]]
     appvars += package_group(sprite_files, "DSPR", "DSPRLUT", build_dir, appvar_dir)
 
+    # Per-sprite (dx, dy) draw-offset table, matching DSPRLUT's order --
+    # nonzero only for a layered "expression" atom (image_resolve.py's
+    # _bake_layer_atom()), letting src/assets.c's assets_draw_sprite() draw
+    # it in alignment with its body atom using the same center/feet anchor
+    # math as an ordinary sprite, just nudged. (0, 0) for every other
+    # sprite reproduces today's behavior exactly -- see docs/FORMAT.md's
+    # "Layered sprites".
+    if manifest["sprites"]:
+        sprite_offsets = b"".join(struct.pack("<hh", s.get("dx", 0), s.get("dy", 0))
+                                  for s in manifest["sprites"])
+        appvars.append(write_appvar(sprite_offsets, "DSPROFF", appvar_dir))
+
     scene_files = [bin_for(s["file"]) for s in manifest["scenes"]]
     appvars += package_group(scene_files, "DSCN", "DSCNLUT", build_dir, appvar_dir)
 
@@ -427,13 +449,22 @@ def do_bundle(prog_8xp: Path, appvars: list[Path], out_path: Path) -> None:
     args += ["-k", "b84", "-o", str(out_path)]
     subprocess.run(args, check=True)
 
-    size = out_path.stat().st_size
-    print(f"{out_path}: {size} bytes")
-    if size > ARCHIVE_BUDGET:
-        print(f"  ! over the ~{ARCHIVE_BUDGET}-byte archive budget from the plan")
+    # The real constraint: what actually has to sit in the calculator's
+    # archive, uncompressed -- NOT out_path's size. .b84 is a ZIP container
+    # (convbin -k b84), so its size reflects deflate on top of everything
+    # already inside it, and can look well under budget while still being
+    # several times over on-hardware -- see ARCHIVE_BUDGET's comment.
+    raw_total = sum(f.stat().st_size for f in inputs)
+    b84_size = out_path.stat().st_size
+    print(f"{out_path}: {b84_size} bytes (.b84, deflate-compressed -- "
+          f"informational only)")
+    print(f"on-calc archive usage: {raw_total} bytes (every AppVar's own "
+          f"size, plus the program)")
+    if raw_total > ARCHIVE_BUDGET:
+        print(f"  ! over the ~{ARCHIVE_BUDGET}-byte real archive budget")
     else:
-        print(f"  within the ~{ARCHIVE_BUDGET}-byte archive budget "
-              f"({size / ARCHIVE_BUDGET:.0%} used)")
+        print(f"  within the ~{ARCHIVE_BUDGET}-byte real archive budget "
+              f"({raw_total / ARCHIVE_BUDGET:.0%} used)")
 
 
 def main() -> int:

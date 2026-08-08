@@ -135,7 +135,7 @@ class Compiler:
     resolver: "image_resolve.ImageResolver"
     asm: vnasm.Assembler = field(default_factory=vnasm.Assembler)
     variables: dict = field(default_factory=dict)         # name -> slot
-    last_sprite: dict = field(default_factory=dict)        # char id -> sprite id
+    last_sprite: dict = field(default_factory=dict)        # char id -> (base_id, overlay_id)
     last_pos: dict = field(default_factory=dict)            # char id -> pos enum
     transform_positions: dict = field(default_factory=dict) # transform name -> X (0..1280)
     skipped: list = field(default_factory=list)            # [SkipEntry]
@@ -299,12 +299,12 @@ class Compiler:
         # last *explicit* Show had set.
         if char is not None and node.attributes:
             imgname = (tag,) + tuple(node.attributes)
-            sprite = self.resolver.sprite_id(imgname)
-            if sprite is None:
+            base, overlay = self.resolver.sprite_layers(imgname)
+            if base is None:
                 self._skip(node, fname, f"unresolved say-attribute sprite {imgname!r}")
             else:
-                self.asm.show(char, sprite, self._resolve_pos(char, None))
-                self.last_sprite[char] = sprite
+                self.asm.show(char, base, overlay, self._resolve_pos(char, None))
+                self.last_sprite[char] = (base, overlay)
 
         self.asm.say(speaker, text)
 
@@ -325,16 +325,16 @@ class Compiler:
             # wearing. Confirmed there's no Image def for a bare character
             # name to fall back on, so this only works if we've already
             # shown them earlier in this same linear pass.
-            sprite = self.last_sprite.get(char)
-            if sprite is None:
+            base, overlay = self.last_sprite.get(char, (None, None))
+            if base is None:
                 self._skip(node, fname, f"bare 'show {imgname[0]}' with no prior sprite tracked; defaulted to 0")
-                sprite = 0
+                base, overlay = 0, None
         else:
-            sprite = self.resolver.sprite_id(imgname)
-            if sprite is None:
+            base, overlay = self.resolver.sprite_layers(imgname)
+            if base is None:
                 self._skip(node, fname, f"unresolved sprite {imgname!r}")
                 return
-            self.last_sprite[char] = sprite
+            self.last_sprite[char] = (base, overlay)
 
         # Position: DDLC positions shown poses via named ATL transforms
         # (transforms.rpy: 't31', 'f22', ...) rather than the simple built-in
@@ -345,7 +345,7 @@ class Compiler:
         # easing, or the transform family's zoom -- see _resolve_pos and
         # render.c's speaking pop for that last part).
         at_list = node.imspec[3] if len(node.imspec) > 3 else None
-        self.asm.show(char, sprite, self._resolve_pos(char, at_list))
+        self.asm.show(char, base, overlay, self._resolve_pos(char, at_list))
 
     def _emit_Hide(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)

@@ -25,6 +25,7 @@
 
 #include "assets.h"
 
+#include <compression.h>
 #include <fileioc.h>
 
 #include <stdio.h>
@@ -54,6 +55,13 @@ static uint16_t   sprite_lut_count;
 static uint8_t   *scene_lut_buf;
 static const uint8_t *scene_lut;
 static uint16_t   scene_lut_count;
+
+/* Per-sprite (i16 dx, i16 dy) draw-offset table, DSPRLUT order -- see
+ * tools/import_game.py's DSPROFF packaging and assets_draw_sprite(). Also
+ * this module's own private copy; optional, same reasoning as the title/CG
+ * tables below (a bundle predating layered sprites ships none). */
+static uint8_t   *sprite_off_buf;
+static uint16_t   sprite_off_count;
 
 /* Title screen: its own art set, layout table, and palette (see
  * tools/import_game.py's TITLE_ART and docs/FORMAT.md). All optional -- a
@@ -183,6 +191,14 @@ assets_status_t assets_init(void)
     if (!load_lut("DSPRLUT", &sprite_lut_buf, &sprite_lut, &sprite_lut_count)) {
         return ASSETS_ERR_SPRITE_LUT;
     }
+
+    /* Optional: a bundle built before layered sprites existed ships no
+     * DSPROFF, and every sprite just draws with (0, 0) offset -- see
+     * assets_draw_sprite(). */
+    uint16_t off_size;
+    sprite_off_buf = read_whole("DSPROFF", &off_size);
+    sprite_off_count = sprite_off_buf ? (uint16_t)(off_size / 4) : 0;
+
     if (!load_lut("DSCNLUT", &scene_lut_buf, &scene_lut, &scene_lut_count)) {
         return ASSETS_ERR_SCENE_LUT;
     }
@@ -291,9 +307,16 @@ bool assets_draw_sprite(uint16_t id, int center_x, int feet_y)
         return false;
     }
 
+    int16_t dx = 0, dy = 0;
+    if (id < sprite_off_count) {
+        const uint8_t *e = sprite_off_buf + (size_t)id * 4;
+        dx = (int16_t)read_u16le(e);
+        dy = (int16_t)read_u16le(e + 2);
+    }
+
     const uint8_t *data = ti_GetDataPtr(handle);
     const gfx_rletsprite_t *sprite = (const gfx_rletsprite_t *)(data + offset);
-    gfx_RLETSprite(sprite, center_x - sprite->width / 2, feet_y - sprite->height);
+    gfx_RLETSprite(sprite, center_x - sprite->width / 2 + dx, feet_y - sprite->height + dy);
 
     ti_Close(handle);
     return true;
@@ -406,30 +429,53 @@ bool assets_title_bg(uint8_t px, uint8_t py, uint8_t *dest)
  * needs reading out of the LUT entry. */
 #define SCENE_BYTES (320u * 180u)
 
+/* assets_scene() is called every frame render_scene() runs -- every
+ * typewriter tick, every idle-bob redraw (see render.c) -- not just on an
+ * actual scene change. An earlier version shipped backgrounds uncompressed
+ * because of exactly this: a naive per-call zx0_Decompress() was the real
+ * bottleneck behind sluggish text. Caching the decompressed bytes here and
+ * only re-decompressing when `id` actually changes gets the archive-space
+ * win back without paying that cost again -- every other call is just the
+ * memcpy it always was. */
+/* Heap, not a static SCENE_BYTES (57600-byte) array: this module already
+ * mallocs everything else it keeps around (script_buf, the LUT copies), and
+ * a same-sized extra static buffer overflowed the linker's fixed BSS region
+ * -- the heap has room this specific region doesn't. Allocated lazily so a
+ * bundle that never shows a background (unlikely, but no reason to require
+ * it) doesn't pay for it. */
+static uint8_t *scene_cache_buf;
+static uint8_t  scene_cache_id = 0xFF; /* no scene id this high exists -- nothing cached yet */
+
 bool assets_scene(uint8_t id, uint8_t *dest)
 {
-    uint8_t appvar_idx;
-    uint16_t offset;
-    if (!lut_lookup(scene_lut, scene_lut_count, id, &appvar_idx, &offset)) {
-        return false;
+    if (!scene_cache_buf) {
+        scene_cache_buf = malloc(SCENE_BYTES);
+        if (!scene_cache_buf) {
+            return false;
+        }
     }
 
-    char name[9];
-    sprintf(name, "DSCN%u", appvar_idx);
-    uint8_t handle = ti_Open(name, "r");
-    if (!handle) {
-        return false;
+    if (id != scene_cache_id) {
+        uint8_t appvar_idx;
+        uint16_t offset;
+        if (!lut_lookup(scene_lut, scene_lut_count, id, &appvar_idx, &offset)) {
+            return false;
+        }
+
+        char name[9];
+        sprintf(name, "DSCN%u", appvar_idx);
+        uint8_t handle = ti_Open(name, "r");
+        if (!handle) {
+            return false;
+        }
+
+        const uint8_t *data = ti_GetDataPtr(handle);
+        zx0_Decompress(scene_cache_buf, data + offset);
+        ti_Close(handle);
+        scene_cache_id = id;
     }
 
-    /* Was a per-frame zx0_Decompress() -- background art is redrawn every
-     * typewriter tick and every idle-bob frame (see render.c), so that
-     * decode was the actual bottleneck behind sluggish text and a
-     * crawling-slow breathing animation. Backgrounds now ship uncompressed
-     * (tools/convert_images.py), so this is a flat copy instead. */
-    const uint8_t *data = ti_GetDataPtr(handle);
-    memcpy(dest, data + offset, SCENE_BYTES);
-
-    ti_Close(handle);
+    memcpy(dest, scene_cache_buf, SCENE_BYTES);
     return true;
 }
 

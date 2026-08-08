@@ -101,16 +101,21 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
             # over the limit, and redundant anyway since BG_SIZE/CG_SIZE in
             # image_resolve.py already fix the size at conversion time.
             #
-            # No zx0 (this used to compress backgrounds -- sprites were
-            # already uncompressed, see the comment above): assets_scene()
-            # ran zx0_Decompress every single frame draw_background() is
-            # called, i.e. every typewriter tick and every idle-bob redraw,
-            # and that decode was the actual bottleneck behind "laggy" text
-            # and a "slow" breathing animation -- not frame pacing. A raw
-            # background is a plain memcpy instead, at the cost of more
-            # archive space (affordable: the .b84 was at 27% of budget).
+            # zx0: a background's decompressed size is always exactly
+            # SCENE_BYTES (320x180, fixed above), so src/assets.c can
+            # bounds-check a destination safely. An earlier version shipped
+            # these uncompressed because assets_scene() ran
+            # zx0_Decompress every single frame draw_background() was
+            # called -- every typewriter tick, every idle-bob redraw -- and
+            # that decode was the real bottleneck behind "laggy" text. Now
+            # decompressed once into a small cache on an actual scene
+            # change and memcpy'd from there every frame instead, so the
+            # expensive part no longer runs per-frame -- see assets.c's
+            # assets_scene(). Worth it at real game scale: uncompressed,
+            # 24 backgrounds alone need ~1.3MB against a real ~2.9MB
+            # archive.
             "name": "backgrounds", "palette": "pal_game", "style": "palette",
-            "dither": 0.4, "width-and-height": False,
+            "dither": 0.4, "width-and-height": False, "compress": "zx0",
             "images": shared_files,
         })
         outputs_converts.append("backgrounds")
@@ -170,7 +175,7 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
         })
         converts.append({
             "name": name, "palette": f"pal_{name}", "style": "palette",
-            "width-and-height": False, "images": [path],
+            "width-and-height": False, "compress": "zx0", "images": [path],
         })
         outputs_palettes.append(f"pal_{name}")
         outputs_converts.append(name)

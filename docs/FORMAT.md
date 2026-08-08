@@ -13,8 +13,21 @@ The TI-84 Plus CE imposes three hard limits that shape everything here:
 |---|---|---|
 | Screen | 320x240, 8bpp palette | One global palette; images pre-quantized on the host |
 | Max TI variable size | 65,535 bytes | Assets split across appvars via `convbin --oformat 8xv-split` |
-| User archive | ~3 MB | ~140 MB of source art must reduce ~60x |
+| User archive | ~2.9 MB real-hardware capacity | ~140 MB of source art must reduce ~50x |
 | RAM | ~150 KB usable | Only one script chunk and one sprite resident at a time -- see "Chunking" |
+
+**The archive budget is against the *uncompressed sum of every packaged
+AppVar's own bytes*, not `.b84` size.** `.b84` is a ZIP container
+(`convbin -k b84`), so its size reflects deflate compression on top of
+whatever's already inside it — a `.b84` that looks well under budget can
+still be several times over on-calculator, since AppVars land in archive at
+their own declared size, not compressed further. This was a real bug, not
+just a documentation gap: `import_game.py`'s own budget check compared
+`.b84` size against the target, so a build could report "39% used" while
+actually needing 2x the real archive. Confirmed on-hardware: a `.b84`
+reporting 2.63MB (well under the old check) actually needed 5.8MB of real
+AppVar bytes, and failed to fully transfer (some AppVars landed missing).
+Check the sum of `build/appvars/*.8xv` sizes, not `build/DDLC.b84`'s.
 
 ## Screen layout
 
@@ -58,7 +71,7 @@ global).
 | `OP_NOP` | `0x00` | — | Ignored. Unsupported Ren'Py nodes lower to this |
 | `OP_SAY` | `0x01` | `spk:u8 text:u16` | Show a line; blocks for player input. `spk=0xFF` is narration |
 | `OP_SCENE` | `0x02` | `bg:u8 trans:u8` | Change background and **clear all actors** (Ren'Py semantics) |
-| `OP_SHOW` | `0x03` | `ch:u8 sprite:u16 pos:u8` | Place/update an actor. `sprite` is a single pre-baked image id — see "Image assets" below |
+| `OP_SHOW` | `0x03` | `ch:u8 sprite:u16 overlay:u16 pos:u8` | Place/update an actor. `sprite`/`overlay` are pre-baked image ids drawn at the same anchor, `overlay` first-class `VN_NO_OVERLAY` for a single-layer sprite — see "Image assets" below |
 | `OP_HIDE` | `0x04` | `ch:u8` | Remove an actor |
 | `OP_MENU` | `0x05` | `n:u8` then `n` x (`text:u16 tgt:u24`) | Choice menu; jumps to the chosen target |
 | `OP_JUMP` | `0x06` | `tgt:u24` | Unconditional jump |
@@ -231,6 +244,7 @@ matched by `src/assets.c`:
 | `DPOEM` | The poem minigame's word bank — see "Poem minigame" |
 | `DSPR0`, `DSPR1`, … | Sprite bytes, greedily packed so no sprite's bytes ever straddle an AppVar boundary |
 | `DSPRLUT` | Lookup table: which `DSPRn` holds sprite id *i*, and where |
+| `DSPROFF` | Per-sprite `i16 dx, i16 dy` draw-offset, `DSPRLUT` order -- see "Image assets" |
 | `DSCN0`, `DSCN1`, … | Background/CG bytes, packed the same way |
 | `DSCNLUT` | Lookup table for scene ids |
 | `DPALGAME` | The 256-entry shared palette, loaded whole into `gfx_palette` |
@@ -278,24 +292,58 @@ reader never has to stitch bytes across two AppVars for one image — one
 - **Backgrounds** (`palette: "shared"`) — scaled to 320x180, quantized
   against the shared game palette, zx0-compressed (a background's
   decompressed size is always exactly 320x180 — fixed and known, so a
-  bounds-checked destination is trivial). `src/assets.c` decompresses
-  straight into the graphx draw buffer (`gfx_vbuffer`), which costs no
-  extra RAM. Solid-color scenes (`scene black`, `scene white`, …) are
-  classified here too — cheap enough to render as a flat 320x180 fill.
-- **Sprites** — DDLC composites each shown pose from 2-3 layers (e.g. body
-  halves + mouth) onto a shared 960x960 canvas, defined per named combo in
-  the Ren'Py `Image` declarations (`im.Composite(...)`), not as a fixed
-  body/face pair. Rather than layer at runtime, the converter composites
-  each *used* combo once at build time with Pillow, crops to its
-  non-transparent bounding box, and scales it down to one flat sprite.
-  `OP_SHOW` references this single pre-baked id. Stored `rlet` (transparent-run
-  encoded) but **not** zx0-compressed, unlike backgrounds: a sprite's
-  decompressed size varies per image and isn't recorded anywhere, and
-  `zx0_Decompress` has no bounds-checked API to safely guard a fixed-size
-  scratch buffer against it. Shipping sprites uncompressed instead means
-  `assets_sprite()` can point `gfx_RLETSprite()` directly at the AppVar's
-  flash bytes — zero-copy, zero-decompress, and simpler than getting the
-  scratch-buffer sizing right.
+  bounds-checked destination is trivial). `src/assets.c`'s `assets_scene()`
+  is called every frame `render_scene()` runs (every typewriter tick, every
+  idle-bob redraw), not just on an actual scene change, so it decompresses
+  into a small malloc'd cache only when the requested id differs from
+  whatever's already cached, and `memcpy`s from that cache into the graphx
+  draw buffer every call — the expensive part doesn't run per-frame. (An
+  earlier version shipped backgrounds uncompressed specifically because a
+  naive per-call decompress was measured as the real cause of laggy text;
+  the cache is what makes bringing compression back safe.) Solid-color
+  scenes (`scene black`, `scene white`, …) are classified here too — cheap
+  enough to render as a flat 320x180 fill.
+- **Sprites** — DDLC composites each shown pose from Ren'Py `Image`
+  declarations (`im.Composite(...)`), most commonly two "body" layers (e.g.
+  left/right halves) plus one "expression" layer, all layered at (0, 0) on
+  a shared per-character canvas. A character's ~10 bodies and ~30
+  expressions combine multiplicatively into 300+ Show-able combos; flattening
+  every combo into its own full bake (the original approach) ships the same
+  body pixels hundreds of times over. Instead, `tools/image_resolve.py`'s
+  `sprite_layers()` bakes each distinct body ("base") and expression
+  ("overlay") atom exactly once — measured on Act 1's actual sprite set,
+  406 combos reduce to 203 baked atoms, and total baked pixel area drops
+  ~4x, since expression atoms are far smaller crops than a full body.
+  `OP_SHOW` carries both ids; `overlay` is `VN_NO_OVERLAY` for anything that
+  doesn't fit this shape (a non-composite image, fewer than two layers, or
+  any layer positioned off (0, 0) — a handful of accessory overlays are),
+  which falls back to one full flattened bake exactly as before layering
+  existed.
+
+  Alignment: every atom for one character is scaled by the same reference
+  (established from the first full composite baked for that character) and
+  gets a baked-in `(dx, dy)` — see `DSPROFF` in the AppVar table —
+  chosen so `src/assets.c`'s existing `center_x - w/2, feet_y - h` anchor
+  math reproduces the atom's true position with only a `+ dx`/`+ dy` added
+  (0, 0 for a non-layered sprite, so this is a no-op for anything baked the
+  old way). This isn't pixel-exact for every combo — direct comparison
+  against the old per-combo-independent bake found ~4% of Act 1's sprites
+  (18 of 406) off by a handful of pixels, from expression/pose variants
+  whose true content box differs slightly from the character's reference —
+  but every case checked was either exact or differed only in edge
+  antialiasing; no case showed real misalignment or corruption.
+
+  Stored `rlet` (transparent-run encoded) but **not** zx0-compressed: a
+  sprite's decompressed size varies per image and isn't recorded anywhere,
+  and `zx0_Decompress` has no bounds-checked API to safely guard a
+  fixed-size scratch buffer against it (unlike backgrounds, where the
+  decompressed size is always the fixed `SCENE_BYTES`). Shipping sprites
+  uncompressed instead means `assets_draw_sprite()` can point
+  `gfx_RLETSprite()` directly at the AppVar's flash bytes — zero-copy,
+  zero-decompress. The layering dedup above already does most of the real
+  work sprite compression would have (measured ZX0 on RLE-encoded sprite
+  data separately: only ~18% smaller, since RLE already removes most of
+  the redundancy compression would otherwise find).
 - **CGs** (`palette: "own"`) — rendered full-screen and alone, scaled to fit
   320x180 preserving aspect (letterboxed), so each is meant to carry its own
   palette rather than share the game's. `convert_images.py` quantizes it

@@ -89,7 +89,7 @@ static int actor_slot(vn_scene_t *scene, uint8_t character)
 }
 
 static void actor_show(vn_scene_t *scene, uint8_t character, uint16_t sprite,
-                       uint8_t pos)
+                       uint16_t overlay, uint8_t pos)
 {
     int slot = actor_slot(scene, character);
 
@@ -102,6 +102,7 @@ static void actor_show(vn_scene_t *scene, uint8_t character, uint16_t sprite,
 
     scene->actors[slot].character = character;
     scene->actors[slot].sprite    = sprite;
+    scene->actors[slot].overlay   = overlay;
     scene->actors[slot].pos       = pos;
 }
 
@@ -232,13 +233,14 @@ bool vn_step(vn_vm_t *vm)
         }
 
         case OP_SHOW: {
-            uint8_t  ch     = read_u8(vm);
-            uint16_t sprite = read_u16(vm);
-            uint8_t  pos    = read_u8(vm);
+            uint8_t  ch      = read_u8(vm);
+            uint16_t sprite  = read_u16(vm);
+            uint16_t overlay = read_u16(vm);
+            uint8_t  pos     = read_u8(vm);
             if (vm->status != VN_RUNNING) {
                 break;
             }
-            actor_show(&vm->scene, ch, sprite, pos);
+            actor_show(&vm->scene, ch, sprite, overlay, pos);
             vm->host->update(vm->host->ctx, &vm->scene, TRANS_CUT);
             break;
         }

@@ -181,8 +181,17 @@ static void draw_actor(const vn_actor_t *actor, bool speaking, unsigned t)
     /* feet anchored to the box edge (plus the speaking pop); assets_draw_sprite
      * centers on width once it knows it (only it has the sprite's AppVar
      * open to check) */
-    assets_draw_sprite(actor->sprite, pos_center(actor->pos),
-                       SCENE_H + speak_pop_offset(actor->character, speaking, t));
+    int center_x = pos_center(actor->pos);
+    int feet_y = SCENE_H + speak_pop_offset(actor->character, speaking, t);
+    assets_draw_sprite(actor->sprite, center_x, feet_y);
+
+    /* Most actors are one flattened sprite (overlay == VN_NO_OVERLAY); a
+     * layered one draws its expression atom second, at the same anchor --
+     * its own (dx, dy) from DSPROFF (see assets_draw_sprite) is what places
+     * it correctly relative to the body atom just drawn. */
+    if (actor->overlay != VN_NO_OVERLAY) {
+        assets_draw_sprite(actor->overlay, center_x, feet_y);
+    }
 }
 
 /* ---------------------------------------------------------------------------
