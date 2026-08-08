@@ -26,7 +26,7 @@
 #include <time.h>
 
 /* Characters revealed per frame by the typewriter. */
-#define TYPE_SPEED 2
+#define TYPE_SPEED 4
 
 /* Not static: src/poem.c's own input loop (a self-contained screen, like the
  * ones in this file, but living separately given how much word-bank state it
