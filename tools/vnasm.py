@@ -88,11 +88,6 @@ class Assembler:
             raise AsmError(f"i16 out of range: {v}")
         self.code += struct.pack("<h", v)
 
-    def _u24(self, v: int) -> None:
-        if not 0 <= v <= 0xFFFFFF:
-            raise AsmError(f"u24 out of range: {v}")
-        self.code += struct.pack("<I", v)[:3]
-
     def _ref(self, label: str) -> None:
         """Emit a u24 placeholder to be backpatched by resolve()."""
         self._patches.append((len(self.code), label))
