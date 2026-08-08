@@ -71,7 +71,7 @@ global).
 | `OP_NOP` | `0x00` | — | Ignored. Unsupported Ren'Py nodes lower to this |
 | `OP_SAY` | `0x01` | `spk:u8 text:u16` | Show a line; blocks for player input. `spk=0xFF` is narration |
 | `OP_SCENE` | `0x02` | `bg:u8 trans:u8` | Change background and **clear all actors** (Ren'Py semantics) |
-| `OP_SHOW` | `0x03` | `ch:u8 sprite:u16 overlay:u16 pos:u8` | Place/update an actor. `sprite`/`overlay` are pre-baked image ids drawn at the same anchor, `overlay` first-class `VN_NO_OVERLAY` for a single-layer sprite — see "Image assets" below |
+| `OP_SHOW` | `0x03` | `ch:u8 sprite:u16 overlay:u16 pos:u8 flags:u8` | Place/update an actor. `sprite`/`overlay` are pre-baked image ids drawn at the same anchor, `overlay` `VN_NO_OVERLAY` for a single-layer sprite — see "Image assets" below. `flags` is `VN_FLAG_ZOOM` (0x01) / `VN_FLAG_HOP` (0x02), DDLC's real per-line speaking signal — see "The speaking pop" |
 | `OP_HIDE` | `0x04` | `ch:u8` | Remove an actor |
 | `OP_MENU` | `0x05` | `n:u8` then `n` x (`text:u16 tgt:u24`) | Choice menu; jumps to the chosen target |
 | `OP_JUMP` | `0x06` | `tgt:u24` | Unconditional jump |
@@ -295,15 +295,18 @@ reader never has to stitch bytes across two AppVars for one image — one
   decompressed size is always exactly 320x180 — fixed and known, so a
   bounds-checked destination is trivial). `src/assets.c`'s `assets_scene()`
   is called every frame `render_scene()` runs (every typewriter tick, every
-  idle-bob redraw), not just on an actual scene change, so it decompresses
-  into a small malloc'd cache only when the requested id differs from
-  whatever's already cached, and `memcpy`s from that cache into the graphx
-  draw buffer every call — the expensive part doesn't run per-frame. (An
-  earlier version shipped backgrounds uncompressed specifically because a
-  naive per-call decompress was measured as the real cause of laggy text;
-  the cache is what makes bringing compression back safe.) Solid-color
-  scenes (`scene black`, `scene white`, …) are classified here too — cheap
-  enough to render as a flat 320x180 fill.
+  idle-bob redraw), not just on an actual scene change, and it decompresses
+  straight into the caller's destination buffer on every one of those calls
+  — a small malloc'd cache (decompress only when the requested id changes,
+  `memcpy` from the cache the rest of the time) was tried, but even sized to
+  exactly one background (57.6KB) it overflowed real on-device RAM alongside
+  the graphics draw buffer and a resident script chunk, so it was reverted.
+  Backgrounds stay compressed anyway (uncompressed, 24 backgrounds alone need
+  ~1.3MB against a real ~2.9MB archive, which doesn't fit at all) — this
+  trades the per-frame decompress cost for archive space that has no cheaper
+  alternative, rather than the reverse. Solid-color scenes (`scene black`,
+  `scene white`, …) are classified here too — cheap enough to render as a
+  flat 320x180 fill.
 - **Sprites** — DDLC composites each shown pose from Ren'Py `Image`
   declarations (`im.Composite(...)`), most commonly two "body" layers (e.g.
   left/right halves) plus one "expression" layer, all layered at (0, 0) on
@@ -355,22 +358,53 @@ reader never has to stitch bytes across two AppVars for one image — one
 ## The speaking pop
 
 DDLC's own ATL (`transforms.rpy`'s `focus`/`hopfocus` vs. `tcommon`/`hop`)
-zooms whichever character is currently speaking to 1.05x and holds everyone
-else at 1.00x. `graphx` has no runtime scaler for `rlet` sprites (the same
-constraint the title screen's own dropped zoom already documents), and a
-literal 1.05x would mean baking and shipping a second scaled copy of every
-sprite, so `render.c`'s `speak_pop_offset()` approximates it with a small
-eased vertical rise instead -- driven by `scene->speaker == actor->character`
-(already tracked for the name plate, so no bytecode or compiler change was
-needed), not by which position-transform family the original script used.
-The rise eases in over 250ms when a character becomes the speaker and back
-out when they stop, using the same integer LUT/`ease()` the title screen's
-entrance uses, sampled off `clock()` rather than a frame count for the same
-reason the title intro is (see "Title screen" below).
+zooms whichever character is currently speaking to 1.05x, and separately
+bounces briefly for `hop`-flagged lines. This is authored directly per line
+in the real script -- confirmed by decompiling `transforms.rpy` and grepping
+every `Show`/`Say` `at` list across `script-ch0..ch4.rpyc`: each screen
+position has several named transform variants (`t11` base/1.00x zoom, `f11`
+focused/speaking/1.05x zoom, `h11` a one-shot bounce at 1.00x, `hf11` both
+together), and `f{pos}`/`t{pos}` show up in near-equal counts per position
+(e.g. ch2: `f32`=29, `t32`=29) -- the real script explicitly authors "at f32"
+for the exact line where that position's character is speaking, "at t32"
+otherwise. `tools/compile_script.py`'s `load_transform_animations()` reads
+this straight out of the compiled transform names (classifying each name's
+letter prefix) rather than inferring "who's speaking" from `OP_SAY`'s
+speaker field the way an earlier version of this engine did, and `OP_SHOW`
+carries the result as a `flags:u8` bitmask (`VN_FLAG_ZOOM`/`VN_FLAG_HOP` --
+see the bytecode table above).
 
-An earlier version instead ran a continuous idle sine wobble, unrelated to
-who was talking and never settling -- wrong on both counts: DDLC's animation
-is state-driven by the current speaker, not a perpetual idle loop.
+`src/assets.c`'s `assets_draw_sprite_zoomed()` performs the real 1.05x scale:
+a fixed 21:20 nearest-neighbor resample (DDLC never uses another zoom value
+here, so no general scaler is needed -- and `graphx`'s own
+`gfx_RotateScaleSprite` requires a *square* input sprite anyway, which
+character atoms never are). It decodes the sprite's `rlet` data into one
+`malloc`'d plain buffer (`gfx_ConvertFromRLETSprite()` -- `graphx` has no
+incremental/streaming decode, so a full decode is unavoidable) and writes
+scaled pixels straight into the draw buffer as they're computed, rather than
+building a second (scaled) sprite object first -- a two-buffer version peaks
+with both alive at once, which measured against this project's real Act 1
+build (its largest script chunk, `dscr11.8xv`, is 60KB) is more than fits
+alongside the ~77KB graphics draw buffer in ordinary scenes, not just
+pathological ones. Writing directly halves that peak to one buffer, but
+still can't be *guaranteed* to fit the single tightest chunk -- so it can
+fail (a checked `malloc`, same as everywhere else in this file), and
+`render.c`'s `draw_actor()` falls back to the small eased vertical rise this
+engine used exclusively before real scaling existed (`zoom_fallback_offset()`,
+kept for exactly this) whenever the real scale doesn't run this frame,
+whether because the sprite wasn't flagged for it or because the scratch
+buffer didn't fit. The rise eases in/out over 250ms using the same integer
+LUT/`ease()` the title screen's entrance uses; the one-shot hop
+(`hop_offset()`) is two back-to-back applications of that same `ease()`
+primitive covering DDLC's real `.1s` down / `.1s` up, triggered by
+`vn_actor_t.show_seq` (bumped on every real `OP_SHOW`, not part of the wire
+format -- see the bytecode table) rather than diffing the drawn sprite id,
+since DDLC sometimes uses `hop` purely for emphasis on an otherwise-unchanged
+pose.
+
+An earlier version ran a continuous idle sine wobble unrelated to who was
+talking and never settling -- wrong on both counts, and superseded by the
+above.
 
 ## Scene transitions
 
