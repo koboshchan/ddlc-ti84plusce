@@ -30,10 +30,11 @@ enum vn_op {
                           * expression) drawn on top of `sprite` (a body
                           * pose) at its own baked-in offset -- see
                           * docs/FORMAT.md's "Layered sprites". flags is
-                          * VN_FLAG_ZOOM/VN_FLAG_HOP, DDLC's real per-line
-                          * speaking signal (which named ATL transform --
-                          * "f11" vs "t11" vs "h11" -- authored this Show) --
-                          * see "The speaking pop" in docs/FORMAT.md        */
+                          * VN_FLAG_ZOOM/VN_FLAG_HOP/VN_FLAG_SINK, DDLC's real
+                          * per-line speaking/movement signal (which named
+                          * ATL transform -- "f11" vs "t11" vs "h11" vs
+                          * "s11" -- authored this Show) -- see "The speaking
+                          * pop" in docs/FORMAT.md                          */
     OP_HIDE     = 0x04, /* ch:u8                                               */
     OP_MENU     = 0x05, /* n:u8 [text:u16 tgt:u24]*  (tgt packed, see below)   */
     OP_JUMP     = 0x06, /* tgt:u24  (packed, see below)                        */
@@ -97,6 +98,8 @@ enum vn_trans { TRANS_CUT = 0, TRANS_FADE = 1 };
 #define VN_FLAG_ZOOM     0x01 /* authored "at f.." / "at hf.." -- speaking  */
 #define VN_FLAG_HOP      0x02 /* authored "at h.." / "at hf.." -- one-shot
                                 * bounce, triggered fresh each real OP_SHOW */
+#define VN_FLAG_SINK     0x04 /* authored "at s.." -- drifts down and holds
+                                * until the next Show lands back on t/f     */
 
 /* ---------------------------------------------------------------------------
  * Host interface
@@ -123,7 +126,8 @@ typedef struct {
     uint16_t overlay;   /* second layer, or VN_NO_OVERLAY                    */
     uint8_t  pos;       /* half the on-screen center X: center_x = pos * 2
                           * (tools/compile_script.py's _pos_from_x) */
-    uint8_t  flags;     /* VN_FLAG_ZOOM/VN_FLAG_HOP, as authored -- wire format */
+    uint8_t  flags;     /* VN_FLAG_ZOOM/VN_FLAG_HOP/VN_FLAG_SINK, as authored --
+                          * wire format */
     uint8_t  show_seq;  /* bumped once per real OP_SHOW targeting this slot --
                           * NOT part of the wire format. Distinguishes a
                           * genuine re-Show (possibly of the identical sprite,

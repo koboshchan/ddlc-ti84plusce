@@ -60,23 +60,35 @@ _POS_EXPR_RE = re.compile(r"^\w+\((\d+)\)$")
 # one position but differing in which visual effect they carry -- confirmed
 # by decompiling transforms.rpy: "t11" (base, zoom 1.00x), "f11" (focused --
 # the *real* speaking effect, zoom 1.05x eased in over .25s), "h11" (hop, a
-# one-shot bounce, zoom stays 1.00x), "hf11" (hop + the zoom together). The
-# real script authors "at f32" for the exact line where that position's
-# character is speaking and "at t32" otherwise -- confirmed by grepping
-# every Show/Say `at` list in script-ch0..ch4.rpyc, which found f{pos} and
-# t{pos} used in near-equal counts per position (e.g. ch2: f32=29, t32=29).
-# "s" (sink, a slow downward drift) and "l" (leftin, an entrance slide from
-# off-screen) are real DDLC effects too but out of scope here -- treated as
-# the base case (no zoom, no hop), which matches this engine's existing
-# behavior for them exactly, so this is a deliberate simplification, not a
-# regression.
+# one-shot bounce, zoom stays 1.00x), "hf11" (hop + the zoom together),
+# "s11" (sink -- eases ypos from 1.03 to 1.06, i.e. drifts down ~5 screen px
+# over .5s and *holds* there, unlike hop's bounce-back). The real script
+# authors "at f32" for the exact line where that position's character is
+# speaking and "at t32" otherwise -- confirmed by grepping every Show/Say
+# `at` list in script-ch0..ch4.rpyc, which found f{pos} and t{pos} used in
+# near-equal counts per position (e.g. ch2: f32=29, t32=29). Sink is rarer
+# (30 uses game-wide) but lands early and often enough in ch0 (twice in the
+# first 45 lines) to be one of the first things a player notices -- the
+# character visibly sinks down mid-scene, then rises back to normal the next
+# time they're shown under t/f (confirmed: both tcommon's and focus's own
+# "replace" handler eases ypos back to 1.03 over .15s, i.e. the *recovery*
+# is authored on the landing transform, not on sink itself).
+#
+# "l" (leftin, a horizontal entrance slide from off-screen) is a real DDLC
+# effect too but out of scope here -- it's a one-time entrance animation
+# rather than a per-line speaking signal, and this engine has no notion of
+# "this Show is the character's first appearance this scene" to trigger it
+# from. Treated as the base case (no zoom/hop/sink), matching this engine's
+# existing behavior, a deliberate simplification, not a regression.
 VN_FLAG_ZOOM = 1  # must match src/vn.h's VN_FLAG_ZOOM
 VN_FLAG_HOP = 2   # must match src/vn.h's VN_FLAG_HOP
+VN_FLAG_SINK = 4  # must match src/vn.h's VN_FLAG_SINK
 
 _ANIM_PREFIX_FLAGS = {
     "f": VN_FLAG_ZOOM,
     "h": VN_FLAG_HOP,
     "hf": VN_FLAG_ZOOM | VN_FLAG_HOP,
+    "s": VN_FLAG_SINK,
 }
 _ANIM_PREFIX_RE = re.compile(r"^([a-z]+?)\d*$")
 
@@ -390,9 +402,9 @@ class Compiler:
         # simple built-in left/right/truecenter keywords. Each one turns out
         # to be a single `func(X)` call on Ren'Py's 1280-wide canvas (see
         # load_transform_animations) -- converted straight to a screen X
-        # (_pos_from_x). The transform *name*'s prefix (t/f/h/hf) also
-        # carries the real per-line speaking signal -- see _resolve_anim and
-        # render.c's zoom/hop handling.
+        # (_pos_from_x). The transform *name*'s prefix (t/f/h/hf/s) also
+        # carries the real per-line speaking/movement signal -- see
+        # _resolve_anim and render.c's zoom/hop/sink handling.
         at_list = node.imspec[3] if len(node.imspec) > 3 else None
         pos, flags = self._resolve_anim(char, at_list)
         self.asm.show(char, base, overlay, pos, flags=flags)
