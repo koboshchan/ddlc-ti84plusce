@@ -460,8 +460,20 @@ static gfx_sprite_t *zoom_cache_fill(uint16_t id)
     gfx_ConvertFromRLETSprite(rle, plain);
     ti_Close(handle);
 
-    uint8_t zw = (uint8_t)zoom_scale_dim(plain->width);
-    uint8_t zh = (uint8_t)zoom_scale_dim(plain->height);
+    int zw_i = zoom_scale_dim(plain->width);
+    int zh_i = zoom_scale_dim(plain->height);
+    /* gfx_sprite_t's dimensions are uint8_t, so a source atom over 242px in
+     * either axis would scale past 255 and wrap silently, drawing garbage.
+     * The import pipeline's own limit is 255 (image_resolve.py's
+     * SPRITE_MAX_DIM), which is looser than this one -- today's largest
+     * baked atom is 196px, but nothing enforces that, so refuse rather than
+     * corrupt. The caller just draws this sprite unscaled. */
+    if (zw_i > 255 || zh_i > 255) {
+        free(plain);
+        return NULL;
+    }
+    uint8_t zw = (uint8_t)zw_i;
+    uint8_t zh = (uint8_t)zh_i;
     gfx_sprite_t *scaled = malloc((size_t)2 + (size_t)zw * zh);
     if (scaled == NULL) {
         free(plain);
