@@ -71,7 +71,7 @@ global).
 | `OP_NOP` | `0x00` | — | Ignored. Unsupported Ren'Py nodes lower to this |
 | `OP_SAY` | `0x01` | `spk:u8 text:u16` | Show a line; blocks for player input. `spk=0xFF` is narration |
 | `OP_SCENE` | `0x02` | `bg:u8 trans:u8` | Change background and **clear all actors** (Ren'Py semantics) |
-| `OP_SHOW` | `0x03` | `ch:u8 sprite:u16 overlay:u16 pos:u8 flags:u8` | Place/update an actor. `sprite`/`overlay` are pre-baked image ids drawn at the same anchor, `overlay` `VN_NO_OVERLAY` for a single-layer sprite — see "Image assets" below. `flags` is `VN_FLAG_ZOOM` (0x01) / `VN_FLAG_HOP` (0x02), DDLC's real per-line speaking signal — see "The speaking pop" |
+| `OP_SHOW` | `0x03` | `ch:u8 sprite:u16 overlay:u16 pos:u8 flags:u8` | Place/update an actor. `sprite`/`overlay` are pre-baked image ids drawn at the same anchor, `overlay` `VN_NO_OVERLAY` for a single-layer sprite — see "Image assets" below. `flags` is `VN_FLAG_ZOOM` (0x01) / `VN_FLAG_HOP` (0x02) / `VN_FLAG_SINK` (0x04), DDLC's real per-line speaking/movement signal — see "The speaking pop" |
 | `OP_HIDE` | `0x04` | `ch:u8` | Remove an actor |
 | `OP_MENU` | `0x05` | `n:u8` then `n` x (`text:u16 tgt:u24`) | Choice menu; jumps to the chosen target |
 | `OP_JUMP` | `0x06` | `tgt:u24` | Unconditional jump |
@@ -359,20 +359,41 @@ reader never has to stitch bytes across two AppVars for one image — one
 
 DDLC's own ATL (`transforms.rpy`'s `focus`/`hopfocus` vs. `tcommon`/`hop`)
 zooms whichever character is currently speaking to 1.05x, and separately
-bounces briefly for `hop`-flagged lines. This is authored directly per line
-in the real script -- confirmed by decompiling `transforms.rpy` and grepping
-every `Show`/`Say` `at` list across `script-ch0..ch4.rpyc`: each screen
-position has several named transform variants (`t11` base/1.00x zoom, `f11`
-focused/speaking/1.05x zoom, `h11` a one-shot bounce at 1.00x, `hf11` both
-together), and `f{pos}`/`t{pos}` show up in near-equal counts per position
-(e.g. ch2: `f32`=29, `t32`=29) -- the real script explicitly authors "at f32"
-for the exact line where that position's character is speaking, "at t32"
-otherwise. `tools/compile_script.py`'s `load_transform_animations()` reads
-this straight out of the compiled transform names (classifying each name's
+bounces briefly for `hop`-flagged lines. A third, unrelated transform,
+`sink`, drifts a character down and *holds* there until a later line lands
+them back on `t`/`f` -- rarer than zoom (~30 uses game-wide vs. ~650 for
+zoom) but common enough early in Chapter 0 (twice in the first 45 lines) to
+be one of the first things a player notices. All three are authored
+directly per line in the real script -- confirmed by decompiling
+`transforms.rpy` and grepping every `Show`/`Say` `at` list across
+`script-ch0..ch4.rpyc`: each screen position has several named transform
+variants (`t11` base/1.00x zoom, `f11` focused/speaking/1.05x zoom, `h11` a
+one-shot bounce at 1.00x, `hf11` both together, `s11` sink), and
+`f{pos}`/`t{pos}` show up in near-equal counts per position (e.g. ch2:
+`f32`=29, `t32`=29) -- the real script explicitly authors "at f32" for the
+exact line where that position's character is speaking, "at t32" otherwise.
+`tools/compile_script.py`'s `load_transform_animations()` reads this
+straight out of the compiled transform names (classifying each name's
 letter prefix) rather than inferring "who's speaking" from `OP_SAY`'s
 speaker field the way an earlier version of this engine did, and `OP_SHOW`
-carries the result as a `flags:u8` bitmask (`VN_FLAG_ZOOM`/`VN_FLAG_HOP` --
-see the bytecode table above).
+carries the result as a `flags:u8` bitmask (`VN_FLAG_ZOOM`/`VN_FLAG_HOP`/
+`VN_FLAG_SINK` -- see the bytecode table above).
+
+Sink's recovery is authored on the *landing* transform, not on sink itself:
+decompiling `tcommon`/`focus` found both ease `ypos` back to their resting
+1.03 over .15s in their own "replace" handler (the transition applied when
+a Show switches a still-visible character onto them), in parallel with
+whatever zoom change is also happening -- confirmed by reading their
+compiled ATL directly rather than assumed from the name. `render.c`'s
+`sink_offset()` reproduces this as a persistent on/off state (like
+`zoom_fallback_offset()` below, not `hop_offset()`'s one-shot bounce) but
+with asymmetric durations per direction: 500ms easing down to
+`SINK_PX` (DDLC's real 0.03 `ypos` fraction of the 720-tall canvas, scaled
+by this engine's existing 0.25 canvas-to-screen ratio) when a Show is
+sink-flagged, 150ms easing back to 0 the next time it isn't. Sink never
+combines with zoom or hop in the real script (they're mutually exclusive
+transform families), so `draw_actor()` just adds its offset to `feet_y`
+unconditionally alongside the hop check, no interaction to resolve.
 
 `src/assets.c`'s `assets_draw_sprite_zoomed()` performs the real 1.05x scale:
 a fixed 21:20 nearest-neighbor resample (DDLC never uses another zoom value
