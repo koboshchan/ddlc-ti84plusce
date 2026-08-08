@@ -400,7 +400,7 @@ a fixed 21:20 nearest-neighbor resample (DDLC never uses another zoom value
 here, so no general scaler is needed -- and `graphx`'s own
 `gfx_RotateScaleSprite` requires a *square* input sprite anyway, which
 character atoms never are). It decodes the sprite's `rlet` data into one
-`malloc`'d plain buffer (`gfx_ConvertFromRLETSprite()` -- `graphx` has no
+plain scratch buffer (`gfx_ConvertFromRLETSprite()` -- `graphx` has no
 incremental/streaming decode, so a full decode is unavoidable) and writes
 scaled pixels straight into the draw buffer as they're computed, rather than
 building a second (scaled) sprite object first -- a two-buffer version peaks
@@ -408,13 +408,12 @@ with both alive at once, which measured against this project's real Act 1
 build (its largest script chunk, `dscr11.8xv`, is 60KB) is more than fits
 alongside the ~77KB graphics draw buffer in ordinary scenes, not just
 pathological ones. Writing directly halves that peak to one buffer, but
-still can't be *guaranteed* to fit the single tightest chunk -- so it can
-fail (a checked `malloc`, same as everywhere else in this file), and
-`render.c`'s `draw_actor()` falls back to the small eased vertical rise this
-engine used exclusively before real scaling existed (`zoom_fallback_offset()`,
-kept for exactly this) whenever the real scale doesn't run this frame,
-whether because the sprite wasn't flagged for it or because the scratch
-buffer didn't fit. The rise eases in/out over 250ms using the same integer
+still can't be *guaranteed* to fit the single tightest chunk -- so the
+allocation can fail, and `render.c`'s `draw_actor()` falls back to the small
+eased vertical rise this engine used exclusively before real scaling existed
+(`zoom_fallback_offset()`, kept for exactly this) whenever the real scale
+doesn't run, whether because the sprite wasn't flagged for it or because the
+scratch buffer didn't fit. The rise eases in/out over 250ms using the same integer
 LUT/`ease()` the title screen's entrance uses; the one-shot hop
 (`hop_offset()`) is two back-to-back applications of that same `ease()`
 primitive covering DDLC's real `.1s` down / `.1s` up, triggered by
@@ -423,9 +422,40 @@ format -- see the bytecode table) rather than diffing the drawn sprite id,
 since DDLC sometimes uses `hop` purely for emphasis on an otherwise-unchanged
 pose.
 
-An earlier version ran a continuous idle sine wobble unrelated to who was
-talking and never settling -- wrong on both counts, and superseded by the
-above.
+Two properties of the scaled path are load-bearing enough to be worth
+stating outright, because getting either wrong is visible on the calculator
+rather than merely slow:
+
+- **A character zooms whole or not at all.** The scratch buffer belongs to
+  `draw_actor()`, not to `assets_draw_sprite_zoomed()`, and is sized once for
+  whichever of the character's two layers (body atom, expression atom) is
+  larger. Allocating per layer instead let them disagree under memory
+  pressure: the body is by far the bigger request, so it was the one that
+  failed, while the small expression atom allocated fine immediately
+  after -- putting a 1.05x head on a 1.00x body. One allocation, taken
+  before either layer draws, makes that state unreachable.
+- **No division in the inner loop.** The resample ratio is fixed, so the
+  source index is walked with a Bresenham accumulator (advance one source
+  pixel per output pixel, except every 21st, which repeats) instead of
+  computing `x * 20 / 21` per pixel. The eZ80 has no divide instruction, so
+  each of those was a software routine costing far more than the byte copy
+  it guarded, ~25000 times per layer per frame. Screen clipping is likewise
+  resolved into a destination rectangle once, before the loop, rather than
+  bounds-testing every pixel.
+
+Redraw frequency matters as much as redraw cost here, which is
+`render_scene_lazy()`'s job (see `src/render.h`): it skips the whole
+background-decode-plus-actor-pass when the previous `render_scene()` left
+every offset above at rest. The three offset helpers each report whether
+their own ease is still in flight, so "at rest" is exact. An earlier version
+instead waited out a fixed 500ms -- the longest transition any of them can
+run -- after every `OP_SHOW`, which meant a full rebuild of the scene on
+every typewriter tick for half a second even in the common case where
+nothing was easing at all and the first frame drawn was already final.
+
+An earlier version still ran a continuous idle sine wobble unrelated to who
+was talking and never settling -- wrong on both counts, and superseded by
+all of the above.
 
 ## Scene transitions
 

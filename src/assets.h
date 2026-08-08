@@ -82,15 +82,28 @@ const char *assets_string(uint16_t index);
 bool assets_draw_sprite(uint16_t id, int center_x, int feet_y);
 
 /**
+ * Bytes a plain (RLE-decoded) copy of sprite @p id occupies, i.e. the
+ * minimum size of the scratch buffer assets_draw_sprite_zoomed() needs for
+ * it. Returns 0 if @p id is out of range or its AppVar is missing.
+ *
+ * Split out from the draw so a caller compositing several layers of one
+ * character can size *one* buffer for all of them and decide once whether
+ * the whole character zooms -- see draw_actor() in render.c.
+ */
+size_t assets_sprite_plain_size(uint16_t id);
+
+/**
  * Like assets_draw_sprite(), but scaled 1.05x (DDLC's real speaking zoom --
  * see docs/FORMAT.md's "The speaking pop"). Costs a real decode+resample
- * instead of assets_draw_sprite()'s zero-copy blit, so it can fail (returns
- * false) where assets_draw_sprite() wouldn't -- a malloc failure alongside a
- * large resident script chunk is expected sometimes on real hardware, not
- * just a theoretical edge case. Callers should fall back to
- * assets_draw_sprite() on a false return, never treat it as fatal.
+ * instead of assets_draw_sprite()'s zero-copy blit, and needs somewhere to
+ * put the decoded pixels: @p scratch must be a buffer of at least
+ * assets_sprite_plain_size(@p id) bytes, owned by the caller (this function
+ * neither allocates nor frees it).
+ *
+ * Returns false, without drawing anything, if @p id can't be resolved --
+ * callers should fall back to assets_draw_sprite(), never treat it as fatal.
  */
-bool assets_draw_sprite_zoomed(uint16_t id, int center_x, int feet_y);
+bool assets_draw_sprite_zoomed(uint16_t id, int center_x, int feet_y, void *scratch);
 
 /**
  * Copies background/CG @p id's raw 320x180 palette-index pixels directly

@@ -11,6 +11,7 @@
 #include <sys/timers.h>
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -146,6 +147,15 @@ static int ease(const uint8_t *lut, int amp, unsigned t, unsigned at, unsigned d
 #define SPEAK_POP_PX   4    /* screen px risen, as a zoom stand-in */
 #define SPEAK_POP_MS 250    /* ms to ease in or out of the pop */
 
+/* Set by any of the three offset helpers below whose eased transition is
+ * still in flight as of the frame being drawn, and cleared by render_scene()
+ * before it walks the actors. What's left afterwards answers "could the next
+ * frame of this same scene come out different from this one?", which is
+ * exactly what render_scene_lazy() needs to know -- see it for why that
+ * matters. Each helper owns the test for its own duration so the answer
+ * can't drift from the easing it describes. */
+static bool anim_moving;
+
 static int zoom_fallback_offset(uint8_t character, bool zoomed, unsigned t)
 {
     static bool     was_zoomed[VN_MAX_CHARS];
@@ -157,6 +167,9 @@ static int zoom_fallback_offset(uint8_t character, bool zoomed, unsigned t)
         changed_at[character] = t;
     }
     int new_rest = zoomed ? -SPEAK_POP_PX : 0;
+    if (t - changed_at[character] < SPEAK_POP_MS) {
+        anim_moving = true;
+    }
 
     /* ease() decays `amp` toward 0 as `t` runs from the change to
      * change+dur, so amp = old_rest - new_rest lands exactly on old_rest at
@@ -199,6 +212,7 @@ static int hop_offset(uint8_t character, uint8_t show_seq, unsigned t)
     if (elapsed >= HOP_MS) {
         return 0;
     }
+    anim_moving = true;
     if (elapsed < HOP_MS / 2) {
         return -HOP_PX + ease(ease_remain, HOP_PX, t, hop_started_at[character], HOP_MS / 2);
     }
@@ -239,6 +253,9 @@ static int sink_offset(uint8_t character, bool sinking, unsigned t)
     }
     int new_rest = sinking ? SINK_PX : 0;
     unsigned dur = sinking ? SINK_DOWN_MS : SINK_UP_MS;
+    if (t - changed_at[character] < dur) {
+        anim_moving = true;
+    }
 
     return new_rest + ease(ease_remain, old_rest - new_rest, t,
                            changed_at[character], dur);
@@ -286,13 +303,36 @@ static void draw_actor(const vn_actor_t *actor, unsigned t)
     }
     feet_y += sink_offset(actor->character, (actor->flags & VN_FLAG_SINK) != 0, t);
 
-    /* assets_draw_sprite_zoomed() can fail on a real device (a malloc
-     * alongside a large resident script chunk -- see its file comment in
-     * assets.c) even when zoom_wanted is true, which is why this doesn't
-     * just branch on zoom_wanted: fall back to the plain draw, nudged by
-     * fallback_off, whenever the real scale didn't actually happen this
-     * frame, not only when it wasn't attempted. */
-    if (!(zoom_wanted && assets_draw_sprite_zoomed(actor->sprite, center_x, feet_y))) {
+    /* One scratch buffer, sized for whichever of this character's layers is
+     * larger, serves both of them -- and, crucially, decides for both at
+     * once whether the real scale happens at all.
+     *
+     * Allocating per layer instead let the two disagree: the body atom is
+     * by far the bigger allocation, so on a tight chunk it was the one that
+     * failed, while the small expression atom right after it succeeded --
+     * drawing a 1.05x head on a 1.00x body. Deciding once, before either
+     * layer is drawn, makes that impossible: the character zooms whole or
+     * not at all. A zero from assets_sprite_plain_size() (unresolvable id)
+     * also disqualifies the pair, so no layer is ever handed a buffer sized
+     * for the other one. */
+    void *scratch = NULL;
+    if (zoom_wanted) {
+        size_t need = assets_sprite_plain_size(actor->sprite);
+        if (need != 0 && actor->overlay != VN_NO_OVERLAY) {
+            size_t over = assets_sprite_plain_size(actor->overlay);
+            need = (over == 0) ? 0 : (over > need ? over : need);
+        }
+        if (need != 0) {
+            scratch = malloc(need);
+        }
+    }
+
+    /* The real scale can still be unavailable on a real device (no room for
+     * that buffer alongside a large resident script chunk -- see assets.c's
+     * file comment), which is why this doesn't just branch on zoom_wanted:
+     * fall back to the plain draw, nudged by fallback_off, whenever the
+     * real scale didn't actually happen, not only when it wasn't wanted. */
+    if (!(scratch && assets_draw_sprite_zoomed(actor->sprite, center_x, feet_y, scratch))) {
         assets_draw_sprite(actor->sprite, center_x, feet_y + fallback_off);
     }
 
@@ -301,30 +341,27 @@ static void draw_actor(const vn_actor_t *actor, unsigned t)
      * its own (dx, dy) from DSPROFF is what places it correctly relative to
      * the body atom just drawn, at either scale. */
     if (actor->overlay != VN_NO_OVERLAY &&
-        !(zoom_wanted && assets_draw_sprite_zoomed(actor->overlay, center_x, feet_y))) {
+        !(scratch && assets_draw_sprite_zoomed(actor->overlay, center_x, feet_y, scratch))) {
         assets_draw_sprite(actor->overlay, center_x, feet_y + fallback_off);
     }
+
+    free(scratch);
 }
 
 /* ---------------------------------------------------------------------------
  * Public drawing
  * ------------------------------------------------------------------------ */
 
-/* render_scene_lazy() (below) needs to know how long the longest possible
- * eased transition can still be in flight after a real Show/Scene/Hide --
- * SINK_DOWN_MS is the longest of the three (500ms vs. SPEAK_POP_MS's 250 and
- * HOP_MS's 200). Once that much time has passed since the last real
- * render_scene() call, every actor's offset is guaranteed settled (each
- * offset function clamps to its rest value once elapsed >= its own
- * duration), so there's nothing left for a redraw to change. */
-#define MAX_ANIM_SETTLE_MS SINK_DOWN_MS
-
-static unsigned last_full_draw_at;
-static bool     have_drawn_once;
+/* Whether the last render_scene() left every actor at rest, and whether one
+ * has happened at all yet. Together these are what render_scene_lazy() reads
+ * to decide it can skip -- see it below. */
+static bool scene_settled;
+static bool have_drawn_once;
 
 void render_scene(const vn_scene_t *scene)
 {
     draw_background(scene->background);
+    anim_moving = false;
 
     /* Real elapsed time, not a frame count -- render_scene() is called from
      * many different loops (the typewriter reveal, idle waits, the pause
@@ -341,15 +378,13 @@ void render_scene(const vn_scene_t *scene)
         }
     }
 
-    last_full_draw_at = t;
-    have_drawn_once    = true;
+    scene_settled   = !anim_moving;
+    have_drawn_once = true;
 }
 
 void render_scene_lazy(const vn_scene_t *scene)
 {
-    unsigned t = (unsigned)(clock() * 1000UL / CLOCKS_PER_SEC);
-
-    if (!have_drawn_once || t - last_full_draw_at < MAX_ANIM_SETTLE_MS) {
+    if (!have_drawn_once || !scene_settled) {
         render_scene(scene);
         return;
     }
@@ -363,11 +398,19 @@ void render_scene_lazy(const vn_scene_t *scene)
      * the (new) visible screen every single call, so the two never drift
      * apart. Skipping straight to nothing here avoids re-decompressing the
      * background (a real zx0 decode, not free) and redrawing every actor
-     * (AppVar opens plus, for a zoomed one, a real malloc/decode/resample)
-     * for a frame that would come out pixel-identical anyway -- the
-     * difference between "laggy" and not in a scene with several actors on
-     * screen at once, where this used to happen on every single typewriter
-     * tick and every idle frame spent just waiting for the player to read. */
+     * (AppVar opens plus, for a zoomed one, a real decode/resample) for a
+     * frame that would come out pixel-identical anyway -- the difference
+     * between "laggy" and not in a scene with several actors on screen at
+     * once, where this used to happen on every single typewriter tick and
+     * every idle frame spent just waiting for the player to read.
+     *
+     * The gate is scene_settled rather than "has the longest possible
+     * transition's worth of wall-clock time passed since the last real
+     * draw?", which is how this first shipped: that spent a fixed 500ms of
+     * full redraws after *every* Show, including the overwhelming majority
+     * where nothing was easing at all and the very first frame was already
+     * final. Asking the offset helpers directly costs nothing and settles
+     * on the next frame in that case. */
 }
 
 /* Character ids are fixed (compile_script.py's TAG_TO_CHAR), not part of
