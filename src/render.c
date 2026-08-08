@@ -24,6 +24,12 @@ void render_init(void)
     gfx_SetDrawBuffer();
     gfx_SetTextTransparentColor(COL_TRANSPARENT);
     gfx_SetTextBGColor(COL_TRANSPARENT);
+    /* Independent of the text transparency above -- a separate graphx
+     * global. Not actually read by assets_draw_sprite_zoomed() (it checks
+     * the transparent index directly rather than going through a
+     * gfx_TransparentSprite()-style call), but set here once anyway to keep
+     * this convention fixed and documented in one place. */
+    gfx_SetTransparentColor(COL_TRANSPARENT);
 }
 
 void render_end(void)
@@ -119,34 +125,36 @@ static int ease(const uint8_t *lut, int amp, unsigned t, unsigned at, unsigned d
  * Scene art
  * ------------------------------------------------------------------------ */
 
-/* Speaking pop: DDLC's own ATL (transforms.rpy's `focus`/`hopfocus` vs.
- * `tcommon`/`hop`) zooms whichever character is currently speaking to 1.05x
- * and holds everyone else at 1.00x -- an earlier version of this engine
- * instead ran a continuous idle sine wobble unrelated to who was talking,
- * which was both the wrong effect and, being unbounded, never settled.
+/* The speaking pop: DDLC's own ATL (transforms.rpy's `focus`/`hopfocus` vs.
+ * `tcommon`/`hop`) zooms whichever character is currently speaking to 1.05x,
+ * and separately bounces briefly for "hop"-flagged lines -- both authored
+ * directly per-line in the real script (which named transform, e.g. "f32"
+ * vs "t32", compiles a Show), not inferred at runtime from OP_SAY's speaker
+ * field the way an earlier version of this engine did (see
+ * tools/compile_script.py's _resolve_anim). assets_draw_sprite_zoomed()
+ * does the real 1.05x scale now.
  *
- * graphx has no runtime scaler for rlet sprites (the same constraint that
- * dropped the title screen's own zoom -- see its file comment), so a literal
- * 1.05x isn't cheap: it would mean baking and shipping a second scaled copy
- * of every sprite. A small vertical rise approximates the "coming forward"
- * read instead, eased in when a character becomes the speaker and back out
- * when they stop, using the same curve/timing shape as DDLC's own 0.25s
- * `on show` ease (see `focus`'s ATL) rather than DDLC's raw pixel amount
- * (which is against a 1280-wide canvas the 320-wide scene has no room for). */
-#define SPEAK_POP_PX   4    /* screen px risen while speaking */
+ * That scale isn't free, though (real per-frame pixel work + a malloc that
+ * can fail alongside a large resident script chunk -- see its own file
+ * comment in assets.c for the measured numbers), so zoom_fallback_offset()
+ * below is kept, not deleted: it's the small vertical-rise approximation
+ * this engine used exclusively before real scaling existed, now repurposed
+ * as what draw_actor() falls back to on the frames assets_draw_sprite_zoomed()
+ * can't run. */
+#define SPEAK_POP_PX   4    /* screen px risen, as a zoom stand-in */
 #define SPEAK_POP_MS 250    /* ms to ease in or out of the pop */
 
-static int speak_pop_offset(uint8_t character, bool speaking, unsigned t)
+static int zoom_fallback_offset(uint8_t character, bool zoomed, unsigned t)
 {
-    static bool     was_speaking[VN_MAX_CHARS];
+    static bool     was_zoomed[VN_MAX_CHARS];
     static unsigned changed_at[VN_MAX_CHARS];
 
-    int old_rest = was_speaking[character] ? -SPEAK_POP_PX : 0;
-    if (speaking != was_speaking[character]) {
-        was_speaking[character] = speaking;
+    int old_rest = was_zoomed[character] ? -SPEAK_POP_PX : 0;
+    if (zoomed != was_zoomed[character]) {
+        was_zoomed[character] = zoomed;
         changed_at[character] = t;
     }
-    int new_rest = speaking ? -SPEAK_POP_PX : 0;
+    int new_rest = zoomed ? -SPEAK_POP_PX : 0;
 
     /* ease() decays `amp` toward 0 as `t` runs from the change to
      * change+dur, so amp = old_rest - new_rest lands exactly on old_rest at
@@ -154,6 +162,45 @@ static int speak_pop_offset(uint8_t character, bool speaking, unsigned t)
      * this particular transition runs. */
     return new_rest + ease(ease_remain, old_rest - new_rest, t,
                            changed_at[character], SPEAK_POP_MS);
+}
+
+/* The real one-shot hop: DDLC's `hop`/`hopfocus` ATL eases yoffset to -20
+ * over .1s then back to 0 over .1s -- a bounce that plays once per Show,
+ * not a sustained state (unlike the zoom above, which holds for as long as
+ * the character keeps being shown under a focus-flagged transform). Two
+ * back-to-back applications of the same ease() primitive above cover the
+ * down-then-up shape; no new curve is needed. HOP_PX is DDLC's real 20
+ * Ren'Py px scaled by this engine's existing 0.25 canvas-to-screen ratio,
+ * matching SPEAK_POP_PX's own convention. */
+#define HOP_PX  5
+#define HOP_MS 200
+
+static int hop_offset(uint8_t character, uint8_t show_seq, unsigned t)
+{
+    static uint8_t  last_seq[VN_MAX_CHARS];
+    static unsigned hop_started_at[VN_MAX_CHARS];
+
+    /* actor->show_seq bumps on every real OP_SHOW targeting this character,
+     * whether or not the sprite/pos actually changed -- e.g. `hop` used
+     * purely for emphasis on an otherwise-unchanged pose -- so diffing it
+     * here (rather than diffing the drawn sprite id) catches that case too.
+     * Only called by draw_actor() while the current Show is hop-flagged, so
+     * an unflagged Show correctly abandons any bounce still in flight
+     * instead of finishing it -- matching the source ATL, where the bounce
+     * belongs to that specific transform being the active one. */
+    if (show_seq != last_seq[character]) {
+        last_seq[character] = show_seq;
+        hop_started_at[character] = t;
+    }
+
+    unsigned elapsed = t - hop_started_at[character];
+    if (elapsed >= HOP_MS) {
+        return 0;
+    }
+    if (elapsed < HOP_MS / 2) {
+        return -HOP_PX + ease(ease_remain, HOP_PX, t, hop_started_at[character], HOP_MS / 2);
+    }
+    return ease(ease_remain, -HOP_PX, t, hop_started_at[character] + HOP_MS / 2, HOP_MS / 2);
 }
 
 static void draw_background(uint8_t bg)
@@ -176,21 +223,43 @@ static int pos_center(uint8_t pos)
     return (int)pos * 2;
 }
 
-static void draw_actor(const vn_actor_t *actor, bool speaking, unsigned t)
+static void draw_actor(const vn_actor_t *actor, unsigned t)
 {
-    /* feet anchored to the box edge (plus the speaking pop); assets_draw_sprite
-     * centers on width once it knows it (only it has the sprite's AppVar
-     * open to check) */
     int center_x = pos_center(actor->pos);
-    int feet_y = SCENE_H + speak_pop_offset(actor->character, speaking, t);
-    assets_draw_sprite(actor->sprite, center_x, feet_y);
+    bool zoom_wanted = (actor->flags & VN_FLAG_ZOOM) != 0;
+
+    /* Called every frame regardless of whether the real zoom below actually
+     * runs and succeeds this frame -- that's what lets it track the
+     * zoomed/not-zoomed transition correctly and ease back out properly
+     * even after a run of frames where the real zoom worked and this
+     * return value went unused. */
+    int fallback_off = zoom_fallback_offset(actor->character, zoom_wanted, t);
+
+    /* feet anchored to the box edge, plus the one-shot hop if this Show
+     * authored one -- both the real zoom and its fallback anchor from this
+     * same feet_y, so the hop bounce applies identically either way. */
+    int feet_y = SCENE_H;
+    if (actor->flags & VN_FLAG_HOP) {
+        feet_y += hop_offset(actor->character, actor->show_seq, t);
+    }
+
+    /* assets_draw_sprite_zoomed() can fail on a real device (a malloc
+     * alongside a large resident script chunk -- see its file comment in
+     * assets.c) even when zoom_wanted is true, which is why this doesn't
+     * just branch on zoom_wanted: fall back to the plain draw, nudged by
+     * fallback_off, whenever the real scale didn't actually happen this
+     * frame, not only when it wasn't attempted. */
+    if (!(zoom_wanted && assets_draw_sprite_zoomed(actor->sprite, center_x, feet_y))) {
+        assets_draw_sprite(actor->sprite, center_x, feet_y + fallback_off);
+    }
 
     /* Most actors are one flattened sprite (overlay == VN_NO_OVERLAY); a
      * layered one draws its expression atom second, at the same anchor --
-     * its own (dx, dy) from DSPROFF (see assets_draw_sprite) is what places
-     * it correctly relative to the body atom just drawn. */
-    if (actor->overlay != VN_NO_OVERLAY) {
-        assets_draw_sprite(actor->overlay, center_x, feet_y);
+     * its own (dx, dy) from DSPROFF is what places it correctly relative to
+     * the body atom just drawn, at either scale. */
+    if (actor->overlay != VN_NO_OVERLAY &&
+        !(zoom_wanted && assets_draw_sprite_zoomed(actor->overlay, center_x, feet_y))) {
+        assets_draw_sprite(actor->overlay, center_x, feet_y + fallback_off);
     }
 }
 
@@ -205,14 +274,15 @@ void render_scene(const vn_scene_t *scene)
     /* Real elapsed time, not a frame count -- render_scene() is called from
      * many different loops (the typewriter reveal, idle waits, the pause
      * menu overlay) rather than one central per-frame driver like the title
-     * screen has, so speak_pop_offset() samples the clock itself here rather
-     * than threading a @p t parameter through every one of those call sites. */
+     * screen has, so zoom_fallback_offset()/hop_offset() sample the clock
+     * themselves here rather than threading a @p t parameter through every
+     * one of those call sites. */
     unsigned t = (unsigned)(clock() * 1000UL / CLOCKS_PER_SEC);
 
     for (int i = 0; i < VN_MAX_CHARS; i++) {
         const vn_actor_t *actor = &scene->actors[i];
         if (actor->character != VN_NO_SPRITE) {
-            draw_actor(actor, actor->character == scene->speaker, t);
+            draw_actor(actor, t);
         }
     }
 }
