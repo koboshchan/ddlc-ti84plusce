@@ -160,13 +160,22 @@ _AUDIO_PREFIXES = ("play ", "stop ", "queue ", "voice ")
 
 VN_MAX_VARS = 64
 
-# Conservative threshold for compile_file_chunked()'s mid-file split: leaves
-# headroom under import_game.py's MAXVARSIZE (65000) for the chunk
-# container's own overhead (u16 code_length/string_count, plus a u16 length
-# + NUL per string -- 3 bytes/string not counted by this raw code+string
-# sum) and for however much more the file grows before the next top-level
-# Label boundary (the only point a split is allowed) is reached.
-CHUNK_SIZE_BUDGET = 58000
+# Threshold for compile_file_chunked()'s mid-file split. The hard ceiling is
+# import_game.py's MAXVARSIZE (65000), and this used to sit just under it at
+# 58000 -- but the binding constraint is runtime RAM, not AppVar size. The
+# resident chunk shares the calculator's ~150KB of usable RAM with graphx's
+# ~77KB draw buffer, so a 58000-budget chunk (they reached 62.8KB, since a
+# split is only allowed at a top-level Label boundary and the budget is
+# checked before crossing one) left barely 10KB free -- too little for
+# render-time scratch, which is why src/assets.c's scaled-sprite cache and
+# the moving-actor backdrop plate in src/render.c would simply fail to
+# allocate and silently fall back on exactly the busiest chapters.
+#
+# At 24000 the same Act 1 script becomes 19 chunks instead of 14, the
+# largest 29KB, leaving ~44KB free. The cost is more AppVars and slightly
+# more frequent chunk loads, each of which is itself proportionally cheaper
+# to read.
+CHUNK_SIZE_BUDGET = 24000
 
 
 class CompileError(Exception):
