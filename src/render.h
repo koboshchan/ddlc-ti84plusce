@@ -57,8 +57,26 @@ void render_init(void);
 /** Tear down graphx. */
 void render_end(void);
 
-/** Draw background + actors into the back buffer, without the dialogue box. */
+/** Draw background + actors into the back buffer, without the dialogue box.
+ * Always does the real work -- use this for a Show/Scene/Hide event (i.e.
+ * from host_update()) or anywhere else the scene may have actually changed.
+ * For a loop that redraws the *same* scene repeatedly (the typewriter
+ * reveal, idle waits for input) with nothing but the dialogue text moving,
+ * use render_scene_lazy() instead -- it's much cheaper once any zoom/hop/
+ * sink transition has settled. */
 void render_scene(const vn_scene_t *scene);
+
+/**
+ * Like render_scene(), but skips the real redraw (a real background zx0
+ * decode plus a full pass over every actor) once nothing is left animating
+ * since the last render_scene() call -- the draw buffer already holds the
+ * correct pixels in that case, since render_present() keeps it in sync with
+ * whatever's actually on screen every frame. Only safe for a caller that
+ * redraws the *same* logical scene every call (no Show/Scene/Hide can have
+ * happened since the last render_scene()) -- the typewriter reveal and the
+ * "waiting for the player to advance" idle loop, both in main.c.
+ */
+void render_scene_lazy(const vn_scene_t *scene);
 
 /**
  * Draw the dialogue box with @p text revealed up to @p visible characters.

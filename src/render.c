@@ -310,6 +310,18 @@ static void draw_actor(const vn_actor_t *actor, unsigned t)
  * Public drawing
  * ------------------------------------------------------------------------ */
 
+/* render_scene_lazy() (below) needs to know how long the longest possible
+ * eased transition can still be in flight after a real Show/Scene/Hide --
+ * SINK_DOWN_MS is the longest of the three (500ms vs. SPEAK_POP_MS's 250 and
+ * HOP_MS's 200). Once that much time has passed since the last real
+ * render_scene() call, every actor's offset is guaranteed settled (each
+ * offset function clamps to its rest value once elapsed >= its own
+ * duration), so there's nothing left for a redraw to change. */
+#define MAX_ANIM_SETTLE_MS SINK_DOWN_MS
+
+static unsigned last_full_draw_at;
+static bool     have_drawn_once;
+
 void render_scene(const vn_scene_t *scene)
 {
     draw_background(scene->background);
@@ -328,6 +340,34 @@ void render_scene(const vn_scene_t *scene)
             draw_actor(actor, t);
         }
     }
+
+    last_full_draw_at = t;
+    have_drawn_once    = true;
+}
+
+void render_scene_lazy(const vn_scene_t *scene)
+{
+    unsigned t = (unsigned)(clock() * 1000UL / CLOCKS_PER_SEC);
+
+    if (!have_drawn_once || t - last_full_draw_at < MAX_ANIM_SETTLE_MS) {
+        render_scene(scene);
+        return;
+    }
+
+    /* Nothing left to animate, and nothing else could have changed the
+     * scene without going through render_scene() first (a real Show/Scene/
+     * Hide always redraws via host_update() in main.c) -- so the draw
+     * buffer, as of the last render_present(), already holds exactly this
+     * frame's correct pixels: render_present()'s gfx_SwapDraw() followed
+     * immediately by gfx_BlitScreen() re-syncs the (new) draw buffer from
+     * the (new) visible screen every single call, so the two never drift
+     * apart. Skipping straight to nothing here avoids re-decompressing the
+     * background (a real zx0 decode, not free) and redrawing every actor
+     * (AppVar opens plus, for a zoomed one, a real malloc/decode/resample)
+     * for a frame that would come out pixel-identical anyway -- the
+     * difference between "laggy" and not in a scene with several actors on
+     * screen at once, where this used to happen on every single typewriter
+     * tick and every idle frame spent just waiting for the player to read. */
 }
 
 /* Character ids are fixed (compile_script.py's TAG_TO_CHAR), not part of

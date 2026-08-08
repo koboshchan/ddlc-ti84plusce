@@ -207,9 +207,11 @@ static bool run_pause_menu(vn_vm_t *vm)
 }
 
 /** Block until any of the tracked keys goes down, or a quit is requested.
- * Keeps redrawing @p vm's scene each frame so the idle bob (render.c) keeps
- * animating while the player is just looking at a fully-revealed line, not
- * only during the typewriter reveal.
+ * Keeps redrawing @p vm's scene each frame (render_scene_lazy(), so this
+ * costs nothing once any zoom/hop/sink transition has settled) so a
+ * still-animating Show finishes playing out even if the player is just
+ * looking at an already fully-revealed line, not only during the
+ * typewriter reveal.
  *
  * @p allow_pause gates Mode opening the pause menu here -- only true while
  * vn_run() is actually driving @p vm. The other caller (main()'s final
@@ -235,7 +237,7 @@ static void wait_for_advance(vn_vm_t *vm, bool allow_pause)
             continue; /* resumed (or just loaded) -- redraw fresh next loop */
         }
         if (!quit_requested) {
-            render_scene(scene);
+            render_scene_lazy(scene);
             render_box(scene, scene->text, SIZE_MAX);
             render_present(TRANS_CUT);
             gfx_Wait();
@@ -431,7 +433,7 @@ static void host_say(void *ctx, const vn_scene_t *scene)
             visible = len;
         }
 
-        render_scene(scene);
+        render_scene_lazy(scene);
         render_box(scene, scene->text, visible);
         render_present(TRANS_CUT);
         gfx_Wait();
