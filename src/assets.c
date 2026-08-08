@@ -128,6 +128,13 @@ bool assets_load_chunk(uint8_t chunk_id)
     free(script_buf);
     script_buf = NULL;
 
+    /* Same reasoning, one step further: a cached scaled sprite is worth a
+     * few KB of redraw savings, and the chunk about to be read is worth the
+     * game continuing to run. Drop the cache here rather than risk the
+     * allocation below failing because of it -- the next zoomed draw simply
+     * rebuilds what it needs. */
+    assets_zoom_cache_clear();
+
     char name[9];
     sprintf(name, "DSCR%u", chunk_id);
 
@@ -362,115 +369,128 @@ static int zoom_scale_off(int v)
                     : -((-v * ZOOM_NUM + ZOOM_DEN / 2) / ZOOM_DEN);
 }
 
-size_t assets_sprite_plain_size(uint16_t id)
+/* --- the scaled-sprite cache --------------------------------------------
+ *
+ * Everything below the resample exists because the scale is *constant*.
+ * DDLC's speaking zoom is one fixed 1.05x, and this engine animates a
+ * character's position (hop, sink, the eased fallback rise) but never the
+ * zoom itself -- so across every frame of a speaking line the scaled pixels
+ * are identical and only the destination y moves. Recomputing them per frame
+ * meant an AppVar open, a full RLE decode and a full resample for a bitmap
+ * that never changed.
+ *
+ * So a scaled bitmap is built once and kept, and the per-frame cost drops to
+ * a single graphx blit -- the same cost as drawing any ordinary sprite.
+ *
+ * Two slots is not a guess: replaying all of Act 1 through tools/host_sim
+ * with --trace, no scene state ever has more than one actor carrying
+ * VN_FLAG_ZOOM (72 of 281 have exactly one, the rest none), and a zoomed
+ * actor needs at most two bitmaps -- its body atom and its expression atom.
+ * Two slots therefore hold a whole speaking character with nothing to evict,
+ * and a new speaker replaces both within one frame.
+ *
+ * Cached bitmaps are freed on any chunk load (see assets_load_chunk), which
+ * is where this program's largest allocation happens: a body atom's scaled
+ * copy is ~14KB against a script chunk of up to ~62KB, and holding one
+ * across that boundary could turn a chunk load -- fatal -- into a failure to
+ * save a redraw that is merely nice to have.
+ */
+
+#define ZOOM_CACHE_SLOTS 2
+
+static struct {
+    uint16_t      id;
+    gfx_sprite_t *spr;   /* NULL == this slot is empty */
+} zoom_cache[ZOOM_CACHE_SLOTS];
+
+static uint8_t zoom_cache_next;
+
+void assets_zoom_cache_clear(void)
 {
-    uint8_t appvar_idx;
-    uint16_t offset;
-    int16_t dx, dy;
-    if (!sprite_lookup(id, &appvar_idx, &offset, &dx, &dy)) {
-        return 0;
+    for (uint8_t i = 0; i < ZOOM_CACHE_SLOTS; i++) {
+        free(zoom_cache[i].spr);
+        zoom_cache[i].spr = NULL;
     }
-
-    char name[9];
-    sprintf(name, "DSPR%u", appvar_idx);
-    uint8_t handle = ti_Open(name, "r");
-    if (!handle) {
-        return 0;
-    }
-
-    const gfx_rletsprite_t *sprite =
-        (const gfx_rletsprite_t *)(ti_GetDataPtr(handle) + offset);
-    size_t need = (size_t)2 + (size_t)sprite->width * sprite->height;
-    ti_Close(handle);
-    return need;
+    zoom_cache_next = 0;
 }
 
-/* Real 1.05x pixel scaling of a body/overlay atom -- unlike
- * assets_draw_sprite(), which points gfx_RLETSprite() directly at the
- * AppVar's own flash bytes with zero copying, this has to actually
- * materialize pixels: RLE data can't be scaled in place. Decodes once into
- * the caller's scratch buffer (gfx_ConvertFromRLETSprite() -- graphx has no
- * incremental/streaming decode, so materializing the plain sprite is
- * unavoidable), then writes scaled pixels straight into gfx_vbuffer as
- * they're computed, deliberately never building a second (scaled) sprite
- * buffer -- a two-buffer version peaks with both alive at once, which
- * measured against this project's real builds is more than fits alongside
- * the largest resident script chunk plus the graphics draw buffer in
- * ordinary scenes, not just pathological ones. This is the "scale in
- * chunks" design: the chunking is per-pixel-row against the one source
- * buffer, never a second full-size destination.
+static gfx_sprite_t *zoom_cache_find(uint16_t id)
+{
+    for (uint8_t i = 0; i < ZOOM_CACHE_SLOTS; i++) {
+        if (zoom_cache[i].spr != NULL && zoom_cache[i].id == id) {
+            return zoom_cache[i].spr;
+        }
+    }
+    return NULL;
+}
+
+/* Builds sprite @p id's scaled bitmap into a free (or round-robin evicted)
+ * slot and returns it, or NULL if anything along the way fails -- a missing
+ * id, an unopenable AppVar, or either allocation. Callers treat NULL as
+ * "draw this one unscaled instead", never as fatal.
  *
- * The scratch buffer is the caller's rather than a malloc/free pair here so
- * that one allocation can cover a character's body *and* expression atom:
- * allocating per layer let the small overlay succeed on a frame where the
- * much larger body had already failed, which drew a 1.05x head on a 1.00x
- * body. See draw_actor() in render.c. */
-bool assets_draw_sprite_zoomed(uint16_t id, int center_x, int feet_y, void *scratch)
+ * Both buffers are alive at once here, briefly: the plain decode
+ * (gfx_ConvertFromRLETSprite has no incremental form, so the source must be
+ * materialized whole) and the scaled destination. That peak is why this is
+ * worth doing exactly once per sprite rather than once per frame. */
+static gfx_sprite_t *zoom_cache_fill(uint16_t id)
 {
     uint8_t appvar_idx;
     uint16_t offset;
     int16_t dx, dy;
     if (!sprite_lookup(id, &appvar_idx, &offset, &dx, &dy)) {
-        return false;
+        return NULL;
     }
 
     char name[9];
     sprintf(name, "DSPR%u", appvar_idx);
     uint8_t handle = ti_Open(name, "r");
     if (!handle) {
-        return false;
+        return NULL;
     }
 
-    const uint8_t *data = ti_GetDataPtr(handle);
-    const gfx_rletsprite_t *sprite = (const gfx_rletsprite_t *)(data + offset);
+    const gfx_rletsprite_t *rle =
+        (const gfx_rletsprite_t *)(ti_GetDataPtr(handle) + offset);
 
-    gfx_sprite_t *plain = (gfx_sprite_t *)scratch;
-    gfx_ConvertFromRLETSprite(sprite, plain);
+    gfx_sprite_t *plain = malloc((size_t)2 + (size_t)rle->width * rle->height);
+    if (plain == NULL) {
+        ti_Close(handle);
+        return NULL;
+    }
+    gfx_ConvertFromRLETSprite(rle, plain);
     ti_Close(handle);
 
-    int zw = zoom_scale_dim(plain->width);
-    int zh = zoom_scale_dim(plain->height);
-    int x0 = center_x - zw / 2 + zoom_scale_off(dx);
-    int y0 = feet_y - zh + zoom_scale_off(dy);
-
-    /* Clip the destination rectangle once, here, instead of testing every
-     * pixel against the screen bounds inside the loop below. That loop runs
-     * tens of thousands of times per sprite, so anything left in it is paid
-     * ~25000x per layer per frame. */
-    int xs = (x0 < 0) ? -x0 : 0;
-    int xe = (x0 + zw > SCREEN_W) ? SCREEN_W - x0 : zw;
-    int ys = (y0 < 0) ? -y0 : 0;
-    int ye = (y0 + zh > SCREEN_H) ? SCREEN_H - y0 : zh;
+    uint8_t zw = (uint8_t)zoom_scale_dim(plain->width);
+    uint8_t zh = (uint8_t)zoom_scale_dim(plain->height);
+    gfx_sprite_t *scaled = malloc((size_t)2 + (size_t)zw * zh);
+    if (scaled == NULL) {
+        free(plain);
+        return NULL;
+    }
+    scaled->width  = zw;
+    scaled->height = zh;
 
     /* Output pixel (x, y) samples source (x*ZOOM_DEN/ZOOM_NUM, likewise for
      * y). Doing those two divisions per pixel is what made this path
-     * visibly laggy: the eZ80 has no divide instruction, so each one is a
-     * software routine costing far more than the byte copy it guards. The
-     * ratio is fixed at 20:21, so walk it with a Bresenham accumulator
-     * instead -- the source index advances one per output pixel except on
-     * every 21st, where it repeats. Only the four setup divisions below
-     * survive (and only because the clip may start mid-sprite).
+     * visibly laggy back when it ran every frame: the eZ80 has no divide
+     * instruction, so each one is a software routine costing far more than
+     * the byte copy it guards. The ratio is fixed at 20:21, so walk it with
+     * a Bresenham accumulator instead -- the source index advances one per
+     * output pixel except on every 21st, where it repeats.
      *
      * No clamping of sx/sy against the source dimensions is needed:
      * zoom_scale_dim() rounds, so the largest output index maps to at most
      * (dim - 1) for every dimension -- (zw-1)*20 <= 21*w - 10 < 21*w. */
-    int sy  = ys * ZOOM_DEN / ZOOM_NUM;
-    int ay  = (ys * ZOOM_DEN) % ZOOM_NUM;
-    int sx0 = xs * ZOOM_DEN / ZOOM_NUM;
-    int ax0 = (xs * ZOOM_DEN) % ZOOM_NUM;
+    const uint8_t *srow = plain->data;
+    uint8_t       *dst  = scaled->data;
+    int ay = 0;
 
-    for (int y = ys; y < ye; y++) {
-        const uint8_t *srow = plain->data + (size_t)sy * plain->width;
-        uint8_t *dst = (uint8_t *)gfx_vbuffer + (size_t)(y0 + y) * SCREEN_W + (x0 + xs);
-        int sx = sx0;
-        int ax = ax0;
+    for (uint8_t y = 0; y < zh; y++) {
+        int sx = 0;
+        int ax = 0;
 
-        for (int x = xs; x < xe; x++) {
-            uint8_t pixel = srow[sx];
-            if (pixel != COL_TRANSPARENT) {
-                *dst = pixel;
-            }
-            dst++;
+        for (uint8_t x = 0; x < zw; x++) {
+            *dst++ = srow[sx];
             ax += ZOOM_DEN;
             if (ax >= ZOOM_NUM) {
                 ax -= ZOOM_NUM;
@@ -481,10 +501,44 @@ bool assets_draw_sprite_zoomed(uint16_t id, int center_x, int feet_y, void *scra
         ay += ZOOM_DEN;
         if (ay >= ZOOM_NUM) {
             ay -= ZOOM_NUM;
-            sy++;
+            srow += plain->width;
         }
     }
 
+    free(plain);
+
+    free(zoom_cache[zoom_cache_next].spr);
+    zoom_cache[zoom_cache_next].id  = id;
+    zoom_cache[zoom_cache_next].spr = scaled;
+    zoom_cache_next = (uint8_t)((zoom_cache_next + 1) % ZOOM_CACHE_SLOTS);
+    return scaled;
+}
+
+bool assets_zoom_prepare(uint16_t id)
+{
+    return zoom_cache_find(id) != NULL || zoom_cache_fill(id) != NULL;
+}
+
+bool assets_draw_sprite_zoomed(uint16_t id, int center_x, int feet_y)
+{
+    gfx_sprite_t *spr = zoom_cache_find(id);
+    if (spr == NULL && (spr = zoom_cache_fill(id)) == NULL) {
+        return false;
+    }
+
+    /* dx/dy are re-derived per draw rather than cached alongside the bitmap:
+     * sprite_lookup() is a LUT search plus an array read, no file I/O, and
+     * keeping the cache entry to just the pixels means one less thing that
+     * can fall out of step with DSPROFF. */
+    uint8_t appvar_idx;
+    uint16_t offset;
+    int16_t dx, dy;
+    if (!sprite_lookup(id, &appvar_idx, &offset, &dx, &dy)) {
+        return false;
+    }
+
+    gfx_TransparentSprite(spr, center_x - spr->width / 2 + zoom_scale_off(dx),
+                          feet_y - spr->height + zoom_scale_off(dy));
     return true;
 }
 

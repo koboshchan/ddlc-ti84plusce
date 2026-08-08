@@ -82,28 +82,42 @@ const char *assets_string(uint16_t index);
 bool assets_draw_sprite(uint16_t id, int center_x, int feet_y);
 
 /**
- * Bytes a plain (RLE-decoded) copy of sprite @p id occupies, i.e. the
- * minimum size of the scratch buffer assets_draw_sprite_zoomed() needs for
- * it. Returns 0 if @p id is out of range or its AppVar is missing.
+ * Ensures sprite @p id has a cached 1.05x-scaled bitmap ready, building it
+ * if this is the first call for it. Returns false if it can't be built (an
+ * unresolvable id, or no room), meaning assets_draw_sprite_zoomed() would
+ * fail too.
  *
  * Split out from the draw so a caller compositing several layers of one
- * character can size *one* buffer for all of them and decide once whether
- * the whole character zooms -- see draw_actor() in render.c.
+ * character can decide *once*, before drawing any of them, whether the whole
+ * character zooms -- otherwise a small expression atom can succeed on a
+ * frame where the much larger body atom didn't, drawing a 1.05x head on a
+ * 1.00x body. See draw_actor() in render.c.
  */
-size_t assets_sprite_plain_size(uint16_t id);
+bool assets_zoom_prepare(uint16_t id);
 
 /**
  * Like assets_draw_sprite(), but scaled 1.05x (DDLC's real speaking zoom --
- * see docs/FORMAT.md's "The speaking pop"). Costs a real decode+resample
- * instead of assets_draw_sprite()'s zero-copy blit, and needs somewhere to
- * put the decoded pixels: @p scratch must be a buffer of at least
- * assets_sprite_plain_size(@p id) bytes, owned by the caller (this function
- * neither allocates nor frees it).
+ * see docs/FORMAT.md's "The speaking pop").
  *
- * Returns false, without drawing anything, if @p id can't be resolved --
- * callers should fall back to assets_draw_sprite(), never treat it as fatal.
+ * The scaled bitmap is cached, so only the first draw of a given sprite pays
+ * the decode and resample; every frame after is one graphx blit, no dearer
+ * than an ordinary sprite. That works because the zoom is a fixed 1.05x --
+ * what animates during a speaking line is the character's position, not its
+ * scale, so the pixels are the same every frame.
+ *
+ * Returns false, without drawing anything, if @p id can't be resolved or its
+ * bitmap can't be built -- callers should fall back to assets_draw_sprite(),
+ * never treat it as fatal.
  */
-bool assets_draw_sprite_zoomed(uint16_t id, int center_x, int feet_y, void *scratch);
+bool assets_draw_sprite_zoomed(uint16_t id, int center_x, int feet_y);
+
+/**
+ * Frees every cached scaled bitmap. Called automatically by
+ * assets_load_chunk() (the cache must not stand in the way of the largest
+ * allocation this program makes); exposed for any other caller that is about
+ * to want a lot of memory at once.
+ */
+void assets_zoom_cache_clear(void);
 
 /**
  * Copies background/CG @p id's raw 320x180 palette-index pixels directly

@@ -408,21 +408,39 @@ unconditionally alongside the hop check, no interaction to resolve.
 a fixed 21:20 nearest-neighbor resample (DDLC never uses another zoom value
 here, so no general scaler is needed -- and `graphx`'s own
 `gfx_RotateScaleSprite` requires a *square* input sprite anyway, which
-character atoms never are). It decodes the sprite's `rlet` data into one
-plain scratch buffer (`gfx_ConvertFromRLETSprite()` -- `graphx` has no
-incremental/streaming decode, so a full decode is unavoidable) and writes
-scaled pixels straight into the draw buffer as they're computed, rather than
-building a second (scaled) sprite object first -- a two-buffer version peaks
-with both alive at once, which measured against this project's real Act 1
-build (its largest script chunk, `dscr11.8xv`, is 60KB) is more than fits
-alongside the ~77KB graphics draw buffer in ordinary scenes, not just
-pathological ones. Writing directly halves that peak to one buffer, but
-still can't be *guaranteed* to fit the single tightest chunk -- so the
-allocation can fail, and `render.c`'s `draw_actor()` falls back to the small
-eased vertical rise this engine used exclusively before real scaling existed
-(`zoom_fallback_offset()`, kept for exactly this) whenever the real scale
-doesn't run, whether because the sprite wasn't flagged for it or because the
-scratch buffer didn't fit. The rise eases in/out over 250ms using the same integer
+character atoms never are). It decodes the sprite's `rlet` data
+(`gfx_ConvertFromRLETSprite()` -- `graphx` has no incremental/streaming
+decode, so a full decode is unavoidable), resamples it into a scaled plain
+sprite, and **caches that bitmap**.
+
+The cache is what makes the scale affordable, and it works because the zoom
+is *constant*: DDLC's speaking zoom is one fixed 1.05x, and this engine
+animates a character's position (hop, sink, the eased fallback rise) but
+never its scale — so across every frame of a speaking line the scaled pixels
+are identical and only the destination y moves. Building them per frame
+meant an AppVar open, a full decode and a full resample for a bitmap that
+never changed; now the first frame pays that and every frame after is a
+single `gfx_TransparentSprite()` blit, no dearer than an ordinary sprite.
+
+Two cache slots, which is measured rather than guessed: replaying all of
+Act 1 through `tools/host_sim --trace`, no scene state ever carries more
+than one `VN_FLAG_ZOOM` actor (72 of 281 have exactly one, the rest none),
+and a zoomed actor needs at most two bitmaps — its body atom and its
+expression atom. Two slots hold a whole speaking character with nothing to
+evict, and a new speaker replaces both within one frame.
+
+`assets_load_chunk()` drops the cache before reading, since a script chunk
+(up to ~62KB) is this program's largest allocation and a cached body atom is
+~14KB — losing a redraw optimization is cheap, failing a chunk load is not.
+Building a bitmap can still fail for want of memory, so `render.c`'s
+`draw_actor()` falls back to the small eased vertical rise this engine used
+exclusively before real scaling existed (`zoom_fallback_offset()`, kept for
+exactly this) whenever the real scale doesn't run, whether because the
+sprite wasn't flagged for it or because the bitmap couldn't be built.
+`assets_zoom_prepare()` commits both of a character's layers to that
+decision together, so a small expression atom can never succeed on a frame
+where the large body atom failed (which drew a 1.05x head on a 1.00x body).
+The rise eases in/out over 250ms using the same integer
 LUT/`ease()` the title screen's entrance uses; the one-shot hop
 (`hop_offset()`) is two back-to-back applications of that same `ease()`
 primitive covering DDLC's real `.1s` down / `.1s` up, triggered by
@@ -435,22 +453,21 @@ Two properties of the scaled path are load-bearing enough to be worth
 stating outright, because getting either wrong is visible on the calculator
 rather than merely slow:
 
-- **A character zooms whole or not at all.** The scratch buffer belongs to
-  `draw_actor()`, not to `assets_draw_sprite_zoomed()`, and is sized once for
-  whichever of the character's two layers (body atom, expression atom) is
-  larger. Allocating per layer instead let them disagree under memory
-  pressure: the body is by far the bigger request, so it was the one that
-  failed, while the small expression atom allocated fine immediately
-  after -- putting a 1.05x head on a 1.00x body. One allocation, taken
-  before either layer draws, makes that state unreachable.
+- **A character zooms whole or not at all.** `draw_actor()` calls
+  `assets_zoom_prepare()` for both layers before drawing either, so one
+  answer covers the pair. Deciding per layer instead let them disagree under
+  memory pressure: the body is by far the bigger request, so it was the one
+  that failed, while the small expression atom allocated fine immediately
+  after — putting a 1.05x head on a 1.00x body.
 - **No division in the inner loop.** The resample ratio is fixed, so the
   source index is walked with a Bresenham accumulator (advance one source
   pixel per output pixel, except every 21st, which repeats) instead of
   computing `x * 20 / 21` per pixel. The eZ80 has no divide instruction, so
   each of those was a software routine costing far more than the byte copy
-  it guarded, ~25000 times per layer per frame. Screen clipping is likewise
-  resolved into a destination rectangle once, before the loop, rather than
-  bounds-testing every pixel.
+  it guarded, over ~25000 pixels per layer. This now runs once per cached
+  bitmap rather than once per frame, and writing into a plain destination
+  sprite means no per-pixel clipping either — `gfx_TransparentSprite()`
+  handles that at blit time.
 
 Redraw frequency matters as much as redraw cost here, which is
 `render_scene_lazy()`'s job (see `src/render.h`): it skips the whole

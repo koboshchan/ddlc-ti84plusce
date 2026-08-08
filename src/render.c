@@ -11,7 +11,6 @@
 #include <sys/timers.h>
 
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -137,13 +136,13 @@ static int ease(const uint8_t *lut, int amp, unsigned t, unsigned at, unsigned d
  * tools/compile_script.py's _resolve_anim). assets_draw_sprite_zoomed()
  * does the real 1.05x scale now.
  *
- * That scale isn't free, though (real per-frame pixel work + a malloc that
- * can fail alongside a large resident script chunk -- see its own file
- * comment in assets.c for the measured numbers), so zoom_fallback_offset()
- * below is kept, not deleted: it's the small vertical-rise approximation
- * this engine used exclusively before real scaling existed, now repurposed
- * as what draw_actor() falls back to on the frames assets_draw_sprite_zoomed()
- * can't run. */
+ * The scaled bitmap is cached, so a speaking line pays for it once rather
+ * than per frame -- but building it still needs memory that may not be
+ * there alongside a large resident script chunk (see assets.c's
+ * scaled-sprite cache). So zoom_fallback_offset() below is kept, not
+ * deleted: it's the small vertical-rise approximation this engine used
+ * exclusively before real scaling existed, now repurposed as what
+ * draw_actor() falls back to when the scale can't be built. */
 #define SPEAK_POP_PX   4    /* screen px risen, as a zoom stand-in */
 #define SPEAK_POP_MS 250    /* ms to ease in or out of the pop */
 
@@ -319,36 +318,26 @@ static void draw_actor(const vn_actor_t *actor, unsigned t)
     }
     feet_y += sink_offset(actor->character, (actor->flags & VN_FLAG_SINK) != 0, t);
 
-    /* One scratch buffer, sized for whichever of this character's layers is
-     * larger, serves both of them -- and, crucially, decides for both at
-     * once whether the real scale happens at all.
+    /* Both of this character's layers are committed to the same fate here,
+     * before either is drawn: preparing them separately let them disagree,
+     * since the body atom is by far the bigger allocation and so the one
+     * that failed under pressure, while the small expression atom right
+     * after it succeeded -- drawing a 1.05x head on a 1.00x body. Deciding
+     * up front makes that unreachable; the character zooms whole or not at
+     * all.
      *
-     * Allocating per layer instead let the two disagree: the body atom is
-     * by far the bigger allocation, so on a tight chunk it was the one that
-     * failed, while the small expression atom right after it succeeded --
-     * drawing a 1.05x head on a 1.00x body. Deciding once, before either
-     * layer is drawn, makes that impossible: the character zooms whole or
-     * not at all. A zero from assets_sprite_plain_size() (unresolvable id)
-     * also disqualifies the pair, so no layer is ever handed a buffer sized
-     * for the other one. */
-    void *scratch = NULL;
-    if (zoom_wanted) {
-        size_t need = assets_sprite_plain_size(actor->sprite);
-        if (need != 0 && actor->overlay != VN_NO_OVERLAY) {
-            size_t over = assets_sprite_plain_size(actor->overlay);
-            need = (over == 0) ? 0 : (over > need ? over : need);
-        }
-        if (need != 0) {
-            scratch = malloc(need);
-        }
-    }
+     * After the first frame of a line these are pure cache hits (see
+     * assets.c's scaled-sprite cache), so this costs a lookup, not work. */
+    bool zoom = zoom_wanted && assets_zoom_prepare(actor->sprite) &&
+                (actor->overlay == VN_NO_OVERLAY ||
+                 assets_zoom_prepare(actor->overlay));
 
     /* The real scale can still be unavailable on a real device (no room for
-     * that buffer alongside a large resident script chunk -- see assets.c's
-     * file comment), which is why this doesn't just branch on zoom_wanted:
-     * fall back to the plain draw, nudged by fallback_off, whenever the
-     * real scale didn't actually happen, not only when it wasn't wanted. */
-    if (!(scratch && assets_draw_sprite_zoomed(actor->sprite, center_x, feet_y, scratch))) {
+     * the bitmap alongside a large resident script chunk -- see assets.c),
+     * which is why this doesn't just branch on zoom_wanted: fall back to the
+     * plain draw, nudged by fallback_off, whenever the real scale didn't
+     * actually happen, not only when it wasn't wanted. */
+    if (!(zoom && assets_draw_sprite_zoomed(actor->sprite, center_x, feet_y))) {
         assets_draw_sprite(actor->sprite, center_x, feet_y + fallback_off);
     }
 
@@ -357,11 +346,9 @@ static void draw_actor(const vn_actor_t *actor, unsigned t)
      * its own (dx, dy) from DSPROFF is what places it correctly relative to
      * the body atom just drawn, at either scale. */
     if (actor->overlay != VN_NO_OVERLAY &&
-        !(scratch && assets_draw_sprite_zoomed(actor->overlay, center_x, feet_y, scratch))) {
+        !(zoom && assets_draw_sprite_zoomed(actor->overlay, center_x, feet_y))) {
         assets_draw_sprite(actor->overlay, center_x, feet_y + fallback_off);
     }
-
-    free(scratch);
 }
 
 /* ---------------------------------------------------------------------------
