@@ -42,7 +42,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import convert_images
 import extract
 import vnasm
-from compile_script import CompileError, Compiler, link_chunks, load_transform_positions
+from compile_script import CompileError, Compiler, link_chunks, load_transform_animations
 from image_resolve import ImageResolver
 
 # Full Act 1 (ch0-ch4) plus the labels it calls into that live in other
@@ -132,7 +132,7 @@ def do_compile(raw_dir: Path, build_dir: Path,
     step("compile script + resolve images")
     resolver = ImageResolver(raw_dir, build_dir)
     compiler = Compiler(resolver=resolver,
-                        transform_positions=load_transform_positions(raw_dir))
+                        transform_animations=load_transform_animations(raw_dir))
 
     # A background no dialogue references by name, baked first and
     # unconditionally (regardless of --files) so its scene id is always the

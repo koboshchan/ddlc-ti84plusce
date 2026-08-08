@@ -56,17 +56,43 @@ def _strip_text_tags(text: str) -> str:
 _POS_EXPR_RE = re.compile(r"^\w+\((\d+)\)$")
 
 
-def load_transform_positions(raw_dir: Path) -> dict[str, int]:
-    """Maps each position-carrying transform's name (e.g. "t21") to its X
-    coordinate in Ren'Py's 1280-wide canvas, by reading transforms.rpyc.
-    Transforms that aren't a single `func(N)` call (e.g. "thide", a hide
-    animation with no position of its own) are simply absent from the map."""
+# Every DDLC screen position has several named transform variants sharing
+# one position but differing in which visual effect they carry -- confirmed
+# by decompiling transforms.rpy: "t11" (base, zoom 1.00x), "f11" (focused --
+# the *real* speaking effect, zoom 1.05x eased in over .25s), "h11" (hop, a
+# one-shot bounce, zoom stays 1.00x), "hf11" (hop + the zoom together). The
+# real script authors "at f32" for the exact line where that position's
+# character is speaking and "at t32" otherwise -- confirmed by grepping
+# every Show/Say `at` list in script-ch0..ch4.rpyc, which found f{pos} and
+# t{pos} used in near-equal counts per position (e.g. ch2: f32=29, t32=29).
+# "s" (sink, a slow downward drift) and "l" (leftin, an entrance slide from
+# off-screen) are real DDLC effects too but out of scope here -- treated as
+# the base case (no zoom, no hop), which matches this engine's existing
+# behavior for them exactly, so this is a deliberate simplification, not a
+# regression.
+VN_FLAG_ZOOM = 1  # must match src/vn.h's VN_FLAG_ZOOM
+VN_FLAG_HOP = 2   # must match src/vn.h's VN_FLAG_HOP
+
+_ANIM_PREFIX_FLAGS = {
+    "f": VN_FLAG_ZOOM,
+    "h": VN_FLAG_HOP,
+    "hf": VN_FLAG_ZOOM | VN_FLAG_HOP,
+}
+_ANIM_PREFIX_RE = re.compile(r"^([a-z]+?)\d*$")
+
+
+def load_transform_animations(raw_dir: Path) -> dict[str, tuple[int, int]]:
+    """Maps each position-carrying transform's name (e.g. "f21") to its
+    (X coordinate in Ren'Py's 1280-wide canvas, OP_SHOW flags bitmask), by
+    reading transforms.rpyc. Transforms that aren't a single `func(N)` call
+    (e.g. "thide", a hide animation with no position of its own) are simply
+    absent from the map."""
     path = raw_dir / "transforms.rpyc"
     if not path.is_file():
         return {}
 
     _, top = load_rpyc(path)
-    positions: dict[str, int] = {}
+    animations: dict[str, tuple[int, int]] = {}
     for init_node in top:
         for node in getattr(init_node, "block", None) or []:
             if kind(node) != "Transform":
@@ -80,9 +106,13 @@ def load_transform_positions(raw_dir: Path) -> dict[str, int]:
                 continue
             expr = exprs[0][0]
             m = _POS_EXPR_RE.match(expr.strip()) if isinstance(expr, str) else None
-            if m:
-                positions[node.varname] = int(m.group(1))
-    return positions
+            if not m:
+                continue
+            prefix_m = _ANIM_PREFIX_RE.match(node.varname)
+            prefix = prefix_m.group(1) if prefix_m else ""
+            flags = _ANIM_PREFIX_FLAGS.get(prefix, 0)
+            animations[node.varname] = (int(m.group(1)), flags)
+    return animations
 
 
 def _pos_from_x(x: int) -> int:
@@ -146,7 +176,8 @@ class Compiler:
     variables: dict = field(default_factory=dict)         # name -> slot
     last_sprite: dict = field(default_factory=dict)        # char id -> (base_id, overlay_id)
     last_pos: dict = field(default_factory=dict)            # char id -> pos enum
-    transform_positions: dict = field(default_factory=dict) # transform name -> X (0..1280)
+    last_flags: dict = field(default_factory=dict)          # char id -> OP_SHOW flags
+    transform_animations: dict = field(default_factory=dict) # transform name -> (X, flags)
     skipped: list = field(default_factory=list)            # [SkipEntry]
     stats: dict = field(default_factory=dict)               # kind -> count
     _pending_scene: int | None = field(default=None, init=False)
@@ -225,19 +256,27 @@ class Compiler:
             self.asm.scene(self._pending_scene, trans)
             self._pending_scene = None
 
-    # -- position tracking --------------------------------------------------
+    # -- position/animation tracking -----------------------------------------
 
-    def _resolve_pos(self, char: int, at_list) -> int:
-        """Looks up @at_list's position transform (if any) and remembers it
-        for this character; a Show/Say that doesn't reposition (a bare show,
-        or a say-attribute change) just keeps wherever they already were."""
+    def _resolve_anim(self, char: int, at_list) -> tuple[int, int]:
+        """Looks up @at_list's position+animation transform (if any) and
+        remembers both for this character; a Show/Say that doesn't reposition
+        (a bare show, or a say-attribute change) just keeps whatever pos/flags
+        they already had -- e.g. a mid-line expression change under the same
+        "at f32" the character was already speaking under.
+
+        One lookup covering both pos and flags (rather than two separate
+        walks of @at_list) guarantees they're always read off the exact same
+        matched transform name, never out of sync with each other."""
         for name in at_list or []:
-            x = self.transform_positions.get(name)
-            if x is not None:
+            anim = self.transform_animations.get(name)
+            if anim is not None:
+                x, flags = anim
                 pos = _pos_from_x(x)
                 self.last_pos[char] = pos
-                return pos
-        return self.last_pos.get(char, vnasm.POS_CENTER)
+                self.last_flags[char] = flags
+                return pos, flags
+        return self.last_pos.get(char, vnasm.POS_CENTER), self.last_flags.get(char, 0)
 
     # -- block emission ---------------------------------------------------------
 
@@ -312,7 +351,8 @@ class Compiler:
             if base is None:
                 self._skip(node, fname, f"unresolved say-attribute sprite {imgname!r}")
             else:
-                self.asm.show(char, base, overlay, self._resolve_pos(char, None))
+                pos, flags = self._resolve_anim(char, None)
+                self.asm.show(char, base, overlay, pos, flags=flags)
                 self.last_sprite[char] = (base, overlay)
 
         self.asm.say(speaker, text)
@@ -345,16 +385,17 @@ class Compiler:
                 return
             self.last_sprite[char] = (base, overlay)
 
-        # Position: DDLC positions shown poses via named ATL transforms
-        # (transforms.rpy: 't31', 'f22', ...) rather than the simple built-in
-        # left/right/truecenter keywords. Each one turns out to be a single
-        # `func(X)` call on Ren'Py's 1280-wide canvas (see
-        # load_transform_positions) -- converted straight to a screen X
-        # (_pos_from_x), not a full ATL property interpreter (no scaling,
-        # easing, or the transform family's zoom -- see _resolve_pos and
-        # render.c's speaking pop for that last part).
+        # Position + animation: DDLC positions shown poses via named ATL
+        # transforms (transforms.rpy: 't31', 'f22', ...) rather than the
+        # simple built-in left/right/truecenter keywords. Each one turns out
+        # to be a single `func(X)` call on Ren'Py's 1280-wide canvas (see
+        # load_transform_animations) -- converted straight to a screen X
+        # (_pos_from_x). The transform *name*'s prefix (t/f/h/hf) also
+        # carries the real per-line speaking signal -- see _resolve_anim and
+        # render.c's zoom/hop handling.
         at_list = node.imspec[3] if len(node.imspec) > 3 else None
-        self.asm.show(char, base, overlay, self._resolve_pos(char, at_list))
+        pos, flags = self._resolve_anim(char, at_list)
+        self.asm.show(char, base, overlay, pos, flags=flags)
 
     def _emit_Hide(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)
@@ -378,6 +419,7 @@ class Compiler:
         self._pending_scene = scene_id
         self.last_sprite.clear()  # OP_SCENE clears all actors in the VM too
         self.last_pos.clear()
+        self.last_flags.clear()
 
     def _emit_With(self, node, fname: str) -> None:
         # DDLC's scene-level transitions (transforms.rpy) are all named

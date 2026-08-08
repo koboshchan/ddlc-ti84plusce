@@ -46,6 +46,11 @@ SPEAKER_NONE = 0xFF
 NO_SPRITE = 0xFF
 NO_OVERLAY = 0xFFFF  # OP_SHOW's overlay:u16 sentinel -- see docs/FORMAT.md's "Layered sprites"
 
+# OP_SHOW's flags:u8 bitmask -- must match src/vn.h's VN_FLAG_ZOOM/VN_FLAG_HOP
+# and tools/compile_script.py's copies of the same values.
+VN_FLAG_ZOOM = 1
+VN_FLAG_HOP = 2
+
 
 class AsmError(Exception):
     pass
@@ -175,12 +180,13 @@ class Assembler:
         self._u8(trans)
 
     def show(self, char: int, sprite: int, overlay: int | None = None,
-             pos: int = POS_CENTER) -> None:
+             pos: int = POS_CENTER, flags: int = 0) -> None:
         self._u8(OP_SHOW)
         self._u8(char)
         self._u16(sprite)
         self._u16(NO_OVERLAY if overlay is None else overlay)
         self._u8(pos)
+        self._u8(flags)
 
     def hide(self, char: int) -> None:
         self._u8(OP_HIDE)
