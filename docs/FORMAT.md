@@ -504,6 +504,22 @@ moment the scene settles, so it holds nothing while the player is reading,
 and like every allocation here it's best-effort: no plate simply means
 animating frames stay full redraws.
 
+None of that needs hardware to check — it's geometry over the baked sprites.
+`tools/check_plate.py` mirrors `actor_rect()` / `draw_actor()` /
+`render_scene_moving()` and compares plate frames against the full redraws
+they must be indistinguishable from, pixel for pixel, over every mover slot,
+the whole offset range, zoomed and not, in scenes of two to four overlapping
+characters. Two details there are worth keeping if it's ever rewritten:
+it composites with *binary* alpha (the real sprites are 8bpp indexed with
+index 0 transparent, so drawing is idempotent — antialiased alpha reports
+false differences where the plate redraws an unmoved actor over itself), and
+it walks a whole trajectory from one capture rather than checking a single
+frame. The second matters more than it sounds: the engine captures once per
+animation and reuses the plate for every frame of it, so a frame must erase
+wherever the *previous* one left the actor. Checking one frame per capture
+hides exactly what `PLATE_SLACK` prevents, since the rectangle covers the
+resting position either way and only the following step strands pixels.
+
 Both this and the scaled-sprite cache above are why
 `compile_script.py`'s `CHUNK_SIZE_BUDGET` is 24000 rather than sitting just
 under the 65000-byte AppVar ceiling: the resident chunk shares ~150KB with
