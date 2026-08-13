@@ -885,6 +885,44 @@ happens at all. `save.c`'s `save_load()` goes through `vm->host->string()`
 rather than `assets_string()` directly for the same reason: a loaded line
 needs the substitution exactly as much as one reached by playing forward does.
 
+## Debug menu
+
+Entering the classic Konami code -- up up down down left right left right B A
+B A -- from the title screen or during play opens a debug menu for testing
+engine features directly instead of playing to reach them. Mapped onto this
+keypad's real buttons: `2nd` (already this engine's primary confirm/advance
+key) stands in for A, and `Alpha` (a real physical key, otherwise unused by
+this engine) stands in for B.
+
+`src/main.c`'s `konami_check()` runs on every `input_poll()` call --
+i.e. every screen's input loop gets it for free -- as a small rolling state
+machine: each new key-down edge either advances a match against the fixed
+12-key sequence or resets it (to 1, not 0, if the wrong key happens to be a
+valid first key, so mashing Up before starting doesn't burn a real attempt).
+A full match sets a global `debug_menu_requested` flag, mirroring
+`quit_requested`'s pattern; `wait_for_advance()` (mid-story) and
+`run_title_screen()` each check and clear it, opening `run_debug_menu(vm)`.
+
+The title screen has no live `vn_vm_t` yet (`vn_init()` only runs once a
+New Game/Continue/Load choice is made -- see "Startup sequence"), so
+`run_debug_menu()` takes `vm` as a possibly-NULL pointer: items that need
+live story state (the tear/window/deleted-character toggles) are simply
+left off the list when `vm` is NULL, rather than touching uninitialized
+memory. The poem minigame test and save erasure need no `vm` and are always
+available.
+
+Menu items: running the real poem minigame screen standalone (`poem_run()`,
+the same code a `call poem` site drives) and showing its winner plus every
+character's appeal total; toggling the tear glitch and window-hidden state
+on the live scene (see "The tear glitch effect", "Window hide/show");
+toggling each character's `persistent.deleted_*` flag (see "Character
+presence AppVars" below -- this writes the same slots
+`delete_character()`/`restore_all_characters()` do, via `vn.h`'s
+`VN_DELETED_VAR(ch)`, and calls `persist_save()` immediately so a toggle
+survives past this session exactly like the real mechanic); and erasing all
+saves (`save_delete_all()`, gated behind its own confirm screen, defaulted
+to "No").
+
 ## Character presence AppVars
 
 `src/chars.c` creates four empty AppVars — `SAYORI`, `NATSUKI`, `YURI`,

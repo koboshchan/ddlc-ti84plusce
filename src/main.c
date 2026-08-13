@@ -59,35 +59,95 @@ typedef struct {
     bool advance;   /* 2nd / enter */
     bool up;
     bool down;
+    bool left;
+    bool right;
+    bool alpha;     /* Alpha -- stands in for "B" in the debug-menu code below */
     bool pause;     /* mode -- opens the pause menu, or cancels a submenu */
     bool quit;      /* clear       */
 } input_t;
 
+/* Set once the Konami code below has been entered; consumed (and cleared)
+ * by whichever screen notices it next -- see run_debug_menu(). Global like
+ * quit_requested because the same sequence has to be recognized from both
+ * the title screen and mid-story play, which poll input from different
+ * functions entirely. */
+bool debug_menu_requested;
+
+/* up up down down left right left right alpha(B) 2nd(A) alpha(B) 2nd(A) --
+ * the classic Konami code, mapped onto this keypad's real buttons: 2nd is
+ * already this engine's primary action key (confirm/advance), so it stands
+ * in for "A"; Alpha is a real, otherwise-unused physical key here, standing
+ * in for "B". A rolling match against a fixed sequence, restarting from
+ * scratch on any wrong key -- except a wrong key that happens to be a valid
+ * *first* key restarts the match at position 1 instead of 0, so mashing Up
+ * before starting doesn't eat a real attempt. */
+static void konami_check(const input_t *in)
+{
+    enum { K_UP, K_DOWN, K_LEFT, K_RIGHT, K_B, K_A, K_COUNT };
+    static const uint8_t sequence[] = {
+        K_UP, K_UP, K_DOWN, K_DOWN, K_LEFT, K_RIGHT, K_LEFT, K_RIGHT, K_B, K_A, K_B, K_A,
+    };
+    static uint8_t match = 0;
+
+    uint8_t pressed = K_COUNT;
+    if (in->up)         pressed = K_UP;
+    else if (in->down)  pressed = K_DOWN;
+    else if (in->left)  pressed = K_LEFT;
+    else if (in->right) pressed = K_RIGHT;
+    else if (in->alpha) pressed = K_B;
+    else if (in->advance) pressed = K_A;
+
+    if (pressed == K_COUNT) {
+        return;
+    }
+
+    if (pressed == sequence[match]) {
+        match++;
+        if (match == sizeof(sequence)) {
+            debug_menu_requested = true;
+            match = 0;
+        }
+    } else {
+        match = (pressed == sequence[0]) ? 1 : 0;
+    }
+}
+
 static void input_poll(input_t *in)
 {
-    static bool held_advance, held_up, held_down, held_pause;
+    static bool held_advance, held_up, held_down, held_left, held_right, held_alpha, held_pause;
 
     kb_Scan();
 
     bool advance = kb_IsDown(kb_Key2nd) || kb_IsDown(kb_KeyEnter);
     bool up      = kb_IsDown(kb_KeyUp);
     bool down    = kb_IsDown(kb_KeyDown);
+    bool left    = kb_IsDown(kb_KeyLeft);
+    bool right   = kb_IsDown(kb_KeyRight);
+    bool alpha   = kb_IsDown(kb_KeyAlpha);
     bool pause   = kb_IsDown(kb_KeyMode);
 
     in->advance = advance && !held_advance;
     in->up      = up      && !held_up;
     in->down    = down    && !held_down;
+    in->left    = left    && !held_left;
+    in->right   = right   && !held_right;
+    in->alpha   = alpha   && !held_alpha;
     in->pause   = pause   && !held_pause;
     in->quit    = kb_IsDown(kb_KeyClear);
 
     held_advance = advance;
     held_up      = up;
     held_down    = down;
+    held_left    = left;
+    held_right   = right;
+    held_alpha   = alpha;
     held_pause   = pause;
 
     if (in->quit) {
         quit_requested = true;
     }
+
+    konami_check(in);
 }
 
 /* ---------------------------------------------------------------------------
@@ -213,6 +273,202 @@ static bool run_pause_menu(vn_vm_t *vm)
     }
 }
 
+/* ---------------------------------------------------------------------------
+ * Debug menu -- opened by the Konami code (see konami_check() above), lets a
+ * tester reach engine features directly instead of playing through the
+ * story to trigger them.
+ * ------------------------------------------------------------------------ */
+
+/** Runs the real poem minigame screen (the same src/poem.c code a `call
+ * poem` site drives) and shows its result -- winner plus every character's
+ * cumulative appeal total, the same values a chapter-indexed `call poem`
+ * site now scores into poemwinner[N]/s_poemappeal[N]/etc (see #46). Doesn't
+ * touch any story variable itself; this is a standalone test, not a stand-in
+ * for a real call site. */
+static void run_debug_poem_test(void)
+{
+    static const char *const names[3] = { "Sayori", "Natsuki", "Yuri" };
+    int16_t s = 0, n = 0, y = 0;
+    uint8_t winner = poem_run(&s, &n, &y);
+    char line[32];
+    input_t in;
+
+    render_backdrop(COL_BOX_FILL);
+    render_text("Poem minigame result", 14, 12, COL_NAME);
+    sprintf(line, "Winner: %s", winner < 3 ? names[winner] : "?");
+    render_text(line, 14, 40, COL_WHITE);
+    sprintf(line, "Sayori appeal:  %d", s);
+    render_text(line, 14, 56, COL_WHITE);
+    sprintf(line, "Natsuki appeal: %d", n);
+    render_text(line, 14, 70, COL_WHITE);
+    sprintf(line, "Yuri appeal:    %d", y);
+    render_text(line, 14, 84, COL_WHITE);
+    render_text("2nd / Enter to return", 14, SCREEN_H - 20, COL_BOX_EDGE);
+    render_present(TRANS_CUT);
+    gfx_Wait();
+
+    do {
+        input_poll(&in);
+    } while (!in.advance && !quit_requested);
+}
+
+/** Confirms before calling save_delete_all() -- real, permanent save erasure
+ * (see save.h), not a toy. Defaults the cursor to "No" so accidentally
+ * confirming past this screen can't happen with a single stray press. */
+static void run_debug_erase_confirm(void)
+{
+    static const char *const items[] = { "No", "Yes, erase everything" };
+    uint8_t selected = 0;
+    input_t in;
+
+    for (;;) {
+        render_backdrop(COL_BOX_FILL);
+        render_text("Erase ALL saves?", 14, 12, COL_NAME);
+        render_text("This cannot be undone.", 14, 30, COL_WHITE);
+        render_list_menu(items, 2, selected, 20, 60, COL_WHITE, COL_HIGHLIGHT);
+        render_text("2nd: choose   Mode: cancel", 14, SCREEN_H - 18, COL_BOX_EDGE);
+        render_present(TRANS_CUT);
+        gfx_Wait();
+
+        input_poll(&in);
+        if (quit_requested || in.pause) {
+            return;
+        }
+        if (in.up || in.down) {
+            selected = selected == 0 ? 1 : 0;
+        }
+        if (in.advance) {
+            if (selected == 1) {
+                save_delete_all();
+            }
+            return;
+        }
+    }
+}
+
+/** @p vm may be NULL: the Konami code is recognized from the title screen
+ * too (see konami_check()), before vn_init() has run for this session, so
+ * there's no live scene/vars[] yet to toggle. Items that need one (the tear/
+ * window/deleted-character toggles) are simply omitted from the list in that
+ * case rather than touching uninitialized state; everything else (the poem
+ * test, save erasure) works either way. */
+static void run_debug_menu(vn_vm_t *vm)
+{
+    enum {
+        DBG_POEM, DBG_TEAR, DBG_WINDOW,
+        DBG_DEL_SAYORI, DBG_DEL_NATSUKI, DBG_DEL_YURI, DBG_DEL_MONIKA,
+        DBG_ERASE, DBG_CLOSE, DBG_ACTION_MAX,
+    };
+    static const char *const cnames[4] = { "Sayori", "Natsuki", "Yuri", "Monika" };
+    uint8_t actions[DBG_ACTION_MAX];
+    char labels[DBG_ACTION_MAX][28];
+    const char *items[DBG_ACTION_MAX];
+    uint8_t count, selected = 0;
+    input_t in;
+
+    for (;;) {
+        count = 0;
+
+        actions[count] = DBG_POEM;
+        strcpy(labels[count], "Poem minigame (test)");
+        count++;
+
+        if (vm) {
+            actions[count] = DBG_TEAR;
+            sprintf(labels[count], "Tear glitch: %s", vm->scene.tear_on ? "ON" : "OFF");
+            count++;
+
+            actions[count] = DBG_WINDOW;
+            sprintf(labels[count], "Window hidden: %s", vm->scene.window_hidden ? "ON" : "OFF");
+            count++;
+
+            for (uint8_t ch = 0; ch < 4; ch++) {
+                actions[count] = (uint8_t)(DBG_DEL_SAYORI + ch);
+                sprintf(labels[count], "Deleted %s: %s", cnames[ch],
+                        vm->vars[VN_DELETED_VAR(ch)] ? "ON" : "OFF");
+                count++;
+            }
+        }
+
+        actions[count] = DBG_ERASE;
+        strcpy(labels[count], "Erase all saves...");
+        count++;
+
+        actions[count] = DBG_CLOSE;
+        strcpy(labels[count], "Close");
+        count++;
+
+        for (uint8_t i = 0; i < count; i++) {
+            items[i] = labels[i];
+        }
+        if (selected >= count) {
+            selected = (uint8_t)(count - 1);
+        }
+
+        render_backdrop(COL_BOX_FILL);
+        render_text("Debug Menu", 14, 12, COL_NAME);
+        render_list_menu(items, count, selected, 14, 34, COL_WHITE, COL_HIGHLIGHT);
+        render_text("2nd: choose   Mode: close", 14, SCREEN_H - 18, COL_BOX_EDGE);
+        render_present(TRANS_CUT);
+        gfx_Wait();
+
+        input_poll(&in);
+        if (quit_requested || in.pause) {
+            return;
+        }
+        if (in.up) {
+            selected = selected == 0 ? (uint8_t)(count - 1) : (uint8_t)(selected - 1);
+        }
+        if (in.down) {
+            selected = (uint8_t)((selected + 1) % count);
+        }
+        if (!in.advance) {
+            continue;
+        }
+
+        switch (actions[selected]) {
+            case DBG_POEM:
+                run_debug_poem_test();
+                break;
+
+            case DBG_TEAR:
+                if (vm->scene.tear_on) {
+                    vm->scene.tear_on = false;
+                } else {
+                    /* Same defaults a bare `show screen tear()` compiles to
+                     * -- see tools/compile_script.py's _TEAR_DEFAULTS. */
+                    vm->scene.tear_on = true;
+                    vm->scene.tear_chunks = 10;
+                    vm->scene.tear_offset_min = 0;
+                    vm->scene.tear_offset_max = 50;
+                    vm->scene.tear_period_ms = 50;
+                }
+                break;
+
+            case DBG_WINDOW:
+                vm->scene.window_hidden = !vm->scene.window_hidden;
+                break;
+
+            case DBG_DEL_SAYORI:
+            case DBG_DEL_NATSUKI:
+            case DBG_DEL_YURI:
+            case DBG_DEL_MONIKA: {
+                uint8_t ch = (uint8_t)(actions[selected] - DBG_DEL_SAYORI);
+                vm->vars[VN_DELETED_VAR(ch)] = !vm->vars[VN_DELETED_VAR(ch)];
+                persist_save(vm); /* sticks past this session, like the real thing */
+                break;
+            }
+
+            case DBG_ERASE:
+                run_debug_erase_confirm();
+                break;
+
+            case DBG_CLOSE:
+                return;
+        }
+    }
+}
+
 /** Block until any of the tracked keys goes down, or a quit is requested.
  * Keeps redrawing @p vm's scene each frame (render_scene_lazy(), so this
  * costs nothing once any zoom/hop/sink transition has settled) so a
@@ -235,6 +491,11 @@ static void wait_for_advance(vn_vm_t *vm, bool allow_pause)
 
     do {
         input_poll(&in);
+        if (debug_menu_requested) {
+            debug_menu_requested = false;
+            run_debug_menu(vm);
+            continue;
+        }
         if (allow_pause && in.pause) {
             if (run_pause_menu(vm)) {
                 returning_to_title = true;
@@ -290,6 +551,11 @@ static uint8_t run_title_screen(bool play_intro)
         if (quit_requested) {
             assets_use_title_palette(false);
             return TITLE_QUIT;
+        }
+        if (debug_menu_requested) {
+            debug_menu_requested = false;
+            run_debug_menu(NULL);
+            continue;
         }
 
         /* During the intro any key skips to the resting layout and is

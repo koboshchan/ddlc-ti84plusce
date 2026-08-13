@@ -187,6 +187,14 @@ enum vn_trans { TRANS_CUT = 0, TRANS_FADE = 1 };
  * character's id *is* the slot -- no table needs shipping to map between
  * them. A contract with the compiler, like the character ids themselves. */
 #define VN_NAME_VAR(ch)  (ch)
+
+/* The variable slot holding persistent.deleted_<character @p ch>, DDLC's
+ * delete_character mechanic (see src/persist.h). Reserved slot 5+ch in
+ * character-id order by tools/compile_script.py's Compiler.DELETED_VARS,
+ * right after the 4 name slots (0..3) and the OP_RANDOM scratch slot (4) --
+ * same fixed-slot contract as VN_NAME_VAR above. */
+#define VN_DELETED_VAR(ch)  (5 + (ch))
+
 #define VN_CALL_DEPTH    8    /* nesting depth for OP_CALL                    */
 #define VN_MAX_CHOICES   6    /* menu options the UI can display at once      */
 #define VN_MAX_CHARS     4    /* simultaneously shown characters              */
