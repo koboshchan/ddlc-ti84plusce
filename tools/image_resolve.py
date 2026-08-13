@@ -239,6 +239,20 @@ def _resolve_source(imgname: tuple, src: str) -> ImageDef:
         if parsed is not None:
             canvas, layers = parsed
             return ImageDef(imgname, "composite", canvas=canvas, layers=layers)
+
+        # `Image("path.png")` -- Ren'Py's explicit constructor for a plain
+        # image, functionally identical to just writing the path string
+        # (`image X = "path.png"`) for anything that isn't animated. Found
+        # in DDLC's own definitions.rpy for a couple of the Act 2 "ghost"
+        # sprites, written this way rather than as a bare string for no
+        # reason that matters to how it renders.
+        func = node.func
+        fname = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+        if (fname == "Image" and len(node.args) >= 1 and not node.keywords
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)):
+            return ImageDef(imgname, "path", path=node.args[0].value)
+
         return ImageDef(imgname, "unsupported", reason=f"unsupported call: {ast.dump(node)[:80]}")
 
     return ImageDef(imgname, "unsupported", reason=f"unsupported expression: {type(node).__name__}")
@@ -484,6 +498,23 @@ class ImageResolver:
     def scene_id(self, imgname: tuple) -> Optional[int]:
         if imgname in self._scene_ids:
             return self._scene_ids[imgname]
+
+        # DDLC's own script sometimes names a background by its bare tag
+        # (`scene bedroom`) even where the only `image` statement defines it
+        # as `image bg bedroom` -- confirmed real, not a guess: script-ch4.rpy
+        # itself uses both `scene bg bedroom` and bare `scene bedroom` for
+        # the identical background. Real Ren'Py resolves a bare tag against
+        # any image whose attribute list it's a subset of; this engine has
+        # no such general search, but a background is always exactly
+        # `('bg', name)` or nothing, so trying that one extra shape covers
+        # every real case without a broad, riskier attribute-matching
+        # search. Only applies when the bare name has no definition of its
+        # own, so it can never shadow a real non-bg image accidentally
+        # sharing a name with a background.
+        if imgname and imgname[0] != "bg" and imgname not in self.table:
+            prefixed = ("bg",) + imgname
+            if prefixed in self.table:
+                imgname = prefixed
 
         is_bg = bool(imgname) and imgname[0] == "bg"
         defn = self.table.get(imgname)
