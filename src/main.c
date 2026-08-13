@@ -5,6 +5,7 @@
  */
 
 #include "assets.h"
+#include "persist.h"
 #include "chars.h"
 #include "name.h"
 #include "poem.h"
@@ -856,6 +857,13 @@ int main(void)
          * after this if it runs, so applying defaults first for every path
          * costs nothing on Load and is exactly right for New Game/Continue. */
         assets_apply_var_defaults(&vm);
+        /* Overlays whatever survived from an earlier session (route
+         * clears, playthrough count, one-time-easter-egg flags) on top of
+         * those plain defaults -- see persist.h. Before the possible
+         * save_load() just below: a loaded save's own vars[] already
+         * reflects whatever was persistent as of that save, and should
+         * stand as written rather than being second-guessed here. */
+        persist_load(&vm);
 
         if (choice == TITLE_LOAD) {
             uint8_t slot = run_slot_picker("Load Game", true);
@@ -867,6 +875,18 @@ int main(void)
 
         returning_to_title = false;
         vn_run(&vm);
+
+        /* Flushes whatever changed this session (a route newly cleared, an
+         * easter egg newly seen) back out -- right after vn_run() rather
+         * than at the very end of main(), so it covers every way this can
+         * end: the story finishing normally, the player quitting mid-story,
+         * or returning to the title screen from the pause menu. vm is only
+         * ever reached here once vn_init() has actually run for it, so
+         * there's no uninitialized-vars[] risk from a player who quits
+         * straight off the title screen without starting anything -- that
+         * path never reaches this line, and correctly has nothing new to
+         * persist anyway. */
+        persist_save(&vm);
 
         if (returning_to_title) {
             quit_requested = false;

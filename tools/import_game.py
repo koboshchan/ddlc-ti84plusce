@@ -200,6 +200,18 @@ def do_compile(raw_dir: Path, build_dir: Path,
         if text in global_labels:
             compiler.var_labels[str_id] = global_labels[text]
 
+    # Which slots hold a Ren'Py `persistent.*` value -- the ones that must
+    # survive past this playthrough (New Game, even a fresh install),
+    # unlike every other story variable, which starts over from
+    # load_variable_defaults() every time. Identified purely by name
+    # convention: _ident_name() already renders `persistent.playthrough` or
+    # `persistent.clear[0]` as a string starting with "persistent.", the
+    # same convention Attribute/Subscript resolution already established
+    # for these, nothing persistence-specific had to be taught to the
+    # compiler itself. See src/persist.c for how this list gets used.
+    compiler.persistent_slots = sorted(
+        slot for name, slot in compiler.variables.items() if name.startswith("persistent."))
+
     # Ren'Py's `default` values (definitions.rpy), for every variable that
     # actually got a slot -- see load_variable_defaults()'s docstring for
     # why this can't just be done inside the Compiler as files compile
@@ -448,6 +460,15 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
     for str_id, (chunk_id, offset) in sorted(compiler.var_labels.items()):
         labels += struct.pack("<HI", str_id - VN_STR_BASE, (chunk_id << 16) | offset)
     appvars.append(write_appvar(bytes(labels), "DVLBL", appvar_dir))
+
+    # Which slots are `persistent.*` (compiler.persistent_slots, built above)
+    # -- u16 count, then one u8 slot per entry. Read-only, compiler-generated,
+    # small (22 entries for the full game today); see src/persist.c for how
+    # this drives what actually gets saved/restored across a New Game.
+    pslots = bytearray(struct.pack("<H", len(compiler.persistent_slots)))
+    for slot in compiler.persistent_slots:
+        pslots += struct.pack("<B", slot)
+    appvars.append(write_appvar(bytes(pslots), "DPSLOT", appvar_dir))
 
     # Ren'Py's `default` values, applied to a fresh vars[] before a New
     # Game/Continue starts (see src/main.c's assets_apply_var_defaults()) --

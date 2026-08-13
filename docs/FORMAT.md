@@ -654,6 +654,41 @@ build) it was written against -- re-running the import pipeline with a
 different `--files` selection changes the bytecode layout and invalidates
 old saves.
 
+## Persistent data
+
+Separate from both an ordinary story variable (reset every New Game) and a
+`DSAVEn` slot (one resume point the player chose to keep) is Ren'Py's own
+`persistent.*` -- progress that survives *both*: how many times the game has
+been started, which routes are cleared, whether a one-time surprise has
+already happened. DDLC's Act 2/3 pacing and its easter eggs depend on this;
+the ghost menu and Monika's poem-game eyes are each meant to happen once
+ever, not once per playthrough.
+
+Which variable slots qualify is decided entirely at compile time and needs
+no code in `compile_script.py` beyond what string/attribute-name resolution
+already does: `tools/import_game.py` filters `compiler.variables` for every
+name starting with `"persistent."` and ships that list as `DPSLOT` (`u16`
+count, one `u8` slot per entry) -- 22 entries for the full game today.
+`src/persist.c` doesn't know or care what any of them mean, only that
+they're the ones to carry forward.
+
+`persist_load()` overlays the last saved value for each `DPSLOT` slot onto
+`vars[]`, called once per New Game/Continue right after
+`assets_apply_var_defaults()` (so a real persisted value wins over a plain
+Ren'Py default) and before a possible `save_load()` (so a loaded save's own
+`vars[]` — already reflecting whatever was persistent as of that save —
+isn't second-guessed). A first-ever run has no `DPERSIST` AppVar yet, so
+this is correctly a no-op, leaving the plain defaults in place.
+
+`persist_save()` writes the current value of every `DPSLOT` slot back out
+to `DPERSIST` (one `i16` per slot, `DPSLOT` order) -- called in `main.c`
+right after `vn_run()` returns, which covers the story finishing normally,
+the player quitting mid-story, and returning to the title screen from the
+pause menu, in one checkpoint. A player who quits straight from the title
+screen without starting anything never reaches that call, correctly: `vm`
+hasn't been through `vn_init()` yet on that path, and there is nothing new
+to persist anyway.
+
 ## Title screen
 
 DDLC's main menu shares **nothing** with the in-game sprites — it has its own
