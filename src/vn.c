@@ -483,6 +483,16 @@ bool vn_step(vn_vm_t *vm)
             break;
         }
 
+        case OP_DELETE_SAVES: {
+            if (vm->status != VN_RUNNING) {
+                break;
+            }
+            if (vm->host->delete_saves) {
+                vm->host->delete_saves(vm->host->ctx);
+            }
+            break;
+        }
+
         case OP_END:
             vm->status = VN_FINISHED;
             break;

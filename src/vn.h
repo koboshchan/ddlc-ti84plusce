@@ -77,6 +77,13 @@ enum vn_op {
                           * or the variable never held one).             */
     OP_CALL_VAR = 0x12, /* var:u8 -- like OP_JUMP_VAR, but pushes a return
                           * address first (`call expression <name>`).    */
+    OP_DELETE_SAVES = 0x13, /* -- compiles DDLC's own `delete_all_saves()`
+                          * call: erases every DSAVEn slot for real, no
+                          * undo. Genuinely destructive, on purpose --
+                          * confirmed explicitly with the person building
+                          * this port before this opcode existed at all
+                          * (see git history), not a default this engine
+                          * would take on its own. */
 };
 
 /** Comparison selectors for OP_IF. */
@@ -270,6 +277,17 @@ typedef struct {
      * @p minigame defaulting to 0 when absent.
      */
     bool (*resolve_label)(void *ctx, int16_t str_id, uint32_t *addr_out);
+
+    /**
+     * Erases every save slot, permanently -- see OP_DELETE_SAVES. Optional:
+     * NULL means the call is silently skipped, same spirit as @p pause and
+     * @p minigame being optional, but worth calling out here specifically
+     * since unlike those two, skipping this one changes what a real DDLC
+     * playthrough would do at this exact story beat (Monika's threat stays
+     * a threat, nothing actually happens) rather than just losing a cosmetic
+     * flourish.
+     */
+    void (*delete_saves)(void *ctx);
 
     void *ctx;
 } vn_host_t;

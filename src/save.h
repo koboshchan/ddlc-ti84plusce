@@ -38,4 +38,12 @@ bool save_write(uint8_t slot, const vn_vm_t *vm);
  * @p slot has no save. */
 bool save_load(uint8_t slot, vn_vm_t *vm);
 
+/**
+ * Erases every save slot, permanently -- compiles DDLC's own
+ * `delete_all_saves()` call (see vn.h's OP_DELETE_SAVES). No undo: a slot
+ * with nothing in it to begin with is not an error, only a slot whose
+ * AppVar exists but can't be removed is.
+ */
+bool save_delete_all(void);
+
 #endif /* SAVE_H */

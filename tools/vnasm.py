@@ -30,6 +30,7 @@ OP_MINIGAME = 0x0F
 OP_RANDOM = 0x10
 OP_JUMP_VAR = 0x11
 OP_CALL_VAR = 0x12
+OP_DELETE_SAVES = 0x13
 
 CMP_EQ, CMP_NE, CMP_LT, CMP_LE, CMP_GT, CMP_GE = range(6)
 TRANS_CUT, TRANS_FADE = 0, 1
@@ -219,6 +220,11 @@ class Assembler:
     def call_var(self, var: int) -> None:
         self._u8(OP_CALL_VAR)
         self._u8(var)
+
+    def delete_saves(self) -> None:
+        """Compiles DDLC's own `delete_all_saves()` call -- erases every
+        save slot for real, no undo. See OP_DELETE_SAVES."""
+        self._u8(OP_DELETE_SAVES)
 
     def ret(self) -> None:
         self._u8(OP_RETURN)

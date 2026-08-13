@@ -123,3 +123,19 @@ bool save_load(uint8_t slot, vn_vm_t *vm)
     vm->status = VN_RUNNING;
     return true;
 }
+
+bool save_delete_all(void)
+{
+    bool ok = true;
+    for (uint8_t slot = 1; slot <= SAVE_SLOTS; slot++) {
+        char name[9];
+        slot_name(slot, name);
+        /* ti_Delete returns 0 on success; an already-absent slot (nothing
+         * was ever saved there) isn't a failure of "erase everything",
+         * only a slot that exists but genuinely can't be removed is. */
+        if (ti_Delete(name) != 0 && save_exists(slot)) {
+            ok = false;
+        }
+    }
+    return ok;
+}

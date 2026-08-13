@@ -205,6 +205,16 @@ static bool host_quit(void *ctx)
     return say_count > 10000;
 }
 
+static void host_delete_saves(void *ctx)
+{
+    (void)ctx;
+    if (opt_trace) {
+        printf("[delete_all_saves]\n");
+    }
+    /* No real save files exist in this native test harness to erase --
+     * see save.c's save_delete_all() for the on-calc implementation. */
+}
+
 /* Optional --labels=path, raw DVLBL bytes (see tools/import_game.py's
  * packaging): u16 count, then per entry u16 (interned id - VN_STR_BASE) +
  * u32 packed address. Without it, every dynamic jump/call correctly fails
@@ -246,6 +256,7 @@ static const vn_host_t host = {
      * result var to 0 rather than crashing, which is fine for a bytecode
      * regression tool that isn't rendering anything. */
     .resolve_label = host_resolve_label,
+    .delete_saves  = host_delete_saves,
     .ctx        = NULL,
 };
 

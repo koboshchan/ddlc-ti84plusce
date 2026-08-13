@@ -289,10 +289,24 @@ class Compiler:
     # never read again afterward.
     RAND_SCRATCH = "$rand"
 
+    # One persistent flag per character, tracking DDLC's own delete_character
+    # mechanic (the real game deletes that character's .chr file from disk;
+    # this engine has nothing to delete, so it tracks the fact instead --
+    # see _emit_python_stmt's handling of delete_character/
+    # restore_all_characters/delete_all_saves calls). Named with the
+    # "persistent." prefix deliberately: tools/import_game.py's DPSLOT
+    # packaging already collects every variable named that way, so a
+    # deletion survives a New Game exactly like the real .chr file staying
+    # gone would, with no separate persistence wiring needed here.
+    DELETED_VARS = ("persistent.deleted_sayori", "persistent.deleted_natsuki",
+                    "persistent.deleted_yuri", "persistent.deleted_monika")
+
     def __post_init__(self) -> None:
         for name in self.NAME_VARS:
             self._var_slot(name)
         self._var_slot(self.RAND_SCRATCH)
+        for name in self.DELETED_VARS:
+            self._var_slot(name)
 
     def compile_file(self, path: Path) -> None:
         _, top = load_rpyc(path)
@@ -673,6 +687,26 @@ class Compiler:
                 self.asm.pause(ms)
                 return True
             return False
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+            fn = _ident_name(stmt.value.func)
+            if fn == "delete_character" and len(stmt.value.args) == 1:
+                tag = _const_scalar(stmt.value.args[0])
+                if isinstance(tag, str) and tag in TAG_TO_CHAR:
+                    self.asm.set(self._var_slot(self.DELETED_VARS[TAG_TO_CHAR[tag]]), 1)
+                    return True
+                return False
+            if fn == "restore_all_characters" and not stmt.value.args:
+                for name in self.DELETED_VARS:
+                    self.asm.set(self._var_slot(name), 0)
+                return True
+            if fn == "delete_all_saves" and not stmt.value.args:
+                # Genuinely destructive -- erases every DSAVEn slot on the
+                # calculator, no undo. Confirmed explicitly before this
+                # opcode existed at all (see git history / OP_DELETE_SAVES's
+                # own comment in vn.h); not a default this compiler takes on
+                # its own.
+                self.asm.delete_saves()
+                return True
         if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
             var = _ident_name(stmt.targets[0])
             val = self._const_operand(stmt.value)

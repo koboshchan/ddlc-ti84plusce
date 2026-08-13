@@ -553,6 +553,16 @@ static bool host_quit(void *ctx)
     return quit_requested;
 }
 
+/* Compiles DDLC's own `delete_all_saves()` call -- erases every save slot
+ * for real, no undo. See vn.h's OP_DELETE_SAVES for why this exists at all
+ * rather than being skipped like everything else this session left
+ * unsupported. */
+static void host_delete_saves(void *ctx)
+{
+    (void)ctx;
+    save_delete_all();
+}
+
 /* Called by vn_step() whenever a Jump/Call/Return/Menu-pick target's chunk
  * differs from the one currently resident -- see vn.h's "Chunk-packed
  * addresses" and docs/FORMAT.md's "Chunking". */
@@ -585,6 +595,7 @@ static vn_host_t host = {
     .load_chunk = host_load_chunk,
     .minigame   = host_minigame,
     .resolve_label = assets_resolve_label,
+    .delete_saves  = host_delete_saves,
     .ctx        = NULL,
 };
 
