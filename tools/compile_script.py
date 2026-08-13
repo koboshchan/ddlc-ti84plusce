@@ -814,6 +814,39 @@ def _ident_name(node) -> str | None:
     if isinstance(node, ast.Attribute):
         base = _ident_name(node.value)
         return f"{base}.{node.attr}" if base else None
+    if isinstance(node, ast.Subscript):
+        # DDLC keeps per-chapter state in lists -- poemwinner[1],
+        # n_poemappeal[0] -- rather than one variable per chapter. The VM has
+        # no notion of a list or of indexing at runtime, but every real use
+        # found across the whole game indexes with a literal int (never a
+        # variable), so there's no need for one: "poemwinner[1]" becomes its
+        # own distinct variable name here, as if the script had actually
+        # written a variable by that name, and _var_slot()/_intern() (which
+        # only ever see strings, never knowing this one came from a
+        # subscript) give it a slot like any other.
+        #
+        # A non-constant index (`poemwinner[chapter]`) can't resolve to one
+        # fixed name at compile time -- returning None here degrades it the
+        # same as any other unsupported expression (skipped, branch taken
+        # unconditionally), which is correct: making it up would silently
+        # read the wrong chapter's slot.
+        base = _ident_name(node.value)
+        index = _const_int(node.slice)
+        if base is None or index is None:
+            return None
+        # A leading underscore is Ren'Py's own convention for an internal
+        # list, not story state -- `_history_list[-1].what = "..."` is how
+        # DDLC retroactively rewrites a line already shown on the History
+        # screen (found in one exclusive scene). Nothing in this engine
+        # tracks or displays history, so there's nothing to rewrite: turning
+        # it into a variable would silently fabricate an always-empty slot
+        # for something meaningless here, worse than the honest "skipped"
+        # it degraded to before this whole branch existed. Every real
+        # DDLC list this is meant for (poemwinner, s/n/y/m_poemappeal)
+        # starts with a letter, never an underscore.
+        if base.split(".", 1)[0].split("[", 1)[0].startswith("_"):
+            return None
+        return f"{base}[{index}]"
     return None
 
 

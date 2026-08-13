@@ -183,6 +183,20 @@ the game compares one variable against both kinds, so this is redundant
 safety, but it also makes a wrong value obvious on sight in a trace (a
 `vars[]` dump) instead of looking like a plausible counter.
 
+DDLC also keeps per-chapter state in plain Python lists --
+`poemwinner[1]`, `n_poemappeal[0]` -- rather than one variable per chapter.
+The VM has no notion of a list or of runtime indexing, but every real use of
+these in the whole game indexes with a literal integer, never a variable, so
+none is needed: `tools/compile_script.py`'s `_ident_name()` turns
+`name[literal_int]` into its own distinct variable name (`"poemwinner[1]"`)
+at compile time, and everything downstream (`_var_slot()`, `_intern()`)
+treats it exactly like a variable the script had actually named that. A
+non-constant index (`poemwinner[chapter]`) can't resolve to one fixed slot
+this way and degrades like any other unsupported expression -- see "Poem
+minigame" for how the real chapter-aware access pattern gets handled.
+Leading-underscore bases (`_history_list`, Ren'Py's own internal state, not
+DDLC's) are deliberately excluded from this -- see `_ident_name`'s comment.
+
 Four variable slots are reserved before anything else can claim one:
 `s_name`/`n_name`/`y_name`/`m_name` get slots `0..3`, in the same order as
 `TAG_TO_CHAR`'s character ids (`Compiler.NAME_VARS`, applied in
