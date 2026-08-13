@@ -60,7 +60,7 @@ ACT1_FILES = [
     "script-ch5", "script-ch10", "script-ch20", "script-ch21", "script-ch22",
     "script-ch23", "script-exclusives-sayori", "script-exclusives-natsuki",
     "script-exclusives-yuri", "script-exclusives2-natsuki", "script-exclusives2-yuri",
-    "script-poemgame", "script-poemresponses", "poems",
+    "script-poemgame", "script-poemresponses", "poems", "poems_special",
     "script", "splash",
 ]
 
@@ -76,7 +76,7 @@ ALL_FILES = [
     "script-exclusives-sayori", "script-exclusives-natsuki", "script-exclusives-yuri",
     "script-exclusives2-natsuki", "script-exclusives2-yuri",
     "script-poemgame", "script-poemresponses", "script-poemresponses2", "poems",
-    "script", "splash",
+    "poems_special", "script", "splash",
 ]
 
 DEFAULT_FILES = ["script", "script-ch0", "splash"]

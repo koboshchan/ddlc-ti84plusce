@@ -1070,11 +1070,11 @@ walks the real body at all. Kept: the real `bg/notebook.png` background
 the "N/20" progress counter DDLC also shows.
 
 **`poemwinner[N]`/`*_poemappeal[N]` are real indexed variables, read
-downstream by two real DDLC dispatch idioms, both implemented as
-compile-time enumerable dispatches rather than runtime string
-construction** (this VM's variables are flat int16 slots -- there's no way
-to hold `"sayori"` distinctly from the number 0, so building a name at
-runtime the way DDLC's own script does was never an option here):
+downstream by real DDLC dispatch idioms, all implemented as compile-time
+enumerable dispatches rather than runtime string construction** (this VM's
+variables are flat int16 slots -- there's no way to hold `"sayori"`
+distinctly from the number 0, so building a name at runtime the way DDLC's
+own script does was never an option here):
 
 - **The poem-winner exclusive scene.** Right after each poem game, DDLC
   computes `nextscene = poemwinner[N] + "_exclusive_" +
@@ -1119,6 +1119,55 @@ runtime the way DDLC's own script does was never an option here):
   unidentified variable in the constructed name) is dropped entirely, same
   reasoning as the winner's own tag name -- this compiler never builds the
   string, so `pt`'s own meaning doesn't matter here.
+
+**The 11 special poems** (`poems_special.rpyc`, `label poem_special_1`
+through `poem_special_11`, each just a picture-book page Show + a
+click-to-continue pause -- unrelated to the winner/opinion dispatches
+above beyond sharing the same enumerable-dispatch technique). Three real
+call sites (`script-ch20/22/23.rpyc`, one per Act 2 sub-chapter) each do
+`Call("poem_special_" + str(persistent.special_poems[N]))` for N=0,1,2.
+`_match_special_poem_call()` recognizes this shape and
+`_emit_special_poem_dispatch()` emits an 11-way `OP_IF` chain straight to
+the real `poem_special_K` label.
+
+`persistent.special_poems[0..2]` need 3 *distinct* values in 1..11, picked
+once per save (real DDLC: a reject-and-remove loop over `splashscreen.rpyc`'s
+unreachable body). `_emit_special_poem_init()` reproduces this as a real
+backward-jumping retry loop in *emitted* bytecode -- this VM's *input*
+language (the subset of Ren'Py Python this compiler understands) has no
+loop construct, but nothing stops hand-written bytecode from looping the
+same way any other generated `OP_JUMP` can target an earlier offset.
+Gated on slot 0's own value (0 meaning "never rolled", since a real pick is
+always 1..11) so it only runs once per save, matching `persistent.*`
+surviving New Game. The real complication: `OP_IF` only compares a
+variable against a compile-time literal, never another variable, so
+"is this draw equal to an already-picked slot" can't be checked directly.
+Instead each retry dispatches the fresh draw across all 11 possible literal
+values first (same shape as the winner dispatch's own appeal loop) and,
+once inside the branch for a specific literal `k`, compares each
+already-picked slot against that same now-compile-time-known `k` --
+a comparison `OP_IF` does support.
+
+Each of the 3 call sites is gated behind `if _return: <call> else: pass`,
+where `_return` comes from a real Ren'Py `call screen confirm(message,
+Return(a), Return(b))` UserStatement immediately before it -- DDLC's own
+yes/no dialog ("You have unlocked a special poem. Would you like to read
+it?"), nothing compiled before this. `_parse_confirm_call()`/
+`_emit_confirm_screen()` compile it to a real 2-option `OP_MENU` that
+writes the player's pick into a `_return` story variable (naming it after
+Ren'Py's own automatic post-call-screen variable, since that's exactly the
+role it plays here) -- or, when both buttons carry the *same* value
+(`script-ch23.rpyc`'s own variant: an empty message and `Return(True)` on
+both, i.e. "press any button to continue" rather than a real choice), just
+an unconditional `OP_SET` instead of a degenerate menu whose two options
+wouldn't actually differ.
+
+Verified live via `host_sim`'s synthetic second-playthrough test (see
+below): the prompt narrates, the menu appears, declining skips straight to
+the next real content, and accepting shows the picked `poem_special_N`'s
+full page sequence (landed on `poem_special_7`'s real two-image,
+extra-`pause()` sequence at seed 1) before correctly resuming the same
+continuation point either way.
 
 **A real, session-wide verification gap, found and fixed alongside this
 work:** `tools/host_sim`'s `--pc=` was being hand-picked once early in

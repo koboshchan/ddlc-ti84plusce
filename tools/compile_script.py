@@ -851,6 +851,11 @@ class Compiler:
                 else:
                     self._emit_chapter_opinion_dispatch(dispatch[1:], fname)
                 return
+            special_var = (_match_special_poem_call(node.label)
+                          if isinstance(node.label, str) else None)
+            if special_var is not None:
+                self._emit_special_poem_dispatch(special_var)
+                return
             var = self._dynamic_target_var(node.label)
             if var is None:
                 self._skip(node, fname, "dynamic call target unsupported")
@@ -1002,6 +1007,82 @@ class Compiler:
             self.asm.label(ch_next)
         self.asm.label(end_label)
 
+    # DDLC's real 11 special poems (poems_special.rpyc), each a one-shot
+    # picture-book page. Real gate: `persistent.special_poems`, 3 slots
+    # picked once (splashscreen.rpyc's own reject-and-remove loop over
+    # 1..11, unreachable -- see #57) and read back at 3 real call sites
+    # (script-ch20/22/23.rpyc, one slot each) via
+    # `Call("poem_special_" + str(persistent.special_poems[N]))`.
+    _SPECIAL_POEM_COUNT = 11
+
+    def _emit_special_poem_init(self) -> None:
+        """Ensures persistent.special_poems[0..2] hold 3 distinct values in
+        1..11 before any dispatch reads them -- DDLC's own reject-and-remove
+        pick, reproduced as a real backward-jumping retry loop in emitted
+        bytecode (this VM has no loop construct in its *input* language, but
+        nothing stops hand-emitted bytecode from looping). Gated on slot 0's
+        own value (0 meaning "never rolled", since a real pick is always
+        1..11) so it only actually runs once per save -- persistent.*
+        survives New Game, matching the real game picking these once and
+        keeping them.
+
+        OP_IF only compares a variable against a compile-time literal, never
+        another variable, so distinctness can't be checked as "does slot 1
+        equal slot 0" directly. Instead each retry dispatches on the fresh
+        draw across all 11 possible literal values (mirroring
+        _emit_poemwinner_dispatch's own enumerable-dispatch shape) and, once
+        inside the branch for a specific literal k, checks each
+        already-picked slot against that same literal k -- a var-vs-literal
+        comparison the VM does support.
+        """
+        slot0 = self._var_slot("persistent.special_poems[0]")
+        slot1 = self._var_slot("persistent.special_poems[1]")
+        slot2 = self._var_slot("persistent.special_poems[2]")
+        rand = self._var_slot(self.RAND_SCRATCH)
+        done = self._gensym("special_poems_init_done")
+
+        self.asm.if_(slot0, vnasm.CMP_NE, 0, done)
+        self.asm.random(slot0, 1, self._SPECIAL_POEM_COUNT)
+
+        for slot, avoid in ((slot1, (slot0,)), (slot2, (slot0, slot1))):
+            retry = self._gensym("special_poems_retry")
+            slot_done = self._gensym("special_poems_slot_done")
+            self.asm.label(retry)
+            self.asm.random(rand, 1, self._SPECIAL_POEM_COUNT)
+            for k in range(1, self._SPECIAL_POEM_COUNT + 1):
+                match = self._gensym("special_poems_match")
+                nxt = self._gensym("special_poems_next")
+                self.asm.if_(rand, vnasm.CMP_EQ, k, match)
+                self.asm.jump(nxt)
+                self.asm.label(match)
+                for other in avoid:
+                    self.asm.if_(other, vnasm.CMP_EQ, k, retry)
+                self.asm.set(slot, k)
+                self.asm.jump(slot_done)
+                self.asm.label(nxt)
+            self.asm.label(slot_done)
+
+        self.asm.label(done)
+
+    def _emit_special_poem_dispatch(self, varname: str) -> None:
+        """The real bytecode for a recognized special-poem dispatch (see
+        _match_special_poem_call) -- an enumerable 11-way dispatch straight
+        to the real poem_special_K label, same reasoning as
+        _emit_poemwinner_dispatch."""
+        self._emit_special_poem_init()
+        slot = self._var_slot(varname)
+        end_label = self._gensym("special_poem_end")
+        for k in range(1, self._SPECIAL_POEM_COUNT + 1):
+            match = self._gensym("special_poem_match")
+            nxt = self._gensym("special_poem_next")
+            self.asm.if_(slot, vnasm.CMP_EQ, k, match)
+            self.asm.jump(nxt)
+            self.asm.label(match)
+            self.asm.call(f"poem_special_{k}")
+            self.asm.jump(end_label)
+            self.asm.label(nxt)
+        self.asm.label(end_label)
+
     def _emit_call_args(self, node, params: list, fname: str) -> None:
         """Binds a parameterized Call's arguments onto the callee's declared
         slots before the real OP_CALL -- see Compiler.label_params.
@@ -1073,8 +1154,42 @@ class Compiler:
         if stripped == "window auto" or stripped.startswith("window show("):
             self.asm.window_show()
             return
+        if stripped.startswith("call screen confirm("):
+            confirm = _parse_confirm_call(stripped)
+            if confirm is not None:
+                self._emit_confirm_screen(*confirm)
+                return
         self._skip(node, fname, f"unsupported statement: {line!r}")
         self.asm.nop()
+
+    def _emit_confirm_screen(self, message: str, yes_value: bool, no_value: bool) -> None:
+        """Compiles DDLC's own `call screen confirm(message, Return(a),
+        Return(b))` idiom (see _parse_confirm_call) to a real 2-option
+        OP_MENU, writing the player's pick into a "_return" story variable
+        the same way Ren'Py's own call-screen mechanism would -- the one
+        real gate in front of each of the 11 special poems (see
+        _match_special_poem_call). When both buttons carry the same value
+        (script-ch23.rpyc's own variant, an empty-message "press any button
+        to continue" rather than a real choice), there's nothing to ask --
+        this just sets the variable directly instead of showing a
+        degenerate 2-option menu whose options don't actually differ."""
+        slot = self._var_slot("_return")
+        if yes_value == no_value:
+            self.asm.set(slot, int(yes_value))
+            return
+        if message:
+            self.asm.narrate(_strip_text_tags(message))
+        yes_label = self._gensym("confirm_yes")
+        no_label = self._gensym("confirm_no")
+        end_label = self._gensym("confirm_end")
+        self.asm.menu([("Yes", yes_label), ("No", no_label)])
+        self.asm.label(yes_label)
+        self.asm.set(slot, int(yes_value))
+        self.asm.jump(end_label)
+        self.asm.label(no_label)
+        self.asm.set(slot, int(no_value))
+        self.asm.jump(end_label)
+        self.asm.label(end_label)
 
     def _emit_Python(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)
@@ -1604,6 +1719,29 @@ def _match_poemwinner_dispatch(node) -> tuple[str, int, str] | None:
     return (prefix, chapter, sep_term.value)
 
 
+def _match_special_poem_call(expr_src: str) -> str | None:
+    """Recognizes `"poem_special_" + str(persistent.special_poems[N])` --
+    script-ch20/22/23.rpyc's real `call expression` target for DDLC's 11
+    optional special poems (poems_special.rpyc). Returns the
+    "persistent.special_poems[N]" variable name to dispatch on (see
+    _ident_name's Subscript handling, which already renders it exactly that
+    way), or None if @p expr_src isn't this shape.
+    """
+    expr = _parse_condition_expr(expr_src)
+    if not (isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add)):
+        return None
+    if not (isinstance(expr.left, ast.Constant) and expr.left.value == "poem_special_"):
+        return None
+    call = expr.right
+    if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+            and call.func.id == "str" and len(call.args) == 1):
+        return None
+    var = _ident_name(call.args[0])
+    if var is None or not var.startswith("persistent.special_poems["):
+        return None
+    return var
+
+
 def _chapter_indexed_base(node) -> str | None:
     """Recognizes `BASE[chapter - 1]` -- BASE one of poemwinner/
     s_poemappeal/n_poemappeal/y_poemappeal/m_poemappeal, the arrays the
@@ -1772,6 +1910,49 @@ _TEAR_PARAM_ORDER = ("number", "offtimeMult", "ontimeMult", "offsetMin", "offset
 # claim of matching the original frame-for-frame. TEAR_BASE_MS is the unit
 # that scaling is read against.
 TEAR_BASE_MS = 50
+
+
+def _parse_confirm_call(stripped: str) -> tuple[str, bool, bool] | None:
+    """(message, yes_value, no_value) for DDLC's own `call screen
+    confirm(message, Return(a), Return(b))` idiom -- the one real gate in
+    front of each of the 11 special poems (script-ch20/22/23.rpyc, right
+    before the dynamic Call _match_special_poem_call recognizes). Both real
+    call sites confirmed: script-ch20/22.rpyc's real accept-or-decline
+    prompt (Return(True), Return(False)) and script-ch23.rpyc's own variant
+    with an empty message and the SAME action on both buttons
+    (Return(True), Return(True)) -- effectively just "press any button to
+    continue" rather than a real yes/no choice, which is why both values
+    are returned instead of assuming True/False, letting
+    _emit_confirm_screen degrade that case to an unconditional set instead
+    of a real menu. None if @p stripped isn't this shape at all. @p stripped
+    still has its `call screen ` prefix; only the `confirm(...)` call
+    itself is parsed.
+    """
+    prefix = "call screen confirm("
+    if not stripped.startswith(prefix) or not stripped.endswith(")"):
+        return None
+    try:
+        call = ast.parse(f"confirm({stripped[len(prefix):-1]})", mode="eval").body
+    except SyntaxError:
+        return None
+    if not (isinstance(call, ast.Call) and len(call.args) == 3):
+        return None
+    message, yes_action, no_action = call.args
+    if not (isinstance(message, ast.Constant) and isinstance(message.value, str)):
+        return None
+
+    def _return_value(node):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "Return" and len(node.args) == 1
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, bool)):
+            return node.args[0].value
+        return None
+
+    yes_value, no_value = _return_value(yes_action), _return_value(no_action)
+    if yes_value is None or no_value is None:
+        return None
+    return (message.value, yes_value, no_value)
 
 
 def _parse_tear_call(stmt: str) -> tuple[int, int, int, int] | None:
