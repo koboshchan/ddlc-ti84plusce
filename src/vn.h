@@ -51,6 +51,13 @@ enum vn_op {
                           * stores its outcome in vars[result_var]. Only the
                           * poem word-picking game exists today; see
                           * docs/FORMAT.md's "Poem minigame" section.        */
+    OP_RANDOM   = 0x10, /* var:u8 lo:i16 hi:i16 -- vars[var] = a uniform
+                          * random integer in [lo, hi]. Compiles DDLC's own
+                          * `renpy.random.randint(lo, hi)`, always found as
+                          * `== N` right next to it -- see
+                          * tools/compile_script.py's _randint_call() and
+                          * "The speaking pop"'s sibling section on easter
+                          * eggs in docs/FORMAT.md.                        */
 };
 
 /** Comparison selectors for OP_IF. */
@@ -259,13 +266,32 @@ typedef struct {
     int16_t        vars[VN_MAX_VARS];
     vn_scene_t     scene;
 
+    /* OP_RANDOM's state (xorshift32 -- see vn.c). Seeded once by vn_init()'s
+     * caller, who owns the only genuinely platform-specific piece of this --
+     * where the entropy comes from -- keeping vn.c itself free of any
+     * platform header the way its file comment requires. Not part of a save
+     * (src/save.c): a loaded game reseeds like a fresh one rather than
+     * replaying the exact same sequence of future draws, which is what a
+     * player would actually expect from "random". */
+    uint32_t       rng_state;
+
     const vn_host_t *host;
     vn_status_t      status;
 } vn_vm_t;
 
 /** Reset @p vm and point it at @p code. Does not draw anything. */
+/**
+ * @p seed feeds OP_RANDOM's PRNG (see vn_vm_t.rng_state) -- pass something
+ * that actually varies call to call (main.c uses the free-running clock() at
+ * the moment the player reaches the title screen) so a random easter egg
+ * doesn't draw identically on every playthrough. 0 is remapped internally to
+ * a fixed nonzero value (xorshift32 can't recover from an all-zero state),
+ * so a caller with no real entropy source degrades to deterministic rather
+ * than broken -- tools/host_sim relies on exactly that for reproducible
+ * output.
+ */
 void vn_init(vn_vm_t *vm, const uint8_t *code, size_t code_size,
-             const vn_host_t *host);
+             const vn_host_t *host, uint32_t seed);
 
 /**
  * Execute a single instruction.

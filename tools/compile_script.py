@@ -280,9 +280,19 @@ class Compiler:
     # decide.
     NAME_VARS = ("s_name", "n_name", "y_name", "m_name")
 
+    # A fifth reserved slot: scratch space for OP_RANDOM. Every real
+    # `renpy.random.randint(a, b)` in the game is consumed immediately by
+    # the comparison right next to it (`== 0`, never assigned to a story
+    # variable first -- see _RANDINT_RE's docstring), so one shared slot
+    # is enough regardless of how many randint() calls the script has: each
+    # draw is written and read back within the same handful of instructions,
+    # never read again afterward.
+    RAND_SCRATCH = "$rand"
+
     def __post_init__(self) -> None:
         for name in self.NAME_VARS:
             self._var_slot(name)
+        self._var_slot(self.RAND_SCRATCH)
 
     def compile_file(self, path: Path) -> None:
         _, top = load_rpyc(path)
@@ -735,7 +745,19 @@ class Compiler:
         # A leaf ast.Compare -- the only remaining case _condition_supported()
         # approves.
         cmp = _CMP_MAP[type(expr.ops[0])]
-        slot = self._var_slot(_ident_name(expr.left))
+        bounds = _randint_call(expr.left)
+        if bounds is not None:
+            # `renpy.random.randint(lo, hi) == N` -- draw fresh into the
+            # shared scratch slot right here, immediately before comparing
+            # it, so the draw is consumed exactly once and nothing needs to
+            # persist it (see RAND_SCRATCH). Mirrors what the equivalent
+            # Python would actually do at this point in execution: evaluate
+            # randint() now, use the result once.
+            lo, hi = bounds
+            slot = self._var_slot(self.RAND_SCRATCH)
+            self.asm.random(slot, lo, hi)
+        else:
+            slot = self._var_slot(_ident_name(expr.left))
         val = self._const_operand(expr.comparators[0])
         self.asm.if_(slot, cmp, val, true_label)
         self.asm.jump(false_label)
@@ -929,6 +951,23 @@ def _parse_condition_expr(cond_str: str) -> "ast.expr | None":
         return None
 
 
+def _randint_call(node) -> tuple[int, int] | None:
+    """(lo, hi) if @p node is `renpy.random.randint(lo, hi)` with literal int
+    bounds, else None.
+
+    Every real use in the whole game is this exact shape, immediately
+    compared for equality -- `renpy.random.randint(0, N) == 0`, DDLC's own
+    way of writing "1 in (N+1) chance" (the ghost menu's 1/64, Monika's eyes
+    in the poem game at 1/6, several Act 2 scene variants). None assign the
+    draw to a variable first, which is why Compiler.RAND_SCRATCH exists
+    instead of this needing to resolve an arbitrary target name."""
+    if (isinstance(node, ast.Call) and _ident_name(node.func) == "renpy.random.randint"
+            and len(node.args) == 2 and not node.keywords):
+        lo, hi = _const_int(node.args[0]), _const_int(node.args[1])
+        return (lo, hi) if lo is not None and hi is not None else None
+    return None
+
+
 def _is_music_get_playing_call(node) -> bool:
     """True for `renpy.music.get_playing(...)` (any args/kwargs). This
     engine has no audio -- OP_SOUND is a permanent no-op (see vn.h) -- so
@@ -997,6 +1036,9 @@ def _condition_supported(expr) -> bool:
     if isinstance(expr, ast.Compare) and len(expr.ops) == 1 and len(expr.comparators) == 1:
         if _CMP_MAP.get(type(expr.ops[0])) is None:
             return False
+        if _randint_call(expr.left) is not None:
+            # `renpy.random.randint(a, b) == N` -- see _randint_call().
+            return _const_int(expr.comparators[0]) is not None
         # _const_scalar, not _const_int: a string comparand is fine, it just
         # becomes an interned id at emit time (see Compiler._const_operand).
         return (_ident_name(expr.left) is not None

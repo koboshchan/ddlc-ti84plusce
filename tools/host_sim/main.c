@@ -26,6 +26,11 @@
  *               order they were given, not by role.
  *   --choices=  comma-separated menu picks, e.g. --choices=0,1,2,3
  *   --trace     also print SCENE/SHOW/HIDE state changes
+ *   --seed=N    OP_RANDOM's PRNG seed (default 1) -- fixed rather than
+ *               clock-based (unlike src/main.c) so a replay is
+ *               reproducible; vary it deliberately to sample a different
+ *               random branch, e.g. checking an easter egg's OP_RANDOM
+ *               condition actually flips at some seed
  */
 
 #include "../../src/demo.h"
@@ -44,6 +49,7 @@ static bool     opt_trace;
 static unsigned choices[64];
 static unsigned choice_count;
 static unsigned choice_pos;
+static uint32_t opt_seed = 1;
 
 /* One entry per --vnb=FILE, in the order given (chunk 0, chunk 1, ...). Set
  * when at least one --vnb is passed, so host_load_chunk()/host_string() read
@@ -325,6 +331,8 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--trace") == 0) {
             opt_trace = true;
+        } else if (strncmp(argv[i], "--seed=", 7) == 0) {
+            opt_seed = (uint32_t)strtoul(argv[i] + 7, NULL, 0);
         } else if (strncmp(argv[i], "--choices=", 10) == 0) {
             parse_choices(argv[i] + 10);
         } else if (strncmp(argv[i], "--vnb=", 6) == 0) {
@@ -348,7 +356,7 @@ int main(int argc, char **argv)
     }
 
     vn_vm_t vm;
-    vn_init(&vm, run_code, run_code_size, &host);
+    vn_init(&vm, run_code, run_code_size, &host, opt_seed);
     vm.pc = start_pc;
     vn_status_t status = vn_run(&vm);
 

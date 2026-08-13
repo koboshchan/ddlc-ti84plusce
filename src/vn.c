@@ -162,8 +162,23 @@ static bool compare(int16_t lhs, uint8_t cmp, int16_t rhs)
  * Public API
  * ------------------------------------------------------------------------ */
 
+/* xorshift32 (Marsaglia) -- small, fast, no multiply/divide needed on the
+ * eZ80, and its one requirement (a nonzero state) is already guaranteed by
+ * vn_init() below. Not cryptographic, doesn't need to be: every OP_RANDOM
+ * caller is a cosmetic easter egg (see docs/FORMAT.md), never anything the
+ * player could exploit by predicting it. */
+static uint32_t vn_rand_next(vn_vm_t *vm)
+{
+    uint32_t x = vm->rng_state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    vm->rng_state = x;
+    return x;
+}
+
 void vn_init(vn_vm_t *vm, const uint8_t *code, size_t code_size,
-             const vn_host_t *host)
+             const vn_host_t *host, uint32_t seed)
 {
     memset(vm, 0, sizeof(*vm));
 
@@ -171,6 +186,21 @@ void vn_init(vn_vm_t *vm, const uint8_t *code, size_t code_size,
     vm->code_size  = code_size;
     vm->host       = host;
     vm->status     = VN_RUNNING;
+    vm->rng_state  = seed ? seed : 0x9E3779B9u; /* 0 -> a fixed nonzero
+                                                  * fallback, see vn.h */
+    /* A handful of throwaway rounds before the state is ever used for a
+     * real draw: xorshift32 mixes well over time but a single round from a
+     * seed that's a "simple" perturbation of another (exactly what
+     * clock()-derived seeds from two playthroughs a moment apart tend to be
+     * -- low bits differ, high bits mostly don't) can still correlate with
+     * that other seed's first draw. Doesn't matter in aggregate (verified:
+     * the distribution across many seeds already tracks the true
+     * probability closely even with zero warm-up), but does matter for the
+     * one draw an actual playthrough gets -- and four rounds cost nothing,
+     * run once per session, not per frame. */
+    for (int i = 0; i < 4; i++) {
+        vn_rand_next(vm);
+    }
 
     vm->scene.background = VN_NO_SPRITE;
     vm->scene.speaker    = VN_SPEAKER_NONE;
@@ -404,6 +434,22 @@ bool vn_step(vn_vm_t *vm)
                 break;
             }
             vm->vars[result_var] = vm->host->minigame ? (int16_t)vm->host->minigame(vm->host->ctx) : 0;
+            break;
+        }
+
+        case OP_RANDOM: {
+            uint8_t var = read_u8(vm);
+            int16_t lo  = read_i16(vm);
+            int16_t hi  = read_i16(vm);
+            if (vm->status != VN_RUNNING) {
+                break;
+            }
+            /* A malformed chunk could carry hi < lo; treat that as an empty
+             * range collapsing to lo rather than computing a negative or
+             * huge modulus. Every real caller (compile_script.py's
+             * _randint_call) only ever emits lo=0, hi>=0. */
+            uint32_t span = (hi > lo) ? (uint32_t)(hi - lo) + 1u : 1u;
+            vm->vars[var] = (int16_t)(lo + (int16_t)(vn_rand_next(vm) % span));
             break;
         }
 

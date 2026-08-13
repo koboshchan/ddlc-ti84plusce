@@ -27,6 +27,7 @@ OP_SOUND = 0x0C
 OP_END = 0x0D
 OP_ADD = 0x0E
 OP_MINIGAME = 0x0F
+OP_RANDOM = 0x10
 
 CMP_EQ, CMP_NE, CMP_LT, CMP_LE, CMP_GT, CMP_GE = range(6)
 TRANS_CUT, TRANS_FADE = 0, 1
@@ -224,6 +225,16 @@ class Assembler:
         self._u8(cmp)
         self._i16(value)
         self._ref(label)
+
+    def random(self, var: int, lo: int, hi: int) -> None:
+        """Draws a uniform integer in [lo, hi] (inclusive) and stores it in
+        story variable @var. compile_script.py's only caller emits this
+        immediately before the OP_IF that consumes the draw -- see
+        Compiler.RAND_SCRATCH."""
+        self._u8(OP_RANDOM)
+        self._u8(var)
+        self._i16(lo)
+        self._i16(hi)
 
     def pause(self, frames: int) -> None:
         self._u8(OP_PAUSE)

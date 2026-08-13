@@ -821,7 +821,12 @@ int main(void)
          * entry chunk loads, so this can't newly fail here. */
         assets_load_chunk(VN_CHUNK_ID(entry_pc));
         code = assets_script(&code_size);
-        vn_init(&vm, code, code_size, &host);
+        /* clock() varies with how long the player spent on the title screen
+         * (or any prior screen this session), which is the only entropy
+         * this platform readily offers -- see vn.h's vn_init() doc comment.
+         * Not meant to be unpredictable against someone probing for it,
+         * only different from one playthrough to the next. */
+        vn_init(&vm, code, code_size, &host, (uint32_t)clock());
         vm.pc       = entry_pc;
         vm.chunk_id = VN_CHUNK_ID(entry_pc);
         /* Ren'Py's own `default` values (s_name = "Sayori", playthrough = 0,
