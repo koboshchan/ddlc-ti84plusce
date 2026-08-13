@@ -418,12 +418,12 @@ bool vn_step(vn_vm_t *vm)
         }
 
         case OP_PAUSE: {
-            uint8_t frames = read_u8(vm);
+            uint16_t ms = read_u16(vm);
             if (vm->status != VN_RUNNING) {
                 break;
             }
             if (vm->host->pause) {
-                vm->host->pause(vm->host->ctx, frames);
+                vm->host->pause(vm->host->ctx, ms);
             }
             break;
         }

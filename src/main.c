@@ -515,14 +515,34 @@ static uint8_t host_menu(void *ctx, const vn_scene_t *scene,
     }
 }
 
-static void host_pause(void *ctx, uint8_t frames)
+/* Compiles DDLC's own `pause(seconds)` helper (tools/compile_script.py's
+ * pause() handling) -- a real dramatic beat in Acts 2/3, not a fixed frame
+ * count: waits up to @p ms milliseconds, or until the player advances,
+ * whichever comes first. @p ms == 0 means no timeout at all -- DDLC's bare
+ * `pause()`, "wait for a click" -- matching splash_wait()'s ms==0 behavior
+ * below (clock() - start is always < 0, so only the advance/quit checks can
+ * end the loop).
+ *
+ * Only `advance` breaks it early, not up/down/pause -- those are menu-
+ * navigation and pause-menu-open keys with no meaning mid-beat, and
+ * reaching the pause menu from here isn't possible anyway (this callback
+ * has no vm to hand it). */
+static void host_pause(void *ctx, uint16_t ms)
 {
     (void)ctx;
 
+    clock_t start = clock();
     input_t in;
-    for (uint8_t i = 0; i < frames && !quit_requested; i++) {
-        gfx_Wait();
+
+    for (;;) {
         input_poll(&in);
+        if (quit_requested || in.advance) {
+            return;
+        }
+        if (ms != 0 && (clock() - start) * 1000UL / CLOCKS_PER_SEC >= ms) {
+            return;
+        }
+        gfx_Wait();
     }
 }
 

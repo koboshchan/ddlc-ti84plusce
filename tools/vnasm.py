@@ -236,9 +236,12 @@ class Assembler:
         self._i16(lo)
         self._i16(hi)
 
-    def pause(self, frames: int) -> None:
+    def pause(self, ms: int) -> None:
+        """0 means wait for input with no timeout (DDLC's own bare
+        `pause()`); otherwise waits up to @ms milliseconds or until the
+        player advances, whichever comes first."""
         self._u8(OP_PAUSE)
-        self._u8(frames)
+        self._u16(ms)
 
     def sound(self, id_: int = 0) -> None:
         """Always a no-op on-calc (no CE audio) -- reserved so audio-control

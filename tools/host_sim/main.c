@@ -188,11 +188,11 @@ static void host_update(void *ctx, const vn_scene_t *scene, uint8_t trans)
     printf("]\n");
 }
 
-static void host_pause(void *ctx, uint8_t frames)
+static void host_pause(void *ctx, uint16_t ms)
 {
     (void)ctx;
     if (opt_trace) {
-        printf("[pause %u]\n", frames);
+        printf("[pause %u ms]\n", ms);
     }
 }
 

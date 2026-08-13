@@ -43,7 +43,13 @@ enum vn_op {
     OP_SET      = 0x09, /* var:u8 val:i16                                      */
     OP_IF       = 0x0A, /* var:u8 cmp:u8 val:i16 tgt:u24  (jump if TRUE, tgt
                           * packed, see below)                                */
-    OP_PAUSE    = 0x0B, /* frames:u8                                           */
+    OP_PAUSE    = 0x0B, /* ms:u16 -- 0 means "wait for input, no timeout"
+                          * (DDLC's own bare `pause()`); otherwise waits up
+                          * to ms milliseconds *or* until the player advances,
+                          * whichever comes first. Widened from an earlier
+                          * frames:u8 (max ~4s at 60fps) once real durations
+                          * up to 10s turned up in the compiled game -- see
+                          * tools/compile_script.py's pause() handling.     */
     OP_SOUND    = 0x0C, /* id:u8  -- reserved, always a no-op (no CE audio)    */
     OP_END      = 0x0D, /*                                    end of script    */
     OP_ADD      = 0x0E, /* var:u8 delta:i16   (saturating, for `$ x += 1`)     */
@@ -215,7 +221,7 @@ typedef struct {
     void (*update)(void *ctx, const vn_scene_t *scene, uint8_t trans);
 
     /** Idle for @p frames frames. */
-    void (*pause)(void *ctx, uint8_t frames);
+    void (*pause)(void *ctx, uint16_t ms);
 
     /** Poll for a quit request (CLEAR on calc, EOF on host). */
     bool (*quit)(void *ctx);

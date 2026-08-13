@@ -630,6 +630,18 @@ class Compiler:
             self.asm.nop()
 
     def _emit_python_stmt(self, stmt) -> bool:
+        if (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+                and _ident_name(stmt.value.func) == "pause"):
+            # DDLC's own pause(seconds) helper (a thin renpy.pause()
+            # wrapper) -- not Ren'Py's built-in `pause` statement, which
+            # never actually shows up in the compiled game; this is a plain
+            # function call, hence living here in the Python-statement
+            # dispatcher rather than as its own node kind in emit_node().
+            ms = _pause_ms(stmt.value)
+            if ms is not None:
+                self.asm.pause(ms)
+                return True
+            return False
         if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
             var = _ident_name(stmt.targets[0])
             val = self._const_operand(stmt.value)
@@ -949,6 +961,64 @@ def _parse_condition_expr(cond_str: str) -> "ast.expr | None":
         return ast.parse(cond_str, mode="eval").body
     except SyntaxError:
         return None
+
+
+def _pure_number(node) -> float | int | None:
+    """Evaluates @p node if it's built entirely from numeric literals and
+    +/-/*//, else None. Deliberately not ast.literal_eval (which refuses
+    BinOp even between two literals) -- DDLC's own pause() call sites are
+    plain numbers almost everywhere, but a couple are one literal arithmetic
+    step away (`1.0 + 0.5`-shaped), and it costs nothing extra to fold those
+    too rather than leave them skipped for a technicality.
+
+    Purely a duration helper: unlike _const_scalar, this never touches a
+    variable slot and is never asked to preserve a fractional value's real
+    magnitude across separate references, so ordinary floats are fine as-is
+    -- no half-integer restriction applies here."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        inner = _pure_number(node.operand)
+        return -inner if inner is not None else None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)):
+        left, right = _pure_number(node.left), _pure_number(node.right)
+        if left is None or right is None:
+            return None
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        if isinstance(node.op, ast.Mult):
+            return left * right
+        return left / right if right != 0 else None
+    return None
+
+
+def _pause_ms(call: ast.Call) -> int | None:
+    """The ms:u16 OP_PAUSE should carry for DDLC's own `pause(...)` helper
+    call, or None if the duration can't be resolved at compile time (e.g.
+    `pause(len(text) / 30.0 + 0.5)`, a real per-line duration scaled by the
+    text just shown -- genuinely dynamic, correctly left unsupported rather
+    than guessed).
+
+    A bare `pause()` (no args) is DDLC's "wait for a click, no timeout" --
+    OP_PAUSE's own ms=0 sentinel, so this returns 0 for that case rather
+    than None (0 is a real, meaningful answer here, not "unresolved").
+    A resolved duration that rounds to exactly 0ms (a sub-millisecond
+    pause, i.e. essentially decorative) is bumped to 1ms instead, so it
+    doesn't collide with that same sentinel and silently turn into an
+    indefinite wait."""
+    if call.args or call.keywords:
+        if len(call.args) != 1 or call.keywords:
+            return None
+        seconds = _pure_number(call.args[0])
+        if seconds is None or seconds < 0:
+            return None
+        ms = round(seconds * 1000)
+        if ms > 65535:
+            return None
+        return max(ms, 1)
+    return 0
 
 
 def _randint_call(node) -> tuple[int, int] | None:
