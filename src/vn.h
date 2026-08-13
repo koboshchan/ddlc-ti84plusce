@@ -197,11 +197,19 @@ enum vn_trans { TRANS_CUT = 0, TRANS_FADE = 1 };
 
 /* The variable slot holding persistent.playthrough. Reserved slot 9 by
  * tools/compile_script.py's Compiler.PLAYTHROUGH_VAR, right after
- * VN_DELETED_VAR's 4 slots -- same fixed-slot contract. main.c increments
- * it on every New Game (see run_title_screen()'s caller), the one thing
- * this engine tracks it for today: reaching playthrough-gated content like
- * splash.rpyc's ghost menu (see docs/FORMAT.md's "Debug menu"... "Ghost
- * menu"). */
+ * VN_DELETED_VAR's 4 slots -- same fixed-slot contract.
+ *
+ * Deliberately never written by main.c -- see its New Game handling for
+ * why. `label start` (script.rpy) branches straight on this value to pick
+ * which act to jump into (0 -> ch0_main, 1 -> ch10_main, 2 -> ch20_main,
+ * 3 -> ch30_main, 4 -> credits), so it isn't a free-standing "how many
+ * times you've played" counter this engine can bump for its own purposes
+ * (an earlier version tried exactly that, to reach the ghost menu, and it
+ * was a real bug: every New Game after the first skipped straight into
+ * later, unfinished Act 2/3 content instead of restarting Act 1). Reserved
+ * as a fixed slot anyway so anything that reads it (the ghost menu's
+ * condition, `label start`'s own dispatch) reads a real, always-0 value
+ * rather than colliding with an ordinary story variable's slot. */
 #define VN_PLAYTHROUGH_VAR  9
 
 #define VN_CALL_DEPTH    8    /* nesting depth for OP_CALL                    */

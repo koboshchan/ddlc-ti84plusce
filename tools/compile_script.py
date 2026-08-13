@@ -304,17 +304,19 @@ class Compiler:
     DELETED_VARS = ("persistent.deleted_sayori", "persistent.deleted_natsuki",
                     "persistent.deleted_yuri", "persistent.deleted_monika")
 
-    # One more reserved slot, right after DELETED_VARS: real DDLC increments
-    # persistent.playthrough at specific points in Act 2/3 content this
-    # engine doesn't implement yet (see splash.rpyc's ghost-menu/glitch
-    # gates, both keyed on `persistent.playthrough == 2`). Rather than leave
-    # those permanently unreachable, main.c increments this slot itself on
-    # every "New Game" (not Continue/Load) -- a deliberate, documented
-    # reinterpretation of "how many times you've started a playthrough",
-    # not a claim of matching whatever exact script points real DDLC
-    # increments it at. Reserved here, not left to allocation order, so
-    # main.c can address it by a fixed slot the same way it already does
-    # for DELETED_VARS (see vn.h's VN_PLAYTHROUGH_VAR).
+    # One more reserved slot, right after DELETED_VARS: persistent.playthrough
+    # is read both by splash.rpyc's ghost-menu/glitch gates (`== 2`) and by
+    # script.rpy's own `label start`, which branches straight on it to pick
+    # which act to jump into (0 -> ch0_main, 1 -> ch10_main, 2 -> ch20_main,
+    # 3 -> ch30_main, 4 -> credits). Reserved as a fixed slot, like
+    # DELETED_VARS, so vn.h's VN_PLAYTHROUGH_VAR is a real, stable address --
+    # but deliberately left at its default (always 0) rather than ever
+    # written by this engine: an earlier version had main.c increment it on
+    # every New Game to make the ghost menu reachable, which was a real bug
+    # -- it collided with `label start`'s own dispatch, so every New Game
+    # after the first skipped straight into later, unfinished Act 2/3
+    # content instead of restarting Act 1. See vn.h's own comment on
+    # VN_PLAYTHROUGH_VAR for the full story.
     PLAYTHROUGH_VAR = "persistent.playthrough"
 
     def __post_init__(self) -> None:

@@ -977,17 +977,25 @@ nothing else claims the name first. "end" is a real declared image
 (`definitions.rpy`, `gui/end.png`) and already resolved via the existing
 ATL-first-string path.
 
-**`persistent.playthrough` is real, but nothing in the currently-compiled
-script increments it** — real DDLC does that at specific Act 2/3 points
-this engine doesn't implement. Rather than leave every `playthrough`-gated
-easter egg permanently unreachable, `main.c` increments a new fixed slot
-(`vn.h`'s `VN_PLAYTHROUGH_VAR`, reserved the same way `VN_DELETED_VAR` is —
-see `Compiler.PLAYTHROUGH_VAR`) on every "New Game" (not Continue/Load).
-This is a deliberate, documented reinterpretation of "how many times you've
-started a playthrough" — close enough in spirit to make the ghost menu (and
-the splash-message glitch variant, still pending — see the task list)
-reachable by a returning player, not a claim of matching whatever exact
-script points real DDLC increments it at.
+**`persistent.playthrough` is real (a fixed slot, `vn.h`'s
+`VN_PLAYTHROUGH_VAR`, reserved the same way `VN_DELETED_VAR` is — see
+`Compiler.PLAYTHROUGH_VAR`), and this engine deliberately never writes it —
+it always reads 0.** This isn't a gap to close: `script.rpy`'s own `label
+start` branches straight on this value to pick which act to jump into
+(`0` → `ch0_main`, `1` → `ch10_main`, `2` → `ch20_main`, `3` → straight to
+`ch30_main`, the Act 3 finale, `4` → straight to credits). An earlier
+version of this engine had `main.c` increment it on every New Game, meant
+to make the ghost menu reachable — a real, confirmed bug: it collided with
+`label start`'s own dispatch, so every New Game after the first skipped
+straight into later, never-tested Act 2/3 content instead of restarting
+Act 1 (exactly the symptom a real playtester hit: repeat New Game
+eventually reaching "the end"). **The ghost menu (gated on
+`playthrough == 2`) is consequently unreachable in this engine today** —
+an honest limitation, not a silently-broken feature. Reaching it for real
+would need genuine multi-playthrough support (treating `ch10_main`/
+`ch20_main`/etc as legitimate alternate entry routes, which in turn need
+Act 2/3 content this engine doesn't otherwise render) — a substantially
+bigger feature than this section originally assumed.
 
 ## Character presence AppVars
 

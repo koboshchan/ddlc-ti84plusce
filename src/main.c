@@ -1199,17 +1199,22 @@ int main(void)
          * stand as written rather than being second-guessed here. */
         persist_load(&vm);
 
-        if (choice == TITLE_NEW) {
-            /* Real DDLC increments persistent.playthrough at specific
-             * points in Act 2/3 content this engine doesn't implement yet
-             * -- counting a fresh start instead is a deliberate, documented
-             * reinterpretation (see vn.h's VN_PLAYTHROUGH_VAR), close
-             * enough in spirit to make playthrough-gated content (the
-             * ghost menu, splash.rpyc's corrupted-message variant) reach-
-             * able by a returning player without needing real Act 2/3
-             * completion tracking this engine doesn't have. */
-            vm.vars[VN_PLAYTHROUGH_VAR]++;
-        }
+        /* persistent.playthrough is deliberately never incremented here --
+         * see vn.h's VN_PLAYTHROUGH_VAR. An earlier version of this code
+         * did increment it on every New Game, which was a real, serious
+         * bug: `label start` (script.rpy) branches straight on this value
+         * -- 0 -> ch0_main (the normal Act 1 open), 1 -> ch10_main, 2 ->
+         * ch20_main, 3 -> straight to ch30_main (the Act 3 finale), 4 ->
+         * straight to credits. Incrementing it meant every New Game after
+         * the first dropped the player into progressively later,
+         * never-tested Act 2/3 content instead of restarting Act 1 --
+         * confirmed by the exact symptom a real playtester hit (repeat New
+         * Game eventually reaching "the end"). Leaving it always 0 is the
+         * correct behavior for this single-playthrough engine, not a gap:
+         * it's the same reasoning already documented for the poem
+         * minigame's own playthrough==0 assumption. This does mean the
+         * ghost menu (gated on playthrough==2) is currently unreachable in
+         * practice -- an honest limitation, not silently worked around. */
 
         if (choice == TITLE_LOAD) {
             uint8_t slot = run_slot_picker("Load Game", true);
