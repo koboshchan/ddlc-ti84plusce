@@ -429,11 +429,21 @@ bool vn_step(vn_vm_t *vm)
         }
 
         case OP_MINIGAME: {
-            uint8_t result_var = read_u8(vm);
+            uint8_t winner_var = read_u8(vm);
+            uint8_t s_var      = read_u8(vm);
+            uint8_t n_var      = read_u8(vm);
+            uint8_t y_var      = read_u8(vm);
             if (vm->status != VN_RUNNING) {
                 break;
             }
-            vm->vars[result_var] = vm->host->minigame ? (int16_t)vm->host->minigame(vm->host->ctx) : 0;
+            int16_t s = 0, n = 0, y = 0;
+            uint8_t winner = vm->host->minigame
+                           ? vm->host->minigame(vm->host->ctx, &s, &n, &y)
+                           : 0;
+            vm->vars[winner_var] = (int16_t)winner;
+            vm->vars[s_var]      = s;
+            vm->vars[n_var]      = n;
+            vm->vars[y_var]      = y;
             break;
         }
 

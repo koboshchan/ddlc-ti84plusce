@@ -577,10 +577,10 @@ static bool host_load_chunk(void *ctx, uint8_t chunk_id,
     return true;
 }
 
-static uint8_t host_minigame(void *ctx)
+static uint8_t host_minigame(void *ctx, int16_t *s, int16_t *n, int16_t *y)
 {
     (void)ctx;
-    return poem_run();
+    return poem_run(s, n, y);
 }
 
 /* .ctx is set to &vm once, in main(), after vm exists -- host_say needs it

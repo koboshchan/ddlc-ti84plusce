@@ -94,7 +94,7 @@ global).
 | `OP_SOUND` | `0x0C` | `id:u8` | Reserved. Always a no-op — the CE has no audio hardware. The operand is still consumed so the stream stays aligned |
 | `OP_END` | `0x0D` | — | Halt |
 | `OP_ADD` | `0x0E` | `var:u8 delta:i16` | Add to a story variable, **saturating** at the `i16` bounds. Lowers Ren'Py's `$ x += 1` |
-| `OP_MINIGAME` | `0x0F` | `result_var:u8` | Runs a host-side minigame screen; stores its outcome in `vars[result_var]`. Only the poem word-picking game exists today — see "Poem minigame" |
+| `OP_MINIGAME` | `0x0F` | `winner_var:u8 s_var:u8 n_var:u8 y_var:u8` | Runs a host-side minigame screen; stores the winner (`TAG_TO_CHAR` order: 0 sayori, 1 natsuki, 2 yuri) in `vars[winner_var]` and each character's cumulative appeal total in `vars[s_var]`/`vars[n_var]`/`vars[y_var]`. Only the poem word-picking game exists today — see "Poem minigame" |
 
 `sprite:u16` (not `u8`): the full game needs 406 distinct sprite ids across
 Act 1, over a byte's range. Scene/background ids stay `u8` -- only 17 are
@@ -903,9 +903,33 @@ fundamentally not expressible in this VM's linear bytecode model, unlike
 most of the compiler's gaps, which are about *unsupported syntax* rather
 than *a different execution model entirely*. `compile_script.py`'s
 `_emit_Label` special-cases the label by name: instead of walking the real
-body, it emits `label("poem"); minigame(var_slot("poem_winner")); ret()` --
-a call into the real (C-side) minigame, `src/poem.c`, via `OP_MINIGAME`
-(see the Bytecode table above).
+body, it emits a call into the real (C-side) minigame, `src/poem.c`, via
+`OP_MINIGAME` (see the Bytecode table above).
+
+**Chapter-indexed, inlined at the call site.** Real DDLC scores each
+chapter's poem game into its own slot -- `poemwinner[chapter]`,
+`s_poemappeal[chapter]`/`n_poemappeal[chapter]`/`y_poemappeal[chapter]` --
+where `chapter` is whichever act invoked `call poem`. The single shared
+`label poem:` has no way to know which chapter is calling it, so instead of
+emitting one `OP_MINIGAME` there, `_emit_Call` inlines `OP_MINIGAME`
+directly at each *static* `call poem` site, targeting that call's own
+`poemwinner[N]`/`s_poemappeal[N]`/`n_poemappeal[N]`/`y_poemappeal[N]` slots.
+`N` comes from `Compiler.last_chapter`, tracked by watching for the literal
+`chapter = N` assignment DDLC's own script always makes immediately before
+every real `call poem` -- confirmed by decompiling `script.rpyc`'s node
+sequence, not assumed. `label poem:` itself is kept only as a fallback stub
+for the one call site whose chapter can't be proven at compile time (Act
+3's finale, in `script-ch30.rpyc`, compiled before `script.rpyc` in file
+order so cross-file chapter tracking wouldn't help either) -- it uses
+generic, non-indexed scratch slots (`poem_winner`/`poem_s_appeal`/
+`poem_n_appeal`/`poem_y_appeal`) instead.
+
+One consequence worth being explicit about: because every resolvable call
+site now bypasses `label poem:` entirely, its own body -- which in real
+DDLC contains the Monika's-eyes jump-scare check and generic post-game
+reaction dialogue -- is unreachable by construction, not just unwalked.
+That reaction logic needs to live at each inlined call site instead, the
+same relocation problem `splash.rpyc`'s reachable easter eggs have.
 
 **Reproduced faithfully**, from the real Python (`PoemWord` class,
 `poemwords.txt`): 20 rounds, 10 words shown per round (2 columns x 5 rows,
@@ -933,16 +957,16 @@ walks the real body at all. Kept: the real `bg/notebook.png` background
 (`explicit_bg_scene()`, always scene id 1 -- see "Startup sequence") and
 the "N/20" progress counter DDLC also shows.
 
-**`poem_winner` is a synthetic variable, and it's write-only today.** Real
-DDLC's downstream reaction to the poem's winner
-(`poemwinner[chapter]`/`exec(poemwinner[chapter][0] + "_appeal += 1")`) is
-Python-dict/`exec()`-driven -- already unreachable by this project's
-AST-structural compiler regardless of minigame support, the same category
-of gap as the `Menu` item-condition one below. `poem_winner` exists so
-compiled content *could* branch on it (`OP_IF` doesn't care where a
-variable's value came from), but nothing in the currently-translatable
-script does yet -- this is infrastructure for future hand-authored content,
-not a claim that DDLC's own poem-outcome branching is reproduced.
+**`poemwinner[N]`/`*_poemappeal[N]` are real indexed variables, and they're
+write-only today.** Real DDLC's downstream reaction to the poem's winner
+(`exec(poemwinner[chapter][0] + "_appeal += 1")`) is Python-dict/`exec()`-
+driven -- already unreachable by this project's AST-structural compiler
+regardless of minigame support, the same category of gap as the `Menu`
+item-condition one below. These slots exist so compiled content *could*
+branch on them (`OP_IF` doesn't care where a variable's value came from),
+but nothing in the currently-translatable script does yet -- this is
+infrastructure for future hand-authored content, not a claim that DDLC's
+own poem-outcome branching is reproduced.
 
 ## `If` conditions: compound `and`/`or`/`not` are supported; `Menu` item conditions are not
 

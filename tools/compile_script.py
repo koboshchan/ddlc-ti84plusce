@@ -255,6 +255,9 @@ class Compiler:
     last_sprite: dict = field(default_factory=dict)        # char id -> (base_id, overlay_id)
     last_pos: dict = field(default_factory=dict)            # char id -> pos enum
     last_flags: dict = field(default_factory=dict)          # char id -> OP_SHOW flags
+    last_chapter: int | None = None                        # see `chapter = N`
+                                                             # tracking in
+                                                             # _emit_python_stmt
     transform_animations: dict = field(default_factory=dict) # transform name -> (X, flags)
     skipped: list = field(default_factory=list)            # [SkipEntry]
     stats: dict = field(default_factory=dict)               # kind -> count
@@ -458,14 +461,31 @@ class Compiler:
         if name == "poem":
             # The real body is DDLC's interactive word-picking minigame
             # (ui.textbutton/ui.interact() in a Python `while True` loop --
-            # not translatable script) plus a Monika's-eyes jump-scare and a
-            # word-corruption easter egg, both gated behind
-            # persistent.playthrough == 2/3 -- structurally unreachable here,
-            # since this project has no persistent multi-playthrough state
-            # (see docs/FORMAT.md's "Poem minigame" section). Replace the
-            # whole body with a call into the real C-side minigame
-            # (src/poem.c) instead of walking it.
-            self.asm.minigame(self._var_slot("poem_winner"))
+            # not translatable script), followed by real conditional
+            # reactions (confirmed by decompiling it: 19 nodes after the
+            # game loop, including a Monika's-eyes jump-scare check and a
+            # Show) that this compiler still can't reach -- see below for
+            # why -- so that part is out of scope here, tracked separately
+            # (this session's task list).
+            #
+            # DDLC's per-chapter poemwinner[]/s_poemappeal[]/n_poemappeal[]/
+            # y_poemappeal[] need to know *which chapter* is calling, and a
+            # single shared label has no way to know that -- every `call
+            # poem` site looks identical to it. So instead of compiling this
+            # label as a real callable target, every *static* `call poem`
+            # site (see _emit_Call) is inlined directly with its own
+            # compile-time-known chapter, and never actually calls here.
+            #
+            # This stub exists only for whatever can't be resolved that way
+            # -- a call site with no compile-time-known chapter (found: one,
+            # script-ch30's Act 3 finale, whose preceding chapter value
+            # isn't provably known at compile time) -- so it isn't silently
+            # dropped, just degraded to writing generic (non-chapter-
+            # specific) scratch slots instead of the real per-chapter ones.
+            self.asm.minigame(self._var_slot("poem_winner"),
+                             self._var_slot("poem_s_appeal"),
+                             self._var_slot("poem_n_appeal"),
+                             self._var_slot("poem_y_appeal"))
             self.asm.ret()
             return
 
@@ -636,6 +656,21 @@ class Compiler:
             self._skip(node, fname, "dynamic call target unsupported")
             self.asm.nop()
             return
+        if node.label == "poem" and self.last_chapter is not None:
+            # Inline, not a real call -- see _emit_Label's "poem" case for
+            # why a shared label can't carry per-chapter state. Each
+            # (name, chapter) pair gets its own slot via the same indexed-
+            # variable mechanism `poemwinner[N]` already uses (_var_slot()
+            # just sees an ordinary string key), so repeat visits to the
+            # same chapter -- which shouldn't happen in practice, but this
+            # doesn't assume it won't -- correctly reuse the same slots
+            # rather than silently allocating new ones.
+            ch = self.last_chapter
+            self.asm.minigame(self._var_slot(f"poemwinner[{ch}]"),
+                             self._var_slot(f"s_poemappeal[{ch}]"),
+                             self._var_slot(f"n_poemappeal[{ch}]"),
+                             self._var_slot(f"y_poemappeal[{ch}]"))
+            return
         self.asm.call(node.label)
 
     def _emit_Return(self, node, fname: str) -> None:
@@ -734,6 +769,23 @@ class Compiler:
             val = self._const_operand(stmt.value)
             if var is not None and val is not None:
                 self.asm.set(self._var_slot(var), val)
+                if var == "chapter":
+                    # DDLC's own script always writes `chapter = <literal>`
+                    # immediately before `call poem` -- confirmed by reading
+                    # script.rpyc's actual compiled sequence, not assumed --
+                    # so tracking the most recently assigned literal here is
+                    # enough to know, at compile time, which chapter a given
+                    # `call poem` site belongs to, with no runtime variable
+                    # read needed. See _emit_Call's use of this.
+                    #
+                    # val < VN_STR_BASE excludes the (never actually
+                    # occurring, but worth guarding) case of an interned
+                    # string id: _const_operand() returns one plain int
+                    # either way, and a string id is still `isinstance(...,
+                    # int)` True despite meaning something completely
+                    # different from a chapter number.
+                    self.last_chapter = (int(val) if isinstance(val, int)
+                                        and val < VN_STR_BASE else None)
                 return True
         if isinstance(stmt, ast.AugAssign) and isinstance(stmt.op, (ast.Add, ast.Sub)):
             var = _ident_name(stmt.target)

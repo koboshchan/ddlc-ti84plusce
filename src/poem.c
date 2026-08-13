@@ -207,8 +207,16 @@ static void draw_round(const uint16_t *shown, uint8_t round, uint8_t sel_col, ui
  * Public API
  * ------------------------------------------------------------------------ */
 
-uint8_t poem_run(void)
+uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal)
 {
+    /* Every real exit path below overwrites these before returning except
+     * the two "bail immediately" ones (missing word bank, player quit
+     * mid-game) -- zeroed up front so those don't leave the caller reading
+     * whatever was on the stack. */
+    if (s_appeal) *s_appeal = 0;
+    if (n_appeal) *n_appeal = 0;
+    if (y_appeal) *y_appeal = 0;
+
     if (!load_words()) {
         /* DPOEM missing -- shouldn't happen in a bundle this engine itself
          * built, but degrade to a fixed winner rather than crash, same
@@ -272,5 +280,12 @@ uint8_t poem_run(void)
     if (totals[2] > totals[winner]) {
         winner = 2;
     }
+
+    /* totals[] is uint16_t (a sum of always-non-negative per-word points,
+     * see poem_word_t), well inside int16_t's positive range for 20 rounds
+     * of real word-bank values -- a plain cast, no clamping needed. */
+    if (s_appeal) *s_appeal = (int16_t)totals[0];
+    if (n_appeal) *n_appeal = (int16_t)totals[1];
+    if (y_appeal) *y_appeal = (int16_t)totals[2];
     return winner;
 }

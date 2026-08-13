@@ -297,12 +297,18 @@ class Assembler:
     def end(self) -> None:
         self._u8(OP_END)
 
-    def minigame(self, result_var: int) -> None:
-        """Runs the host-side minigame screen; stores its outcome in story
-        variable @result_var. Only the poem word-picking game exists today
-        (compile_script.py's _emit_Label special-cases `label poem:`)."""
+    def minigame(self, winner_var: int, s_var: int, n_var: int, y_var: int) -> None:
+        """Runs the host-side minigame screen; stores its outcome across
+        four story variables. Only the poem word-picking game exists today
+        -- @winner_var gets the winning character, @s_var/@n_var/@y_var get
+        each club member's own appeal score (compile_script.py inlines this
+        once per `call poem` site, targeting that site's own
+        compile-time-known chapter's poemwinner[]/poemappeal[] slots)."""
         self._u8(OP_MINIGAME)
-        self._u8(result_var)
+        self._u8(winner_var)
+        self._u8(s_var)
+        self._u8(n_var)
+        self._u8(y_var)
 
     # --- output ------------------------------------------------------------
 

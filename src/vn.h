@@ -53,10 +53,17 @@ enum vn_op {
     OP_SOUND    = 0x0C, /* id:u8  -- reserved, always a no-op (no CE audio)    */
     OP_END      = 0x0D, /*                                    end of script    */
     OP_ADD      = 0x0E, /* var:u8 delta:i16   (saturating, for `$ x += 1`)     */
-    OP_MINIGAME = 0x0F, /* result_var:u8 -- runs a host-side minigame screen,
-                          * stores its outcome in vars[result_var]. Only the
-                          * poem word-picking game exists today; see
-                          * docs/FORMAT.md's "Poem minigame" section.        */
+    OP_MINIGAME = 0x0F, /* winner_var:u8 s_var:u8 n_var:u8 y_var:u8 -- runs
+                          * a host-side minigame screen; the poem word-
+                          * picking game (only one that exists) reports a
+                          * winning character plus each club member's own
+                          * appeal score, so DDLC's poemwinner[chapter]/
+                          * s_poemappeal[chapter]/n_poemappeal[chapter]/
+                          * y_poemappeal[chapter] can all be written from
+                          * one run. compile_script.py inlines this once
+                          * per `call poem` site with that site's own
+                          * compile-time-known chapter -- see
+                          * docs/FORMAT.md's "Poem minigame" section.       */
     OP_RANDOM   = 0x10, /* var:u8 lo:i16 hi:i16 -- vars[var] = a uniform
                           * random integer in [lo, hi]. Compiles DDLC's own
                           * `renpy.random.randint(lo, hi)`, always found as
@@ -310,11 +317,17 @@ typedef struct {
                        const uint8_t **code_out, size_t *code_size_out);
 
     /**
-     * Runs a host-side minigame screen (see OP_MINIGAME); returns its
-     * outcome to be stored in a story variable. Optional: NULL means the
-     * outcome defaults to 0, same spirit as @p pause being optional.
+     * Runs a host-side minigame screen (see OP_MINIGAME); returns the
+     * winning character (TAG_TO_CHAR order) and writes each of the three
+     * club members' own outcome value -- poem: sayori/natsuki/yuri's
+     * individual appeal scores, which the winner is picked from but which
+     * DDLC's own per-chapter poemappeal[] variables need on their own
+     * terms too -- through @p s/@p n/@p y. Mirrors poem_run()'s signature
+     * exactly, so main.c's implementation is a direct passthrough.
+     * Optional: NULL means every outcome defaults to 0, same spirit as
+     * @p pause being optional.
      */
-    uint8_t (*minigame)(void *ctx);
+    uint8_t (*minigame)(void *ctx, int16_t *s, int16_t *n, int16_t *y);
 
     /**
      * Resolves @p str_id (an interned string -- see VN_STR_BASE -- that a
