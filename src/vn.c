@@ -27,6 +27,19 @@ static bool have(const vn_vm_t *vm, uint32_t bytes)
     return VN_CHUNK_OFFSET(vm->pc) + bytes <= vm->code_size;
 }
 
+/* Every opcode that names a variable reads the slot with read_u8(), so an
+ * index can never exceed 255. With VN_MAX_VARS at 256 that makes every index
+ * valid by construction, which is why the opcodes below index vm->vars[]
+ * without a bounds check -- they used to carry one, and the compiler
+ * correctly reported it as unreachable once the ceiling reached the
+ * operand's own range.
+ *
+ * Lowering VN_MAX_VARS reopens the hole (a slot byte past the end would
+ * index out of bounds), so it fails here rather than silently. */
+_Static_assert(VN_MAX_VARS >= 256,
+               "variable opcodes read a u8 slot and index vm->vars[] "
+               "unchecked; VN_MAX_VARS must cover the whole u8 range");
+
 static uint8_t read_u8(vn_vm_t *vm)
 {
     if (!have(vm, 1)) {
@@ -338,10 +351,6 @@ bool vn_step(vn_vm_t *vm)
             if (vm->status != VN_RUNNING) {
                 break;
             }
-            if (var >= VN_MAX_VARS) {
-                vm->status = VN_ERR_BOUNDS;
-                break;
-            }
             vm->vars[var] = val;
             break;
         }
@@ -350,10 +359,6 @@ bool vn_step(vn_vm_t *vm)
             uint8_t var   = read_u8(vm);
             int16_t delta = read_i16(vm);
             if (vm->status != VN_RUNNING) {
-                break;
-            }
-            if (var >= VN_MAX_VARS) {
-                vm->status = VN_ERR_BOUNDS;
                 break;
             }
             /* Saturate rather than wrap: a runaway counter should pin at the
@@ -376,10 +381,6 @@ bool vn_step(vn_vm_t *vm)
             if (vm->status != VN_RUNNING) {
                 break;
             }
-            if (var >= VN_MAX_VARS) {
-                vm->status = VN_ERR_BOUNDS;
-                break;
-            }
             if (compare(vm->vars[var], cmp, val)) {
                 vm->pc = tgt;
             }
@@ -400,10 +401,6 @@ bool vn_step(vn_vm_t *vm)
         case OP_MINIGAME: {
             uint8_t result_var = read_u8(vm);
             if (vm->status != VN_RUNNING) {
-                break;
-            }
-            if (result_var >= VN_MAX_VARS) {
-                vm->status = VN_ERR_BOUNDS;
                 break;
             }
             vm->vars[result_var] = vm->host->minigame ? (int16_t)vm->host->minigame(vm->host->ctx) : 0;

@@ -85,7 +85,18 @@ enum vn_trans { TRANS_CUT = 0, TRANS_FADE = 1 };
  * Limits
  * ------------------------------------------------------------------------ */
 
-#define VN_MAX_VARS      64   /* story flag / counter slots                   */
+/* Story flag / counter slots. 256 is the format ceiling, not a round number:
+ * every opcode that names a variable encodes it as a u8 (see the bytecode
+ * table below), so slot 255 is the last one addressable without widening the
+ * instruction encoding.
+ *
+ * It was 64, which the full game had already grown to within 15 slots of
+ * (49 used). Compile-time string interning and indexed variables both hand
+ * out slots -- DDLC keeps per-chapter state in lists (poemwinner[N],
+ * X_poemappeal[N]) that become one slot per index -- so the old ceiling was
+ * about to start failing builds. Costs 512 bytes of RAM in vn_vm_t and the
+ * same again in a save. */
+#define VN_MAX_VARS     256
 #define VN_CALL_DEPTH    8    /* nesting depth for OP_CALL                    */
 #define VN_MAX_CHOICES   6    /* menu options the UI can display at once      */
 #define VN_MAX_CHARS     4    /* simultaneously shown characters              */

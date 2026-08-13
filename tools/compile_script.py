@@ -10,7 +10,7 @@ If condition takes its branch unconditionally, an unrecognized $ statement or
 UserStatement becomes OP_NOP, and a Jump/Call to a label outside the compiled
 file set lands on a shared OP_END stub (vnasm.Assembler.patch_missing_labels).
 Every skip is logged so a run is auditable, not silently lossy. The one hard
-failure is variable-slot overflow (VN_MAX_VARS=64) -- a wrong slot means a
+failure is variable-slot overflow (VN_MAX_VARS) -- a wrong slot means a
 wrong branch taken at runtime, a correctness bug, not a cosmetic gap.
 """
 
@@ -158,7 +158,7 @@ _CMP_NEGATE = {
 
 _AUDIO_PREFIXES = ("play ", "stop ", "queue ", "voice ")
 
-VN_MAX_VARS = 64
+VN_MAX_VARS = 256  # mirrors src/vn.h -- the u8 variable operand's ceiling
 
 # Threshold for compile_file_chunked()'s mid-file split. The hard ceiling is
 # import_game.py's MAXVARSIZE (65000), and this used to sit just under it at

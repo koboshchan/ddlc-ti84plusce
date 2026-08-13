@@ -10,10 +10,23 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Plain fixed-layout struct, written with a single ti_Write -- no LUT or
- * versioning needed since it's only ever read back by the exact same
- * engine build that wrote it (see save.h). */
+/* Plain fixed-layout struct, written with a single ti_Write.
+ *
+ * The header exists because "only ever read back by the same build" isn't
+ * something this can assume: the player flashes a new DDLC.8xp over the
+ * DSAVEn AppVars already in archive. A layout change usually changes
+ * sizeof(save_blob_t) too, and ti_Read of a larger struct from a shorter
+ * AppVar fails cleanly -- but only usually. Two layouts can easily come out
+ * the same size (swap a field, reorder, trade one array's growth against
+ * another's), and then an old save loads as plausible garbage: a pc pointing
+ * into the middle of an instruction, variables holding another build's
+ * values. Cheaper to stamp it than to debug it. */
+#define SAVE_MAGIC   0x444C4353UL  /* "SCLD" */
+#define SAVE_VERSION 2             /* 2: VN_MAX_VARS 64 -> 256 */
+
 typedef struct {
+    uint32_t   magic;
+    uint16_t   version;
     uint32_t   pc;
     uint32_t   stack[VN_CALL_DEPTH];
     uint8_t    sp;
@@ -45,6 +58,8 @@ bool save_exists(uint8_t slot)
 bool save_write(uint8_t slot, const vn_vm_t *vm)
 {
     save_blob_t blob;
+    blob.magic   = SAVE_MAGIC;
+    blob.version = SAVE_VERSION;
     blob.pc = vm->pc;
     memcpy(blob.stack, vm->stack, sizeof(blob.stack));
     blob.sp = vm->sp;
@@ -82,6 +97,13 @@ bool save_load(uint8_t slot, vn_vm_t *vm)
     size_t got = ti_Read(&blob, sizeof(blob), 1, handle);
     ti_Close(handle);
     if (got != 1) {
+        return false;
+    }
+    /* A save from an older layout, or a same-sized AppVar that isn't one of
+     * ours: refuse it rather than resuming into nonsense. The slot still
+     * reads as existing, so the player sees a load that declines instead of
+     * a slot that vanished. */
+    if (blob.magic != SAVE_MAGIC || blob.version != SAVE_VERSION) {
         return false;
     }
 
