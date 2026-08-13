@@ -610,6 +610,20 @@ class Compiler:
             self._skip(node, fname, "non-literal Say.what")
             return
         text = _strip_text_tags(text)
+        if who is not None:
+            # DDLC's own Character() defs (definitions.rpy: mc/s/m/n/y/ny)
+            # all set what_prefix='"'/what_suffix='"' -- Ren'Py adds the
+            # quote marks at render time, they're never part of Say.what
+            # itself. Only the narrator (who=None) has no prefix/suffix.
+            # This engine has no equivalent prefix/suffix mechanism, so the
+            # simplest faithful match is baking the quotes into the text
+            # here, for every attributed line -- including one this engine
+            # doesn't otherwise recognize (e.g. "ny", Natsuki & Yuri's
+            # combined lines, which fall through to narration-style
+            # rendering below): the quotes are still real DDLC behavior for
+            # it, independent of whether this engine also gives it its own
+            # name plate.
+            text = f'"{text}"'
         speaker = vnasm.SPEAKER_NONE
         tag = CODE_TO_TAG.get(who) if isinstance(who, str) else None
         char = TAG_TO_CHAR.get(tag) if tag else None
