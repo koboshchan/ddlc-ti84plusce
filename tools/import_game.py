@@ -56,7 +56,7 @@ from image_resolve import ImageResolver
 ACT1_FILES = [
     "script-ch0", "script-ch1", "script-ch2", "script-ch3", "script-ch4",
     "script-ch10", "script-ch20", "script-ch21", "script-ch22", "script-ch23",
-    "script-poemgame", "script-poemresponses", "script",
+    "script-poemgame", "script-poemresponses", "script", "splash",
 ]
 
 # Every real script file DDLC ships (all three acts, every exclusive route,
@@ -71,10 +71,10 @@ ALL_FILES = [
     "script-exclusives-sayori", "script-exclusives-natsuki", "script-exclusives-yuri",
     "script-exclusives2-natsuki", "script-exclusives2-yuri",
     "script-poemgame", "script-poemresponses", "script-poemresponses2",
-    "script",
+    "script", "splash",
 ]
 
-DEFAULT_FILES = ["script", "script-ch0"]
+DEFAULT_FILES = ["script", "script-ch0", "splash"]
 
 ARCHIVE_BUDGET = 2_900_000  # ~2.9MB real hardware archive capacity, confirmed
                              # on-device (see docs/FORMAT.md's "Design
@@ -249,14 +249,24 @@ def do_compile(raw_dir: Path, build_dir: Path,
     return compiler, assemblers, resolver, missing
 
 
+def find_label_pc(assemblers: list[vnasm.Assembler], name: str) -> tuple[int, int] | None:
+    """(chunk_id, local offset) for label @p name, wherever it landed --
+    found by name rather than assumed to be any fixed chunk/offset, since
+    --files order doesn't guarantee one (tools/vnasm.py's docs/FORMAT.md
+    "Chunking" section). None if @p name isn't in the compiled --files
+    selection at all."""
+    for asm in assemblers:
+        if name in asm._labels:
+            return asm.chunk_id, asm._labels[name]
+    return None
+
+
 def find_entry_point(assemblers: list[vnasm.Assembler]) -> tuple[int, int]:
     """Ren'Py's real entry point, `label start`, usually lives in the
-    `script` file -- found by name here (chunk_id, local offset) rather than
-    assumed to be chunk 0 offset 0, since --files order no longer has to put
-    it first (tools/vnasm.py's docs/FORMAT.md "Chunking" section)."""
-    for asm in assemblers:
-        if "start" in asm._labels:
-            return asm.chunk_id, asm._labels["start"]
+    `script` file."""
+    found = find_label_pc(assemblers, "start")
+    if found is not None:
+        return found
     print("  ! no 'start' label in the compiled --files selection; "
           "defaulting entry to chunk 0 offset 0")
     return 0, 0
@@ -414,7 +424,7 @@ def do_poem_words(raw_dir: Path) -> bytes | None:
 
 def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
                chunk_paths: list[Path], entry_chunk: int, entry_offset: int,
-               compiler: Compiler) -> list[Path]:
+               compiler: Compiler, splash_pc: tuple[int, int] | None = None) -> list[Path]:
     step("package AppVars (convbin)")
     require("convbin", 'export PATH="$HOME/CEdev/bin:$PATH"')
     gfx_dir = build_dir / "gfx"
@@ -433,6 +443,16 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
     # that (see docs/FORMAT.md's "Chunking").
     appvars.append(write_appvar(struct.pack("<I", (entry_chunk << 16) | entry_offset),
                                 "DENTRY", appvar_dir))
+
+    # Optional, like DVSTR/DVDEF/DVLBL below: only shipped if splash.rpyc
+    # was in this build's --files selection and its `label splashscreen`
+    # (compile_script.py's curated stub -- see _emit_Label) actually
+    # compiled. src/assets.c's assets_splash_pc() degrades gracefully to
+    # "no startup splashscreen check" when this AppVar is simply missing.
+    if splash_pc is not None:
+        splash_chunk, splash_offset = splash_pc
+        appvars.append(write_appvar(struct.pack("<I", (splash_chunk << 16) | splash_offset),
+                                    "DSPLASH", appvar_dir))
 
     # The interned string pool (compile_script.py's VN_STR_BASE). Ships
     # separately from the per-chunk dialogue strings, and not inside any
@@ -629,11 +649,12 @@ def main() -> int:
         do_extract(args.game_dir.expanduser().resolve(), args.raw_dir, args.skip_extract)
         compiler, assemblers, resolver, _missing = do_compile(args.raw_dir, args.build_dir, files)
         entry_chunk, entry_offset = find_entry_point(assemblers)
+        splash_pc = find_label_pc(assemblers, "splashscreen")
         chunk_paths = write_chunks(assemblers, args.build_dir)
         do_convert_images(args.build_dir, args.quality, args.skip_convimg)
         manifest = json.loads((args.build_dir / "manifest.json").read_text())
         appvars = do_package(args.build_dir, args.appvar_dir, args.raw_dir, manifest,
-                             chunk_paths, entry_chunk, entry_offset, compiler)
+                             chunk_paths, entry_chunk, entry_offset, compiler, splash_pc)
         do_bundle(args.prog, appvars, args.out, args.archive_budget)
     except CompileError as e:
         sys.exit(f"compile error: {e}")

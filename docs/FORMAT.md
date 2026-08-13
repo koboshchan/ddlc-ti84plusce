@@ -923,6 +923,72 @@ survives past this session exactly like the real mechanic); and erasing all
 saves (`save_delete_all()`, gated behind its own confirm screen, defaulted
 to "No").
 
+## Startup splashscreen check (the ghost menu)
+
+DDLC's real `game/splash.rpy` runs a `label splashscreen` before the main
+menu ever shows, every launch. Decompiling it found it's almost entirely
+things this engine's own C-side startup already does differently: Windows
+process/anti-cheat probing (`subprocess`/`wmic`, meaningless on-calc), `.chr`
+file existence checks (this engine already tracks character deletion its
+own way — see "Character presence AppVars" below and `VN_DELETED_VAR`), a
+first-run content warning that would show twice if compiled alongside
+`main.c`'s own (fixed, now two lines — see "Startup sequence"), an
+`after_load`/`autoload`/`autoload_yurikill` anti-cheat and Act 3 corruption-
+escalation framework keyed on `persistent.anticheat`/`persistent.yuri_kill`,
+and an alternate CG sequence (`s_kill_early`, triggered when
+`characters/sayori.chr` is missing at the start of a fresh playthrough) —
+all deliberately out of scope here, tracked separately.
+
+One self-contained, still-meaningful piece survives:
+the **ghost menu** easter egg. `tools/compile_script.py`'s `_emit_Label`
+special-cases `"splashscreen"` the same way it special-cases `"poem"` —
+instead of walking the real body, it locates the one `If` node whose
+condition mentions `seen_ghost_menu` (a decompiled-source marker, not
+hand-typed, so a source-shape change would visibly break the search rather
+than silently miscompile) and hand-emits just that: the real condition
+(`persistent.playthrough == 2 and not persistent.seen_ghost_menu and
+renpy.random.randint(0, 63) == 0`, unmodified — compound and/not/randint
+conditions were already supported, see "`If` conditions" below), then a
+black screen, a 1-second pause, DDLC's real ending-card image ("end"),
+another 3-second pause, and `persistent.seen_ghost_menu`/
+`persistent.ghost_menu` both set. `config.main_menu_music`/
+`renpy.music.play()` are dropped, same as everywhere else (no CE audio —
+see `OP_SOUND`'s doc comment). The label keeps its real name (`splashscreen`)
+rather than a synthetic one, so `tools/import_game.py` can find its address
+the same way it already finds `label start` — packaged as a new, optional
+`DSPLASH` AppVar (packed pc, same format as `DENTRY`; simply absent if
+`splash.rpyc` wasn't in this build's `--files` selection, in which case
+`assets_splash_pc()` returns false and the check is skipped entirely).
+`src/main.c`'s `run_splashscreen_check()` runs it once at launch, right
+after the studio logo/content-warning splash (before the title screen), via
+a throwaway one-shot `vn_run()` sharing the same host callbacks as real
+play — persistent state is loaded before and flushed after, same as any
+other checkpoint.
+
+Two non-character images this pulled in that had no existing resolution
+path: `show black`/`show end` are bare non-character `Show`s, and
+`OP_SHOW`'s `ch:u8` operand is always one of the 4 cast members — a
+full-screen standalone image is much closer to what `OP_SCENE` already does,
+so the hand-emitted ghost menu compiles both as scene changes instead (see
+`Compiler._emit_ghost_menu_check`). "black"/"white" are Ren'Py-builtin
+`Solid()` colors no DDLC `.rpyc` ever declares — `image_resolve.py`'s
+`build_image_table()` now seeds them as synthetic solid-color `ImageDef`s if
+nothing else claims the name first. "end" is a real declared image
+(`definitions.rpy`, `gui/end.png`) and already resolved via the existing
+ATL-first-string path.
+
+**`persistent.playthrough` is real, but nothing in the currently-compiled
+script increments it** — real DDLC does that at specific Act 2/3 points
+this engine doesn't implement. Rather than leave every `playthrough`-gated
+easter egg permanently unreachable, `main.c` increments a new fixed slot
+(`vn.h`'s `VN_PLAYTHROUGH_VAR`, reserved the same way `VN_DELETED_VAR` is —
+see `Compiler.PLAYTHROUGH_VAR`) on every "New Game" (not Continue/Load).
+This is a deliberate, documented reinterpretation of "how many times you've
+started a playthrough" — close enough in spirit to make the ghost menu (and
+the splash-message glitch variant, still pending — see the task list)
+reachable by a returning player, not a claim of matching whatever exact
+script points real DDLC increments it at.
+
 ## Character presence AppVars
 
 `src/chars.c` creates four empty AppVars — `SAYORI`, `NATSUKI`, `YURI`,

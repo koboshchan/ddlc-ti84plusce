@@ -65,6 +65,15 @@ bool assets_load_chunk(uint8_t chunk_id);
  * VN_CHUNK_OFFSET) -- where main.c should point vm.pc after vn_init(). */
 uint32_t assets_entry_pc(void);
 
+/** DSPLASH's packed pc for `label splashscreen` (see
+ * tools/compile_script.py's `_emit_Label` special case -- the label keeps
+ * its real name, but its body is a curated stub, not DDLC's actual
+ * splashscreen logic) -- where main.c should point a one-shot vm.pc to run
+ * the startup splashscreen check once at launch. Returns false (leaving
+ * @p out untouched) if DSPLASH isn't present: splash.rpyc wasn't in this
+ * build's --files selection, or this is a build from before it existed. */
+bool assets_splash_pc(uint32_t *out);
+
 /** Zero-copy pointer to the currently resident chunk's bytecode, plus its
  * size (see assets_load_chunk()). */
 const uint8_t *assets_script(size_t *size_out);

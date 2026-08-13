@@ -287,6 +287,17 @@ def build_image_table(raw_dir: Path) -> dict:
             else:
                 table[imgname] = ImageDef(imgname, "unsupported", reason="no code or atl")
 
+    # Ren'Py ships a couple of built-in images no project ever has to
+    # declare itself -- "black"/"white" (plain Solid colors) are the two
+    # DDLC's own content leans on (splash.rpyc's ghost menu: `show black`).
+    # No Image node for either exists in any of DDLC's own .rpyc files (they
+    # really are framework-internal, not project content) -- confirmed by
+    # this same scan finding neither. setdefault() rather than an
+    # unconditional write, so a real project definition (not the case
+    # today, but not assumed impossible) would still take precedence.
+    for name, rgb in (("black", (0, 0, 0)), ("white", (255, 255, 255))):
+        table.setdefault((name,), ImageDef((name,), "solid", color=rgb))
+
     return table
 
 

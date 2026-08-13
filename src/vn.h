@@ -195,6 +195,15 @@ enum vn_trans { TRANS_CUT = 0, TRANS_FADE = 1 };
  * same fixed-slot contract as VN_NAME_VAR above. */
 #define VN_DELETED_VAR(ch)  (5 + (ch))
 
+/* The variable slot holding persistent.playthrough. Reserved slot 9 by
+ * tools/compile_script.py's Compiler.PLAYTHROUGH_VAR, right after
+ * VN_DELETED_VAR's 4 slots -- same fixed-slot contract. main.c increments
+ * it on every New Game (see run_title_screen()'s caller), the one thing
+ * this engine tracks it for today: reaching playthrough-gated content like
+ * splash.rpyc's ghost menu (see docs/FORMAT.md's "Debug menu"... "Ghost
+ * menu"). */
+#define VN_PLAYTHROUGH_VAR  9
+
 #define VN_CALL_DEPTH    8    /* nesting depth for OP_CALL                    */
 #define VN_MAX_CHOICES   6    /* menu options the UI can display at once      */
 #define VN_MAX_CHARS     4    /* simultaneously shown characters              */

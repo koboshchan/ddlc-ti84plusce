@@ -930,12 +930,29 @@ static void draw_splash_warning(void)
     render_text_centered("or those who are easily disturbed.", 124, COL_BLACK);
 }
 
+/* DDLC's real content warning is two separate lines (splash.rpyc); this one
+ * was missing entirely until now -- draw_splash_warning() above only ever
+ * carried the first. Wrapped by hand across 4 short centered lines rather
+ * than run through text.c's dialogue word-wrapper: that wrapper targets the
+ * dialogue box's fixed width/font, not a plain full-screen splash. */
+static void draw_splash_warning2(void)
+{
+    render_backdrop(COL_WHITE);
+    render_text_centered("Individuals suffering from anxiety", 92, COL_BLACK);
+    render_text_centered("or depression may not have a safe", 108, COL_BLACK);
+    render_text_centered("experience playing this game.", 124, COL_BLACK);
+    render_text_centered("Content warnings: ddlc.moe/warning.html", 148, COL_BOX_FILL);
+}
+
 static void run_splash_screens(void)
 {
     if (!splash_screen(draw_splash_logo)) {
         return;
     }
-    splash_screen(draw_splash_warning);
+    if (!splash_screen(draw_splash_warning)) {
+        return;
+    }
+    splash_screen(draw_splash_warning2);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1056,6 +1073,40 @@ static void show_assets_error_screen(assets_status_t status)
     }
 }
 
+/** Runs `label splashscreen` once at launch -- today, just the ghost-menu
+ * trigger check tools/compile_script.py curates out of DDLC's real
+ * splash.rpyc (see its _emit_Label special case and docs/FORMAT.md's
+ * "Debug menu"... "Character presence AppVars" neighbors for the fuller
+ * picture). A one-shot mini vn_run() using @p vm -- main() hasn't vn_init'd
+ * it for real play yet at the point this is called, so there's no story
+ * position to disturb; the title loop below vn_init()s it fresh regardless
+ * of whatever this leaves behind. Reuses the same global `host` so
+ * OP_SCENE/pause/etc render exactly like any other moment in the story.
+ *
+ * A no-op if DSPLASH isn't present (splash.rpyc wasn't in this build's
+ * --files selection, or this is an older build) -- see assets_splash_pc(). */
+static void run_splashscreen_check(vn_vm_t *vm)
+{
+    uint32_t splash_pc;
+    const uint8_t *code;
+    size_t code_size;
+
+    if (!assets_splash_pc(&splash_pc)) {
+        return;
+    }
+    if (!assets_load_chunk(VN_CHUNK_ID(splash_pc))) {
+        return;
+    }
+    code = assets_script(&code_size);
+    vn_init(vm, code, code_size, &host, (uint32_t)clock());
+    vm->pc       = splash_pc;
+    vm->chunk_id = VN_CHUNK_ID(splash_pc);
+    assets_apply_var_defaults(vm);
+    persist_load(vm);
+    vn_run(vm);
+    persist_save(vm);
+}
+
 int main(void)
 {
     vn_vm_t vm;
@@ -1085,6 +1136,12 @@ int main(void)
     host.ctx = &vm;
 
     run_splash_screens();
+    if (quit_requested) {
+        render_end();
+        return 0;
+    }
+
+    run_splashscreen_check(&vm);
     if (quit_requested) {
         render_end();
         return 0;
@@ -1141,6 +1198,18 @@ int main(void)
          * reflects whatever was persistent as of that save, and should
          * stand as written rather than being second-guessed here. */
         persist_load(&vm);
+
+        if (choice == TITLE_NEW) {
+            /* Real DDLC increments persistent.playthrough at specific
+             * points in Act 2/3 content this engine doesn't implement yet
+             * -- counting a fresh start instead is a deliberate, documented
+             * reinterpretation (see vn.h's VN_PLAYTHROUGH_VAR), close
+             * enough in spirit to make playthrough-gated content (the
+             * ghost menu, splash.rpyc's corrupted-message variant) reach-
+             * able by a returning player without needing real Act 2/3
+             * completion tracking this engine doesn't have. */
+            vm.vars[VN_PLAYTHROUGH_VAR]++;
+        }
 
         if (choice == TITLE_LOAD) {
             uint8_t slot = run_slot_picker("Load Game", true);

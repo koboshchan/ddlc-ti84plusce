@@ -334,6 +334,26 @@ uint32_t assets_entry_pc(void)
     return entry_pc;
 }
 
+/* Optional, same reasoning as DVSTR/DVDEF/DVLBL above: a bundle built
+ * without splash.rpyc in its --files selection (or an older bundle from
+ * before this existed) ships no DSPLASH, and the startup splashscreen check
+ * (the ghost menu today -- see main.c's run_splashscreen_check()) simply
+ * never runs. Read on demand rather than held at startup like DENTRY: this
+ * is looked up exactly once per launch, not per frame. */
+bool assets_splash_pc(uint32_t *out)
+{
+    uint16_t size;
+    uint8_t *buf = read_whole("DSPLASH", &size);
+    if (!buf || size < 4) {
+        free(buf);
+        return false;
+    }
+    *out = (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) |
+           ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
+    free(buf);
+    return true;
+}
+
 const uint8_t *assets_script(size_t *size_out)
 {
     if (size_out) {

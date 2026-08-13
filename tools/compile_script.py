@@ -304,12 +304,26 @@ class Compiler:
     DELETED_VARS = ("persistent.deleted_sayori", "persistent.deleted_natsuki",
                     "persistent.deleted_yuri", "persistent.deleted_monika")
 
+    # One more reserved slot, right after DELETED_VARS: real DDLC increments
+    # persistent.playthrough at specific points in Act 2/3 content this
+    # engine doesn't implement yet (see splash.rpyc's ghost-menu/glitch
+    # gates, both keyed on `persistent.playthrough == 2`). Rather than leave
+    # those permanently unreachable, main.c increments this slot itself on
+    # every "New Game" (not Continue/Load) -- a deliberate, documented
+    # reinterpretation of "how many times you've started a playthrough",
+    # not a claim of matching whatever exact script points real DDLC
+    # increments it at. Reserved here, not left to allocation order, so
+    # main.c can address it by a fixed slot the same way it already does
+    # for DELETED_VARS (see vn.h's VN_PLAYTHROUGH_VAR).
+    PLAYTHROUGH_VAR = "persistent.playthrough"
+
     def __post_init__(self) -> None:
         for name in self.NAME_VARS:
             self._var_slot(name)
         self._var_slot(self.RAND_SCRATCH)
         for name in self.DELETED_VARS:
             self._var_slot(name)
+        self._var_slot(self.PLAYTHROUGH_VAR)
 
     def compile_file(self, path: Path) -> None:
         _, top = load_rpyc(path)
@@ -489,7 +503,102 @@ class Compiler:
             self.asm.ret()
             return
 
+        if name == "splashscreen":
+            # The real body (game/splash.rpy) is almost entirely things this
+            # engine's C-side startup already handles its own way -- Windows
+            # process/anti-cheat probing (renpy.windows-gated subprocess
+            # calls, meaningless on-calc), .chr file existence checks (this
+            # engine already tracks character deletion its own way, see
+            # DELETED_VARS), first-run bookkeeping tied to a real
+            # filesystem, and a duplicate logo/content-warning screen
+            # main.c's own run_splash_screens() already shows (compiling
+            # both would show the warning twice on first launch). Rather
+            # than walk any of that, only the one self-contained, still-
+            # meaningful piece is extracted and re-emitted here: the ghost
+            # menu's trigger check. Kept under the label's real name rather
+            # than a made-up synthetic one, so tools/import_game.py can look
+            # up its address the same way it already does for `label start`
+            # -- see main.c's run_splashscreen_check(). Everything else in
+            # this label (autoload/anticheat/s_kill_early/the readonly-
+            # install check) is real content, deliberately deferred -- see
+            # this session's task list, not silently dropped.
+            self._emit_ghost_menu_check(node.block, fname)
+            return
+
         self.emit_block(node.block, fname)
+
+    def _emit_ghost_menu_check(self, block, fname: str) -> None:
+        """The one self-contained piece of splashscreen's real body worth
+        keeping -- see _emit_Label's "splashscreen" case above for why the
+        rest isn't compiled at all.
+
+        Hand-emitted rather than routed through emit_block()/_emit_If(): the
+        real body's `show black`/`show end` are bare non-character images
+        (Ren'Py's built-in Solid("#000") and DDLC's own `image end:` from
+        definitions.rpy), and OP_SHOW has no such thing -- its ch:u8 operand
+        is a character slot, always one of the 4 cast members (see
+        _emit_Show's TAG_TO_CHAR lookup, which would just skip these as an
+        "unknown character tag"). A full-screen standalone image is much
+        closer to what OP_SCENE already does (the background fills the
+        whole scene area) than to a character overlay, so this reframes
+        both Shows as scene changes instead -- confirmed sound: the real
+        body never re-shows a character over either of them, and hides
+        every character anyway (an implicit effect of any `scene`-equivalent
+        change, see _emit_Scene's self.last_sprite.clear()).
+
+        The condition itself is still pulled from the real decompiled
+        source, not hand-typed, via the same seen_ghost_menu marker search
+        _emit_Label used to use here -- the one part worth protecting
+        against a silent transcription slip.
+        """
+        ghost_if = next(
+            (stmt for stmt in block
+             if kind(stmt) == "If"
+             and any("seen_ghost_menu" in cond for cond, _ in stmt.entries)),
+            None)
+        if ghost_if is None:
+            self._skip(block[0] if block else None, fname,
+                      "splashscreen's ghost-menu If not found by its "
+                      "seen_ghost_menu marker -- source shape changed?")
+            self.asm.ret()
+            return
+
+        cond_str = ghost_if.entries[0][0]
+        expr = _parse_condition_expr(cond_str) if isinstance(cond_str, str) else None
+        if expr is not None:
+            expr = _fold_constants(expr)
+        if expr is None or not _condition_supported(expr):
+            self._skip(ghost_if, fname, f"unsupported ghost-menu condition {cond_str!r}")
+            self.asm.ret()
+            return
+
+        true_label = self._gensym("ghost_true")
+        end_label = self._gensym("ghost_end")
+        self._emit_condition(expr, true_label, end_label)
+        self.asm.label(true_label)
+
+        black = self.resolver.scene_id(("black",))
+        end_img = self.resolver.scene_id(("end",))
+        if black is not None:
+            self.asm.scene(black, vnasm.TRANS_CUT)
+        else:
+            self._skip(ghost_if, fname, "ghost menu: 'black' image unresolved")
+        # config.main_menu_music / renpy.music.play(): dropped, no CE audio
+        # (see vn.h's OP_SOUND doc comment -- an established, already-no-op
+        # convention, not a new gap).
+        self.asm.set(self._var_slot("persistent.seen_ghost_menu"), 1)
+        self.asm.set(self._var_slot("persistent.ghost_menu"), 1)
+        self.asm.pause(1000)
+        if end_img is not None:
+            self.asm.scene(end_img, vnasm.TRANS_CUT)
+        else:
+            self._skip(ghost_if, fname, "ghost menu: 'end' image unresolved")
+        self.asm.pause(3000)
+        # config.allow_skipping = True: dropped, this engine has no skip
+        # toggle to restore.
+
+        self.asm.label(end_label)
+        self.asm.ret()
 
     def _emit_Say(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)
