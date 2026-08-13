@@ -42,7 +42,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import convert_images
 import extract
 import vnasm
-from compile_script import (CompileError, Compiler, link_chunks,
+from compile_script import (VN_STR_BASE, CompileError, Compiler, link_chunks,
                             load_transform_animations, load_variable_defaults)
 from image_resolve import ImageResolver
 
@@ -182,6 +182,23 @@ def do_compile(raw_dir: Path, build_dir: Path,
 
     missing = link_chunks(assemblers)
     resolver.write_manifest()
+
+    # Which interned strings (compiler.var_strings) also happen to name a
+    # real compiled label -- the table OP_JUMP_VAR/OP_CALL_VAR resolve
+    # against at runtime (see vn_host_t.resolve_label, assets.c's DVLBL).
+    # Re-derives the same name -> (chunk_id, offset) mapping link_chunks()
+    # built internally, rather than changing its return type, since every
+    # asm._labels entry is already exactly that (chunk_id from asm.chunk_id,
+    # a global label name never repeating between files -- Ren'Py enforces
+    # that, link_chunks()'s own docstring already relies on it).
+    global_labels: dict[str, tuple[int, int]] = {}
+    for asm in assemblers:
+        for name, offset in asm._labels.items():
+            global_labels[name] = (asm.chunk_id, offset)
+    compiler.var_labels: dict[int, tuple[int, int]] = {}   # interned id -> (chunk_id, offset)
+    for text, str_id in compiler.var_strings.items():
+        if text in global_labels:
+            compiler.var_labels[str_id] = global_labels[text]
 
     # Ren'Py's `default` values (definitions.rpy), for every variable that
     # actually got a slot -- see load_variable_defaults()'s docstring for
@@ -421,6 +438,16 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
         encoded = text.encode("utf-8")
         pool += struct.pack("<H", len(encoded)) + encoded + b"\x00"
     appvars.append(write_appvar(bytes(pool), "DVSTR", appvar_dir))
+
+    # The dynamic-jump/call label table (compiler.var_labels, built above
+    # right after link_chunks()) -- u16 count, then per entry u16 (interned
+    # id - VN_STR_BASE) + u32 packed (chunk_id<<16 | offset). Relative ids
+    # keep every entry in u16 rather than needing the full i16 range signed;
+    # src/assets.c adds VN_STR_BASE back when matching a lookup against it.
+    labels = bytearray(struct.pack("<H", len(compiler.var_labels)))
+    for str_id, (chunk_id, offset) in sorted(compiler.var_labels.items()):
+        labels += struct.pack("<HI", str_id - VN_STR_BASE, (chunk_id << 16) | offset)
+    appvars.append(write_appvar(bytes(labels), "DVLBL", appvar_dir))
 
     # Ren'Py's `default` values, applied to a fresh vars[] before a New
     # Game/Continue starts (see src/main.c's assets_apply_var_defaults()) --

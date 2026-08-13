@@ -583,6 +583,7 @@ static vn_host_t host = {
     .quit       = host_quit,
     .load_chunk = host_load_chunk,
     .minigame   = host_minigame,
+    .resolve_label = assets_resolve_label,
     .ctx        = NULL,
 };
 

@@ -577,9 +577,32 @@ class Compiler:
         trans = vnasm.TRANS_FADE if "_scene" in expr else vnasm.TRANS_CUT
         self._flush_pending_scene(trans)
 
+    def _dynamic_target_var(self, expr_src: str) -> str | None:
+        """The variable name to compile `jump/call expression <expr_src>`
+        against, or None if @expr_src isn't one -- see OP_JUMP_VAR.
+
+        Only a bare identifier resolves: DDLC's own dynamic targets are
+        overwhelmingly a single variable holding a previously-assigned
+        label-name string (`nextscene`, `persistent.autoload`). A handful
+        build the name by concatenating a literal prefix onto a runtime
+        value (`"ch30_" + str(persistent.current_monikatopic)`) -- that
+        needs enumerating the value's possible range and isn't attempted
+        here, so those stay correctly unsupported rather than guessed.
+        """
+        expr = _parse_condition_expr(expr_src)
+        return _ident_name(expr) if expr is not None else None
+
     def _emit_Jump(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)
-        if getattr(node, "expression", False) or not isinstance(node.target, str):
+        if getattr(node, "expression", False):
+            var = self._dynamic_target_var(node.target)
+            if var is None:
+                self._skip(node, fname, "dynamic jump target unsupported")
+                self.asm.nop()
+                return
+            self.asm.jump_var(self._var_slot(var))
+            return
+        if not isinstance(node.target, str):
             self._skip(node, fname, "dynamic jump target unsupported")
             self.asm.nop()
             return
@@ -587,7 +610,15 @@ class Compiler:
 
     def _emit_Call(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)
-        if getattr(node, "expression", False) or not isinstance(node.label, str):
+        if getattr(node, "expression", False):
+            var = self._dynamic_target_var(node.label)
+            if var is None:
+                self._skip(node, fname, "dynamic call target unsupported")
+                self.asm.nop()
+                return
+            self.asm.call_var(self._var_slot(var))
+            return
+        if not isinstance(node.label, str):
             self._skip(node, fname, "dynamic call target unsupported")
             self.asm.nop()
             return

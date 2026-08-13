@@ -64,6 +64,19 @@ enum vn_op {
                           * tools/compile_script.py's _randint_call() and
                           * "The speaking pop"'s sibling section on easter
                           * eggs in docs/FORMAT.md.                        */
+    OP_JUMP_VAR = 0x11, /* var:u8 -- jump to whatever label vars[var] names.
+                          * Compiles `jump expression <name>` (DDLC's own
+                          * `jump persistent.autoload`, its post-restart
+                          * resume mechanism). vars[var] holds an interned
+                          * string id (see VN_STR_BASE) that the host
+                          * resolves to a packed address via
+                          * vn_host_t.resolve_label -- vn.c itself has no
+                          * notion of label names, only vn_host_t does.
+                          * Falls through to VN_FINISHED, not a crash, if
+                          * the name doesn't resolve (an uncompiled label,
+                          * or the variable never held one).             */
+    OP_CALL_VAR = 0x12, /* var:u8 -- like OP_JUMP_VAR, but pushes a return
+                          * address first (`call expression <name>`).    */
 };
 
 /** Comparison selectors for OP_IF. */
@@ -243,6 +256,20 @@ typedef struct {
      * outcome defaults to 0, same spirit as @p pause being optional.
      */
     uint8_t (*minigame)(void *ctx);
+
+    /**
+     * Resolves @p str_id (an interned string -- see VN_STR_BASE -- that a
+     * story variable currently holds) to the packed address of the label
+     * it names, for OP_JUMP_VAR/OP_CALL_VAR. Returns false (leaving
+     * *addr_out untouched) if @p str_id doesn't name any compiled label --
+     * an ordinary, expected outcome (the label just isn't part of this
+     * build's --files set), not a corruption signal. vn.c has no notion of
+     * label names itself, only the host does (see assets.c's DVLBL).
+     * Optional: NULL means every dynamic jump/call fails to resolve, which
+     * degrades to VN_FINISHED rather than a crash -- same spirit as
+     * @p minigame defaulting to 0 when absent.
+     */
+    bool (*resolve_label)(void *ctx, int16_t str_id, uint32_t *addr_out);
 
     void *ctx;
 } vn_host_t;

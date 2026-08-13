@@ -453,6 +453,36 @@ bool vn_step(vn_vm_t *vm)
             break;
         }
 
+        case OP_JUMP_VAR:
+        case OP_CALL_VAR: {
+            uint8_t var = read_u8(vm);
+            if (vm->status != VN_RUNNING) {
+                break;
+            }
+            uint32_t tgt;
+            /* An unresolved name is an expected outcome (the label just
+             * isn't part of this build), not corruption -- unlike every
+             * other failure mode in this switch, it doesn't set an
+             * VN_ERR_* status. Ending cleanly is the same choice
+             * vnasm.Assembler.patch_missing_labels already makes for a
+             * *static* jump/call to an uncompiled label; this is that same
+             * degrade for the dynamic case. */
+            if (!vm->host->resolve_label ||
+                !vm->host->resolve_label(vm->host->ctx, vm->vars[var], &tgt)) {
+                vm->status = VN_FINISHED;
+                break;
+            }
+            if (op == OP_CALL_VAR) {
+                if (vm->sp >= VN_CALL_DEPTH) {
+                    vm->status = VN_ERR_STACK;
+                    break;
+                }
+                vm->stack[vm->sp++] = vm->pc;
+            }
+            vm->pc = tgt;
+            break;
+        }
+
         case OP_END:
             vm->status = VN_FINISHED;
             break;

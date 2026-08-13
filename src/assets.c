@@ -60,6 +60,12 @@ static uint16_t          var_string_count;
 static uint8_t           *var_defaults_buf;
 static uint16_t           var_defaults_size;
 
+/* Dynamic jump/call label table (DVLBL): u16 count, then per entry
+ * u16 (interned id - VN_STR_BASE) + u32 packed (chunk_id<<16 | offset) --
+ * see assets_resolve_label() and OP_JUMP_VAR/OP_CALL_VAR in vn.h. */
+static uint8_t           *var_labels_buf;
+static uint16_t           var_labels_size;
+
 static uint32_t          entry_pc; /* packed (chunk_id<<16)|offset, from DENTRY */
 
 /* Sprite/scene lookup tables: tools/import_game.py's build_lut() format --
@@ -246,6 +252,17 @@ assets_status_t assets_init(void)
      * not per frame -- no lookup structure earns its cost. */
     var_defaults_buf = read_whole("DVDEF", &var_defaults_size);
 
+    /* Optional, same reasoning again: a bundle whose script has no dynamic
+     * jump/call ships no DVLBL, and assets_resolve_label() has nothing to
+     * match -- every OP_JUMP_VAR/OP_CALL_VAR then falls through to
+     * VN_FINISHED, same as a real lookup miss. Kept as raw bytes and
+     * linear-scanned rather than unpacked into a sorted/hashed structure:
+     * this resolves at most a few times per session (a dynamic jump only
+     * runs when the story actually takes one), not per frame, so build-time
+     * simplicity wins over a lookup structure that would only ever save
+     * scanning a few hundred bytes. */
+    var_labels_buf = read_whole("DVLBL", &var_labels_size);
+
     /* Optional: a bundle built before layered sprites existed ships no
      * DSPROFF, and every sprite just draws with (0, 0) offset -- see
      * assets_draw_sprite(). */
@@ -362,6 +379,30 @@ void assets_apply_var_defaults(vn_vm_t *vm)
             vm->vars[slot] = value;
         }
     }
+}
+
+bool assets_resolve_label(void *ctx, int16_t str_id, uint32_t *addr_out)
+{
+    (void)ctx;   /* vn_host_t.ctx is main.c's vn_vm_t*, unused here --
+                  * every AppVar this needs is this module's own global
+                  * state, not per-vm. */
+    if (!var_labels_buf || var_labels_size < 2 || str_id < VN_STR_BASE) {
+        return false;
+    }
+    uint16_t want  = (uint16_t)(str_id - VN_STR_BASE);
+    uint16_t count = read_u16le(var_labels_buf);        /* the buffer's own
+                                                          * leading count, not
+                                                          * a guess from size */
+    const uint8_t *p = var_labels_buf + 2;               /* past that count */
+    for (uint16_t i = 0; i < count; i++) {
+        uint16_t id = read_u16le(p);
+        if (id == want) {
+            *addr_out = read_u16le(p + 2) | ((uint32_t)read_u16le(p + 4) << 16);
+            return true;
+        }
+        p += 6;
+    }
+    return false;
 }
 
 /* LUT entry layout: u8 appvar_index, u16 offset, u16 length (5 bytes). @p id

@@ -97,6 +97,15 @@ const char *assets_var_string(int16_t value);
 void assets_apply_var_defaults(vn_vm_t *vm);
 
 /**
+ * vn_host_t.resolve_label's implementation -- see its doc comment in vn.h
+ * and DVLBL's packaging in tools/import_game.py. @p ctx is unused (every
+ * AppVar this needs is this module's own state, not per-vm), present only
+ * to match vn_host_t.resolve_label's signature so it can be assigned
+ * directly.
+ */
+bool assets_resolve_label(void *ctx, int16_t str_id, uint32_t *addr_out);
+
+/**
  * Draws sprite @p id with its center-bottom anchored at
  * (@p center_x, @p feet_y). Returns false if @p id is out of range or its
  * AppVar is missing.

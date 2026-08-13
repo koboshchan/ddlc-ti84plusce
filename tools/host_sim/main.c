@@ -205,6 +205,35 @@ static bool host_quit(void *ctx)
     return say_count > 10000;
 }
 
+/* Optional --labels=path, raw DVLBL bytes (see tools/import_game.py's
+ * packaging): u16 count, then per entry u16 (interned id - VN_STR_BASE) +
+ * u32 packed address. Without it, every dynamic jump/call correctly fails
+ * to resolve (degrading to VN_FINISHED, same as assets.c when a bundle
+ * ships no DVLBL) -- this exists purely so a replay can exercise
+ * OP_JUMP_VAR/OP_CALL_VAR deliberately, not because a normal run needs it. */
+static uint8_t *label_table;
+static long     label_table_size;
+
+static bool host_resolve_label(void *ctx, int16_t str_id, uint32_t *addr_out)
+{
+    (void)ctx;
+    if (!label_table || label_table_size < 2 || str_id < VN_STR_BASE) {
+        return false;
+    }
+    uint16_t want  = (uint16_t)(str_id - VN_STR_BASE);
+    uint16_t count = (uint16_t)(label_table[0] | (label_table[1] << 8));
+    const uint8_t *p = label_table + 2;
+    for (uint16_t i = 0; i < count; i++) {
+        uint16_t id = (uint16_t)(p[0] | (p[1] << 8));
+        if (id == want) {
+            *addr_out = (uint32_t)(p[2] | (p[3] << 8) | (p[4] << 16) | (p[5] << 24));
+            return true;
+        }
+        p += 6;
+    }
+    return false;
+}
+
 static const vn_host_t host = {
     .string     = host_string,
     .say        = host_say,
@@ -216,6 +245,7 @@ static const vn_host_t host = {
     /* .minigame left NULL: OP_MINIGAME's vn.c null-guard defaults the
      * result var to 0 rather than crashing, which is fine for a bytecode
      * regression tool that isn't rendering anything. */
+    .resolve_label = host_resolve_label,
     .ctx        = NULL,
 };
 
@@ -339,6 +369,23 @@ int main(int argc, char **argv)
             if (!load_vnb(argv[i] + 6)) {
                 return 2;
             }
+        } else if (strncmp(argv[i], "--labels=", 9) == 0) {
+            FILE *f = fopen(argv[i] + 9, "rb");
+            if (!f) {
+                fprintf(stderr, "can't open %s\n", argv[i] + 9);
+                return 2;
+            }
+            fseek(f, 0, SEEK_END);
+            label_table_size = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            label_table = malloc((size_t)label_table_size);
+            if (!label_table || fread(label_table, 1, (size_t)label_table_size, f) !=
+                                 (size_t)label_table_size) {
+                fprintf(stderr, "failed to read %s\n", argv[i] + 9);
+                fclose(f);
+                return 2;
+            }
+            fclose(f);
         } else if (strncmp(argv[i], "--pc=", 5) == 0) {
             start_pc = (uint32_t)strtoul(argv[i] + 5, NULL, 0);
         } else {

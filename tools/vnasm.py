@@ -28,6 +28,8 @@ OP_END = 0x0D
 OP_ADD = 0x0E
 OP_MINIGAME = 0x0F
 OP_RANDOM = 0x10
+OP_JUMP_VAR = 0x11
+OP_CALL_VAR = 0x12
 
 CMP_EQ, CMP_NE, CMP_LT, CMP_LE, CMP_GT, CMP_GE = range(6)
 TRANS_CUT, TRANS_FADE = 0, 1
@@ -204,6 +206,19 @@ class Assembler:
     def call(self, label: str) -> None:
         self._u8(OP_CALL)
         self._ref(label)
+
+    def jump_var(self, var: int) -> None:
+        """Jump to whatever label the interned string in story variable
+        @var currently names -- compiles `jump expression <name>`. Unlike
+        jump()/call(), there's no label reference to resolve here: the
+        target is only known at runtime, from a table the host resolves
+        against (see vn.h's OP_JUMP_VAR and tools/import_game.py's DVLBL)."""
+        self._u8(OP_JUMP_VAR)
+        self._u8(var)
+
+    def call_var(self, var: int) -> None:
+        self._u8(OP_CALL_VAR)
+        self._u8(var)
 
     def ret(self) -> None:
         self._u8(OP_RETURN)
