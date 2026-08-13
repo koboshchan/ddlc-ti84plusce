@@ -87,6 +87,16 @@ ARCHIVE_BUDGET = 2_900_000  # ~2.9MB real hardware archive capacity, confirmed
                              # land in archive -- confirmed as a real failure
                              # on-hardware, not just a docs gap.
 
+# The budget the build is actually held to, below the raw capacity above so
+# there is room to install and to keep saves. Exceeding it *fails the build*
+# rather than printing a warning: a warning scrolls past in a few hundred
+# lines of convimg output, and the failure it precedes -- an AppVar that
+# won't fit in archive -- doesn't surface until the calculator is out of
+# space mid-chapter. The full game measures 2,282,897 bytes today, so the
+# margin exists to be spent deliberately on Act 2/3 art, not by accident.
+# Override with --archive-budget if a build genuinely needs to run over.
+ARCHIVE_LIMIT = 2_850_000
+
 MAXVARSIZE = 65000  # safely under the 65535-byte TI variable cap; also the
                      # real per-chunk ceiling now, since each chunk ships as
                      # exactly one AppVar (no multi-piece packing like
@@ -448,7 +458,8 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
     return appvars
 
 
-def do_bundle(prog_8xp: Path, appvars: list[Path], out_path: Path) -> None:
+def do_bundle(prog_8xp: Path, appvars: list[Path], out_path: Path,
+              limit: int = ARCHIVE_LIMIT) -> None:
     step("bundle .b84")
     require("convbin", 'export PATH="$HOME/CEdev/bin:$PATH"')
     if not prog_8xp.is_file():
@@ -473,11 +484,20 @@ def do_bundle(prog_8xp: Path, appvars: list[Path], out_path: Path) -> None:
           f"informational only)")
     print(f"on-calc archive usage: {raw_total} bytes (every AppVar's own "
           f"size, plus the program)")
-    if raw_total > ARCHIVE_BUDGET:
-        print(f"  ! over the ~{ARCHIVE_BUDGET}-byte real archive budget")
-    else:
-        print(f"  within the ~{ARCHIVE_BUDGET}-byte real archive budget "
-              f"({raw_total / ARCHIVE_BUDGET:.0%} used)")
+    if raw_total > limit:
+        biggest = sorted(inputs, key=lambda f: f.stat().st_size, reverse=True)[:5]
+        detail = "\n".join(f"    {f.stat().st_size:>9} {f.name}" for f in biggest)
+        sys.exit(
+            f"  ! {raw_total} bytes is over the {limit}-byte archive budget "
+            f"by {raw_total - limit}.\n"
+            f"  This is the uncompressed total that has to live in the "
+            f"calculator's archive; {out_path.name}'s own size is not the "
+            f"measure (it is deflate-compressed).\n"
+            f"  Largest contributors:\n{detail}\n"
+            f"  Reduce assets, or pass --archive-budget to raise the ceiling "
+            f"deliberately (hard capacity is ~{ARCHIVE_BUDGET}).")
+    print(f"  within the {limit}-byte archive budget "
+          f"({raw_total / limit:.0%} used, {limit - raw_total} bytes spare)")
 
 
 def main() -> int:
@@ -499,6 +519,9 @@ def main() -> int:
                          "docstring. Default: script,script-ch0")
     ap.add_argument("--skip-extract", action="store_true")
     ap.add_argument("--skip-convimg", action="store_true")
+    ap.add_argument("--archive-budget", type=int, default=ARCHIVE_LIMIT,
+                    help=f"fail the build if on-calc archive usage exceeds this "
+                         f"many bytes (default {ARCHIVE_LIMIT})")
     args = ap.parse_args()
 
     args.build_dir.mkdir(parents=True, exist_ok=True)
@@ -518,7 +541,7 @@ def main() -> int:
         manifest = json.loads((args.build_dir / "manifest.json").read_text())
         appvars = do_package(args.build_dir, args.appvar_dir, args.raw_dir, manifest,
                              chunk_paths, entry_chunk, entry_offset)
-        do_bundle(args.prog, appvars, args.out)
+        do_bundle(args.prog, appvars, args.out, args.archive_budget)
     except CompileError as e:
         sys.exit(f"compile error: {e}")
     except subprocess.CalledProcessError as e:
