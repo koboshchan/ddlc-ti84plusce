@@ -657,6 +657,19 @@ class Compiler:
             if call is not None:
                 self.asm.tear_show(*call)
                 return
+        # `window hide`/`window hide(...)`/`window hide(config....)` all
+        # mean the same thing here regardless of the transition argument
+        # (this engine has no cross-fade to run one under) -- matched by
+        # prefix rather than exact string for that reason. `window auto`
+        # and an explicit `window show(...)` both compile to the same
+        # opcode too -- see OP_WINDOW_SHOW's own comment in vn.h for why
+        # that's a real equivalence here, not a shortcut.
+        if stripped == "window hide" or stripped.startswith("window hide("):
+            self.asm.window_hide()
+            return
+        if stripped == "window auto" or stripped.startswith("window show("):
+            self.asm.window_show()
+            return
         self._skip(node, fname, f"unsupported statement: {line!r}")
         self.asm.nop()
 

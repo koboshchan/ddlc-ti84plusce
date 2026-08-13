@@ -799,11 +799,19 @@ void render_scene_lazy(const vn_scene_t *scene)
 void render_box(const vn_scene_t *scene, const char *speaker,
                 const char *text, size_t visible)
 {
-    /* Kept in the signature although nothing reads it yet: the box is about
-     * to grow scene-dependent behaviour (`window hide` suppressing it
-     * entirely, and Act 3's alternate textbox art), and threading the scene
-     * back through five call sites then is worse than carrying it now. */
-    (void)scene;
+    /* `window hide` -- DDLC uses this for a beat with no text over a clean
+     * shot of the scene. Filled black rather than left untouched: nothing
+     * else in this program ever draws y >= SCENE_H, so a stale frame's
+     * pixels (or worse, whatever happened to be in the draw buffer before
+     * gfx_Begin() cleared it) would otherwise show through the very first
+     * time this runs. Not the same effect as real Ren'Py's window hide --
+     * see vn_scene_t.window_hidden's own comment for why this engine can't
+     * expand the scene into that space instead. */
+    if (scene->window_hidden) {
+        gfx_SetColor(COL_BLACK);
+        gfx_FillRectangle_NoClip(0, BOX_Y, SCREEN_W, BOX_H);
+        return;
+    }
 
     const int pad = 6;
 

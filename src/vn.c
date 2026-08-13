@@ -517,6 +517,22 @@ bool vn_step(vn_vm_t *vm)
             break;
         }
 
+        case OP_WINDOW_HIDE: {
+            if (vm->status != VN_RUNNING) {
+                break;
+            }
+            vm->scene.window_hidden = true;
+            break;
+        }
+
+        case OP_WINDOW_SHOW: {
+            if (vm->status != VN_RUNNING) {
+                break;
+            }
+            vm->scene.window_hidden = false;
+            break;
+        }
+
         case OP_END:
             vm->status = VN_FINISHED;
             break;

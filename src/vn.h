@@ -101,6 +101,17 @@ enum vn_op {
                           * render.c's tear rendering and
                           * docs/FORMAT.md's write-up.                   */
     OP_TEAR_HIDE = 0x15, /* -- `hide screen tear`.                       */
+    OP_WINDOW_HIDE = 0x16, /* -- compiles `window hide`/`window hide(...)`.
+                          * Hides the dialogue box until the next
+                          * OP_WINDOW_SHOW; see vn_scene_t.window_hidden
+                          * and render.c's render_box().                */
+    OP_WINDOW_SHOW = 0x17, /* -- compiles `window show(...)`/`window auto`.
+                          * `auto` and an explicit `show` both compile to
+                          * this: this engine has no notion of a
+                          * windowless Say to make "automatically show
+                          * when there's dialogue" mean anything beyond
+                          * "showing", since a real Say always draws the
+                          * box regardless of this flag.                */
 };
 
 /** Comparison selectors for OP_IF. */
@@ -248,6 +259,19 @@ typedef struct {
     int16_t  tear_offset_min;
     int16_t  tear_offset_max;
     uint16_t tear_period_ms;
+
+    /* `window hide`/`window show` -- whether the dialogue box is drawn at
+     * all. DDLC uses this for beats with no text over a clean shot of the
+     * scene. This engine's background art is baked at a fixed 320x180 (see
+     * docs/FORMAT.md's "Image assets"), always assuming the box covers the
+     * bottom 60 rows, so hiding the box doesn't expand the scene to fill
+     * the screen the way real Ren'Py's window hide can -- that would need
+     * every background re-baked at a different aspect ratio. Instead
+     * render_box() simply skips the box and fills the same rows black,
+     * matching the part of the effect that actually matters most --
+     * dialogue disappearing for a clean shot -- without a wider art
+     * pipeline change. See OP_WINDOW_SHOW/OP_WINDOW_HIDE. */
+    bool     window_hidden;
 } vn_scene_t;
 
 /**

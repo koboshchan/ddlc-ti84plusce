@@ -679,6 +679,27 @@ per sprite, with no path to feed an animation into that. `ShowLayer`
 into the same original task) is tracked separately for the same reason --
 a materially different rendering problem, not a variant of this one.
 
+## Window hide/show
+
+`OP_WINDOW_HIDE`/`OP_WINDOW_SHOW` (`0x16`/`0x17`) compile DDLC's own
+`window hide`/`window hide(...)`/`window show(...)`/`window auto`
+statements, all of which mean one of exactly two things here: `hide`
+(any transition argument is accepted but ignored -- this engine has no
+cross-fade to run one under) suppresses the dialogue box; `show`/`auto`
+restores it. `auto` and an explicit `show` collapsing to the same opcode
+is a real equivalence for this engine specifically, not a shortcut: Ren'Py's
+"automatically show the window when there's dialogue to display" has
+nothing to distinguish itself against here, since every real `OP_SAY`
+already draws the box unconditionally regardless of this flag.
+
+Real Ren'Py's window hide can expand the scene to fill the space the box
+would have used; this engine can't reproduce that without a wider art
+pipeline change, since backgrounds are baked at a fixed 320x180 assuming
+the box always covers the bottom 60 rows (see "Image assets"). `render_box()`
+fills those rows with plain black instead when hidden -- not the identical
+effect, but it captures the part that reads as the effect in the moment:
+the dialogue disappearing for a clean, textless shot.
+
 ## Save data
 
 Each `DSAVEn` is one fixed-layout `save_blob_t` (`src/save.c`), written with a

@@ -33,6 +33,8 @@ OP_CALL_VAR = 0x12
 OP_DELETE_SAVES = 0x13
 OP_TEAR_SHOW = 0x14
 OP_TEAR_HIDE = 0x15
+OP_WINDOW_HIDE = 0x16
+OP_WINDOW_SHOW = 0x17
 
 CMP_EQ, CMP_NE, CMP_LT, CMP_LE, CMP_GT, CMP_GE = range(6)
 TRANS_CUT, TRANS_FADE = 0, 1
@@ -239,6 +241,14 @@ class Assembler:
     def tear_hide(self) -> None:
         """Compiles `hide screen tear`. See OP_TEAR_HIDE."""
         self._u8(OP_TEAR_HIDE)
+
+    def window_hide(self) -> None:
+        """Compiles `window hide`/`window hide(...)`. See OP_WINDOW_HIDE."""
+        self._u8(OP_WINDOW_HIDE)
+
+    def window_show(self) -> None:
+        """Compiles `window show(...)`/`window auto`. See OP_WINDOW_SHOW."""
+        self._u8(OP_WINDOW_SHOW)
 
     def ret(self) -> None:
         self._u8(OP_RETURN)
