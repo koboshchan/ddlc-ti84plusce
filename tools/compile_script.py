@@ -650,7 +650,34 @@ class Compiler:
 
         char = TAG_TO_CHAR.get(imgname[0])
         if char is None:
-            self._skip(node, fname, f"unknown character tag in {imgname!r}")
+            # Not one of the 4 cast members -- OP_SHOW's ch:u8 operand only
+            # ever names one of them, so this was always a skip until now.
+            # But a bare `show X` where X isn't a character tag is DDLC's
+            # own idiom for a full-screen standalone image (the ghost menu's
+            # `show black`/`show end`, poems_special.rpyc's 11 `show
+            # poem_specialN` picture-book pages, confirmed identical shape
+            # for both) -- much closer to what OP_SCENE already does than
+            # to a character overlay, so it's reframed as one instead of
+            # skipped. Emitted immediately rather than through the usual
+            # deferred _pending_scene/_flush_pending_scene combo (see
+            # _emit_Scene): a bare Show like this is very often the last
+            # meaningful statement before a label's Return (both real
+            # examples above are), and nothing would flush a still-pending
+            # scene before that Return compiles -- it would silently land
+            # as dead code after the label's own OP_RETURN instead. Any
+            # `with` transition wrapping the real Show already only ever
+            # compiles to a cut here regardless (_emit_With's own
+            # simplification, see "Scene transitions" in FORMAT.md), so
+            # immediate emission costs nothing bypassing the deferred path
+            # would have bought anyway.
+            scene_id = self.resolver.scene_id(imgname)
+            if scene_id is None:
+                self._skip(node, fname, f"unknown character tag in {imgname!r}")
+                return
+            self.asm.scene(scene_id, vnasm.TRANS_CUT)
+            self.last_sprite.clear()
+            self.last_pos.clear()
+            self.last_flags.clear()
             return
 
         if len(imgname) == 1:
