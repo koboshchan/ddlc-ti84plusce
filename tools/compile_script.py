@@ -846,7 +846,10 @@ class Compiler:
             dispatch = (self._pending_dispatch.pop(node.label, None)
                        if isinstance(node.label, str) else None)
             if dispatch is not None:
-                self._emit_poemwinner_dispatch(dispatch, fname)
+                if dispatch[0] == "poemwinner":
+                    self._emit_poemwinner_dispatch(dispatch[1:], fname)
+                else:
+                    self._emit_chapter_opinion_dispatch(dispatch[1:], fname)
                 return
             var = self._dynamic_target_var(node.label)
             if var is None:
@@ -954,6 +957,49 @@ class Compiler:
                 self.asm.label(appeal_next)
             self.asm.jump(end_label)
             self.asm.label(char_next)
+        self.asm.label(end_label)
+
+    # bad/med/good -- confirmed the only 3 values script-poemresponses.rpyc's
+    # own poemopinion variable is ever assigned (a literal "med" up front,
+    # then optionally overwritten by the BASE[chapter-1] comparison -- see
+    # _chapter_indexed_base/_emit_chapter_condition).
+    _OPINIONS = ("bad", "med", "good")
+
+    def _emit_chapter_opinion_dispatch(self, dispatch: tuple, fname: str) -> None:
+        """The real bytecode for a recognized chapter-opinion dispatch (see
+        _match_chapter_dispatch) -- same reasoning as
+        _emit_poemwinner_dispatch: `chapter` (1..3) and `poemopinion`
+        (bad/med/good, already a real runtime string by this point --
+        poemopinion's own literal assignments compile normally, nothing
+        special needed there) are both small and enumerable, so this
+        dispatches straight to the real target label (e.g. "ch2_n_good")
+        instead of ever constructing the name at runtime.
+        """
+        suffix, opinion_var = dispatch
+        chapter_slot = self._var_slot("chapter")
+        end_label = self._gensym("chopinion_end")
+        for n in (1, 2, 3):
+            ch_next = self._gensym("chopinion_next")
+            ch_match = self._gensym("chopinion_match")
+            self.asm.if_(chapter_slot, vnasm.CMP_EQ, n, ch_match)
+            self.asm.jump(ch_next)
+            self.asm.label(ch_match)
+            if opinion_var is None:
+                self.asm.call(f"ch{n}{suffix}")
+                self.asm.jump(end_label)
+            else:
+                opinion_slot = self._var_slot(opinion_var)
+                for opinion in self._OPINIONS:
+                    op_next = self._gensym("chopinion_op_next")
+                    op_match = self._gensym("chopinion_op_match")
+                    self.asm.if_(opinion_slot, vnasm.CMP_EQ, self._intern(opinion), op_match)
+                    self.asm.jump(op_next)
+                    self.asm.label(op_match)
+                    self.asm.call(f"ch{n}{suffix}{opinion}")
+                    self.asm.jump(end_label)
+                    self.asm.label(op_next)
+                self.asm.jump(end_label)
+            self.asm.label(ch_next)
         self.asm.label(end_label)
 
     def _emit_call_args(self, node, params: list, fname: str) -> None:
@@ -1095,7 +1141,13 @@ class Compiler:
                     # enumerable N-way (character) x M-way (win count) call,
                     # only buildable once the matching dynamic Call is
                     # reached (see _emit_Call's use of _pending_dispatch).
-                    self._pending_dispatch[var] = dispatch
+                    self._pending_dispatch[var] = ("poemwinner",) + dispatch
+                    return True
+                chapter_dispatch = _match_chapter_dispatch(stmt.value)
+                if chapter_dispatch is not None:
+                    # Same idea, different idiom -- see
+                    # _emit_chapter_opinion_dispatch.
+                    self._pending_dispatch[var] = ("chapter_opinion",) + chapter_dispatch
                     return True
             val = self._const_operand(stmt.value)
             if var is not None and val is not None:
@@ -1239,9 +1291,37 @@ class Compiler:
             slot = self._var_slot(self.RAND_SCRATCH)
             self.asm.random(slot, lo, hi)
         else:
+            base = _chapter_indexed_base(expr.left)
+            if base is not None:
+                val = self._const_operand(expr.comparators[0])
+                self._emit_chapter_condition(base, cmp, val, true_label, false_label)
+                return
             slot = self._var_slot(_ident_name(expr.left))
         val = self._const_operand(expr.comparators[0])
         self.asm.if_(slot, cmp, val, true_label)
+        self.asm.jump(false_label)
+
+    def _emit_chapter_condition(self, base: str, cmp: int, val: int,
+                                true_label: str, false_label: str) -> None:
+        """`BASE[chapter - 1] <cmp> val` -- see _chapter_indexed_base's own
+        comment for why this needs its own emission instead of a plain
+        slot lookup: `chapter` is a runtime variable here (1..3 at these
+        call sites), so this dispatches on chapter's real value instead,
+        comparing whichever BASE[N-1] slot that value selects.
+        """
+        chapter_slot = self._var_slot("chapter")
+        for n in (1, 2, 3):
+            next_label = self._gensym("chcond_next")
+            match_label = self._gensym("chcond_match")
+            self.asm.if_(chapter_slot, vnasm.CMP_EQ, n, match_label)
+            self.asm.jump(next_label)
+            self.asm.label(match_label)
+            slot = self._var_slot(f"{base}[{n - 1}]")
+            self.asm.if_(slot, cmp, val, true_label)
+            self.asm.jump(false_label)
+            self.asm.label(next_label)
+        # chapter outside 1..3 -- shouldn't happen in practice; degrade to
+        # false rather than leaving the label chain dangling.
         self.asm.jump(false_label)
 
     def _emit_Menu(self, node, fname: str) -> None:
@@ -1524,6 +1604,82 @@ def _match_poemwinner_dispatch(node) -> tuple[str, int, str] | None:
     return (prefix, chapter, sep_term.value)
 
 
+def _chapter_indexed_base(node) -> str | None:
+    """Recognizes `BASE[chapter - 1]` -- BASE one of poemwinner/
+    s_poemappeal/n_poemappeal/y_poemappeal/m_poemappeal, the arrays the
+    chapter-aware poem minigame already indexes by literal chapter number
+    (0, 1, 2). `chapter - 1` is the one real shape script-poemresponses.rpyc
+    uses to read back what the poem minigame just wrote for whichever
+    chapter is currently running: `chapter` is a 1-indexed runtime
+    variable (1, 2, 3 at this call site -- script.rpy's label start's own
+    chapter=N/Call poemresponse_start sites), unlike every other indexed-
+    variable access in this compiler, which needs a compile-time-literal
+    index. Returns BASE, or None if @p node isn't this exact shape."""
+    if not (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name)):
+        return None
+    idx = node.slice
+    if not (isinstance(idx, ast.BinOp) and isinstance(idx.op, ast.Sub)
+            and isinstance(idx.left, ast.Name) and idx.left.id == "chapter"
+            and isinstance(idx.right, ast.Constant) and idx.right.value == 1):
+        return None
+    return node.value.id
+
+
+def _match_chapter_dispatch(node) -> tuple[str, str | None] | None:
+    """Recognizes DDLC's `"ch" + pt + str(chapter) + SUFFIX [+ OPINION_VAR]`
+    idiom (script-poemresponses.rpyc's per-chapter reaction dispatch, one
+    block per character: `poemopinion = "med"; if BASE[chapter-1] < 0:
+    poemopinion = "bad" elif BASE[chapter-1] > 0: poemopinion = "good";
+    nextscene = "ch" + pt + str(chapter) + "_s_" + poemopinion` for the
+    opinion-driven reaction, or `nextscene = "ch" + pt + str(chapter) +
+    "_s_end"` for the follow-up with no opinion involved).
+
+    `pt` is dropped entirely -- like poemwinner's own tag name, this
+    compiler dispatches straight to the real target label rather than
+    ever constructing the name, so `pt`'s own meaning (still untraced)
+    doesn't matter here. `chapter` only ever takes 1..3 at these call
+    sites, same reasoning as _chapter_indexed_base.
+
+    Returns (suffix, opinion_var_name): opinion_var_name is None for the
+    plain "_end"/"_start" shape (a fixed final term, no variable), or the
+    variable name for the "_s_" + poemopinion shape.
+    """
+    if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add)):
+        return None
+    terms = []
+    cur = node
+    while isinstance(cur, ast.BinOp) and isinstance(cur.op, ast.Add):
+        terms.append(cur.right)
+        cur = cur.left
+    terms.append(cur)
+    terms.reverse()
+
+    if len(terms) not in (4, 5):
+        return None
+    if not (isinstance(terms[0], ast.Constant) and terms[0].value == "ch"):
+        return None
+    if not isinstance(terms[1], ast.Name):   # `pt` -- dropped, see above
+        return None
+    str_chapter = terms[2]
+    if not (isinstance(str_chapter, ast.Call) and isinstance(str_chapter.func, ast.Name)
+            and str_chapter.func.id == "str" and len(str_chapter.args) == 1
+            and isinstance(str_chapter.args[0], ast.Name)
+            and str_chapter.args[0].id == "chapter"):
+        return None
+
+    if len(terms) == 4:
+        suffix = terms[3]
+        if isinstance(suffix, ast.Constant) and isinstance(suffix.value, str):
+            return (suffix.value, None)
+        return None
+
+    suffix, opinion = terms[3], terms[4]
+    if (isinstance(suffix, ast.Constant) and isinstance(suffix.value, str)
+            and isinstance(opinion, ast.Name)):
+        return (suffix.value, opinion.id)
+    return None
+
+
 def _pure_number(node) -> float | int | None:
     """Evaluates @p node if it's built entirely from numeric literals and
     +/-/*//, else None. Deliberately not ast.literal_eval (which refuses
@@ -1732,6 +1888,9 @@ def _condition_supported(expr) -> bool:
             return False
         if _randint_call(expr.left) is not None:
             # `renpy.random.randint(a, b) == N` -- see _randint_call().
+            return _const_int(expr.comparators[0]) is not None
+        if _chapter_indexed_base(expr.left) is not None:
+            # `BASE[chapter - 1] <cmp> N` -- see _chapter_indexed_base().
             return _const_int(expr.comparators[0]) is not None
         # _const_scalar, not _const_int: a string comparand is fine, it just
         # becomes an interned id at emit time (see Compiler._const_operand).
