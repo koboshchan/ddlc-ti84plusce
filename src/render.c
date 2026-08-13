@@ -828,13 +828,27 @@ void render_box(const vn_scene_t *scene, const char *speaker,
         y += 11;
     }
 
-    text_layout_t full, shown;
-    text_wrap(&full, text, SCREEN_W - 2 * pad, measure, NULL);
+    /* text_wrap() re-measures every character-width prefix of every line it
+     * builds -- real work, not free, and this used to run in full on every
+     * single typewriter tick even though only @p visible had changed since
+     * the last call. Caching the wrap by @p text's own pointer identity
+     * turns that into a one-time cost per line: @p text is always
+     * scene->text, a stable zero-copy pointer for the whole typewriter
+     * reveal of one line (see assets_string()/host_say()) -- it only
+     * changes when a genuinely new line starts, which is exactly when the
+     * cache should invalidate. */
+    static const char   *cached_text;
+    static text_layout_t cached_full;
+    if (text != cached_text) {
+        text_wrap(&cached_full, text, SCREEN_W - 2 * pad, measure, NULL);
+        cached_text = text;
+    }
 
-    if (visible >= full.total) {
-        shown = full;
+    text_layout_t shown;
+    if (visible >= cached_full.total) {
+        shown = cached_full;
     } else {
-        text_clamp(&shown, &full, visible);
+        text_clamp(&shown, &cached_full, visible);
     }
 
     gfx_SetTextFGColor(COL_WHITE);
