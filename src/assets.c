@@ -44,6 +44,22 @@ static const uint8_t   *script_code;
 static size_t            script_code_size;
 static const char       *string_ptrs[MAX_STRINGS];
 static uint16_t          string_count;
+
+/* The interned variable-string pool (DVSTR). Small and fixed for the
+ * whole game -- 37 strings, under a kilobyte -- so unlike the per-chunk
+ * dialogue pool above it is loaded once and never swapped: a name
+ * assigned in one chunk has to still resolve several chunks later. */
+#define MAX_VAR_STRINGS 256
+static uint8_t          *var_string_buf;
+static const char       *var_string_ptrs[MAX_VAR_STRINGS];
+static uint16_t          var_string_count;
+
+/* Ren'Py `default` values (DVDEF): u16 count, then per entry u8 slot + i16
+ * value -- see tools/import_game.py's packaging and assets_apply_var_defaults()
+ * below. */
+static uint8_t           *var_defaults_buf;
+static uint16_t           var_defaults_size;
+
 static uint32_t          entry_pc; /* packed (chunk_id<<16)|offset, from DENTRY */
 
 /* Sprite/scene lookup tables: tools/import_game.py's build_lut() format --
@@ -200,6 +216,36 @@ assets_status_t assets_init(void)
         return ASSETS_ERR_SPRITE_LUT;
     }
 
+    /* Optional, like the tables below: a bundle whose script never assigned
+     * a string to a variable ships no DVSTR, and assets_var_string() simply
+     * finds nothing to resolve. Loaded once and held for the whole run --
+     * see the pool's declaration for why it isn't per-chunk. */
+    uint16_t var_str_size;
+    var_string_buf = read_whole("DVSTR", &var_str_size);
+    if (var_string_buf && var_str_size >= 2) {
+        var_string_count = read_u16le(var_string_buf);
+        if (var_string_count > MAX_VAR_STRINGS) {
+            var_string_count = MAX_VAR_STRINGS;
+        }
+        const uint8_t *vp = var_string_buf + 2;
+        for (uint16_t i = 0; i < var_string_count; i++) {
+            uint16_t len = read_u16le(vp);
+            vp += 2;
+            var_string_ptrs[i] = (const char *)vp;
+            vp += (size_t)len + 1;   /* +1: trailing NUL, as the chunk pool */
+        }
+    } else {
+        var_string_count = 0;
+    }
+
+    /* Optional, same as DVSTR above: a bundle built before this existed
+     * ships no DVDEF, and assets_apply_var_defaults() just has nothing to
+     * apply -- every variable starts at plain 0 from vn_init()'s memset,
+     * same as always. Held as the raw AppVar bytes rather than unpacked
+     * into a table, since it's only ever walked once per New Game/Continue,
+     * not per frame -- no lookup structure earns its cost. */
+    var_defaults_buf = read_whole("DVDEF", &var_defaults_size);
+
     /* Optional: a bundle built before layered sprites existed ships no
      * DSPROFF, and every sprite just draws with (0, 0) offset -- see
      * assets_draw_sprite(). */
@@ -282,6 +328,40 @@ const uint8_t *assets_script(size_t *size_out)
 const char *assets_string(uint16_t index)
 {
     return index < string_count ? string_ptrs[index] : "";
+}
+
+const char *assets_var_string(int16_t value)
+{
+    if (value < VN_STR_BASE) {
+        return NULL;          /* a number, not an interned string */
+    }
+    uint16_t index = (uint16_t)(value - VN_STR_BASE);
+    return index < var_string_count ? var_string_ptrs[index] : "";
+}
+
+void assets_apply_var_defaults(vn_vm_t *vm)
+{
+    if (!var_defaults_buf || var_defaults_size < 2) {
+        return;
+    }
+    uint16_t count = read_u16le(var_defaults_buf);
+    const uint8_t *p = var_defaults_buf + 2;
+    /* 3 bytes/entry (u8 slot, i16 value); trust the AppVar's own declared
+     * count but never read past what actually arrived -- a truncated
+     * transfer degrades to "fewer defaults applied", not an out-of-bounds
+     * read. */
+    uint16_t max_count = (uint16_t)((var_defaults_size - 2) / 3);
+    if (count > max_count) {
+        count = max_count;
+    }
+    for (uint16_t i = 0; i < count; i++) {
+        uint8_t slot  = p[0];
+        int16_t value = (int16_t)read_u16le(p + 1);
+        p += 3;
+        if (slot < VN_MAX_VARS) {
+            vm->vars[slot] = value;
+        }
+    }
 }
 
 /* LUT entry layout: u8 appvar_index, u16 offset, u16 length (5 bytes). @p id

@@ -41,6 +41,11 @@ bool quit_requested;
  * two apart and loop back to the title screen instead of exiting. */
 static bool returning_to_title;
 
+/* Defined down with the VM host callbacks, where the player-name state it
+ * reads lives; declared here because the pause menu and the idle wait, both
+ * above it, draw a dialogue box too. */
+static const char *speaker_display_name(const vn_vm_t *vm, uint8_t speaker);
+
 /* ---------------------------------------------------------------------------
  * Input
  *
@@ -156,7 +161,8 @@ static bool run_pause_menu(vn_vm_t *vm)
 
     for (;;) {
         render_scene(&vm->scene);
-        render_box(&vm->scene, vm->scene.text, SIZE_MAX);
+        render_box(&vm->scene, speaker_display_name(vm, vm->scene.speaker),
+                   vm->scene.text, SIZE_MAX);
         render_pause_box(PAUSE_BOX_X, PAUSE_BOX_Y, PAUSE_BOX_W, PAUSE_BOX_H);
         render_text("Paused", PAUSE_BOX_X + 12, PAUSE_BOX_Y + 8, COL_NAME);
         render_list_menu(pause_items, PAUSE_COUNT, selected,
@@ -238,7 +244,8 @@ static void wait_for_advance(vn_vm_t *vm, bool allow_pause)
         }
         if (!quit_requested) {
             render_scene_lazy(scene);
-            render_box(scene, scene->text, SIZE_MAX);
+            render_box(scene, speaker_display_name(vm, scene->speaker),
+                       scene->text, SIZE_MAX);
             render_present(TRANS_CUT);
             gfx_Wait();
         }
@@ -369,6 +376,39 @@ static const char *substitute_player_name(const char *s)
     return buf;
 }
 
+/* The name to show on the dialogue box's plate for @p speaker, or NULL for
+ * narration.
+ *
+ * Read out of the story variables rather than a fixed table, because DDLC
+ * treats a character's displayed name as plot state: script.rpyc opens with
+ * s_name = "???" and y/n/m_name = "Girl 1"/"Girl 2"/"Girl 3", ch0 assigns
+ * each real name at the moment she introduces herself, and Act 2 puts Monika
+ * back to "???". Rendering a fixed table is why every character used to be
+ * named from her very first line.
+ *
+ * Slot and character id are the same number by construction -- see
+ * VN_NAME_VAR and compile_script.py's Compiler.NAME_VARS. The literal table
+ * is the fallback for a bundle whose script never assigned a name (the
+ * variable still holds a number, so assets_var_string() declines it), not
+ * the normal path. */
+static const char *speaker_display_name(const vn_vm_t *vm, uint8_t speaker)
+{
+    static const char *const fallback[] = { "Sayori", "Natsuki", "Yuri", "Monika" };
+
+    if (speaker == VN_SPEAKER_NONE) {
+        return NULL;              /* narration -- no plate at all */
+    }
+    if (speaker == VN_SPEAKER_PLAYER) {
+        return player_name;
+    }
+    if (speaker >= VN_MAX_CHARS) {
+        return NULL;
+    }
+
+    const char *name = assets_var_string(vm->vars[VN_NAME_VAR(speaker)]);
+    return (name != NULL && name[0] != '\0') ? name : fallback[speaker];
+}
+
 static const char *host_string(void *ctx, uint16_t index)
 {
     (void)ctx;
@@ -377,7 +417,6 @@ static const char *host_string(void *ctx, uint16_t index)
 
 static void host_update(void *ctx, const vn_scene_t *scene, uint8_t trans)
 {
-    (void)ctx;
 
     /* Most scenes share the game palette (assets_scene_palette() just hands
      * back a pointer to it), but a CG scene needs its own -- see
@@ -404,7 +443,8 @@ static void host_update(void *ctx, const vn_scene_t *scene, uint8_t trans)
     }
 
     render_scene(scene);
-    render_box(scene, scene->text, SIZE_MAX);
+    render_box(scene, speaker_display_name(ctx, scene->speaker),
+               scene->text, SIZE_MAX);
     render_present(trans);
 
     if (trans == TRANS_FADE) {
@@ -434,7 +474,8 @@ static void host_say(void *ctx, const vn_scene_t *scene)
         }
 
         render_scene_lazy(scene);
-        render_box(scene, scene->text, visible);
+        render_box(scene, speaker_display_name(vm, scene->speaker),
+                   scene->text, visible);
         render_present(TRANS_CUT);
         gfx_Wait();
     }
@@ -452,7 +493,7 @@ static uint8_t host_menu(void *ctx, const vn_scene_t *scene,
     for (;;) {
         render_scene(scene);
         render_menu(choices, count, selected);
-        render_box(scene, "", SIZE_MAX);
+        render_box(scene, NULL, "", SIZE_MAX);
         render_present(TRANS_CUT);
         gfx_Wait();
 
@@ -783,6 +824,12 @@ int main(void)
         vn_init(&vm, code, code_size, &host);
         vm.pc       = entry_pc;
         vm.chunk_id = VN_CHUNK_ID(entry_pc);
+        /* Ren'Py's own `default` values (s_name = "Sayori", playthrough = 0,
+         * ...) -- unconditionally, before checking TITLE_LOAD below: a
+         * loaded save's save_load() call overwrites vars[] wholesale right
+         * after this if it runs, so applying defaults first for every path
+         * costs nothing on Load and is exactly right for New Game/Continue. */
+        assets_apply_var_defaults(&vm);
 
         if (choice == TITLE_LOAD) {
             uint8_t slot = run_slot_picker("Load Game", true);

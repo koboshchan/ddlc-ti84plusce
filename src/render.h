@@ -97,8 +97,17 @@ void render_scene_lazy(const vn_scene_t *scene);
 /**
  * Draw the dialogue box with @p text revealed up to @p visible characters.
  * Pass SIZE_MAX to reveal the whole line.
+ *
+ * @p speaker is the name to show on the plate, or NULL for narration (no
+ * plate at all). The caller resolves it rather than this function looking it
+ * up: DDLC keeps the displayed names in story variables that the script
+ * reassigns as the plot goes on -- "???" before an introduction, the real
+ * name after, "???" again for Monika in Act 2 -- so the answer depends on VM
+ * state this module has no business reaching into. See main.c's
+ * speaker_display_name().
  */
-void render_box(const vn_scene_t *scene, const char *text, size_t visible);
+void render_box(const vn_scene_t *scene, const char *speaker,
+                const char *text, size_t visible);
 
 /** Draw the choice menu over the current scene, highlighting @p selected. */
 void render_menu(const char *const *choices, uint8_t count, uint8_t selected);

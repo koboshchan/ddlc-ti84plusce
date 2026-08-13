@@ -127,6 +127,62 @@ def load_transform_animations(raw_dir: Path) -> dict[str, tuple[int, int]]:
     return animations
 
 
+def load_variable_defaults(raw_dir: Path) -> dict[str, int | str]:
+    """Maps each variable name DDLC's own `default` statement (definitions.rpy,
+    compiled to definitions.rpyc's `Default` nodes) initializes, to its
+    scalar value -- an int or a str, whichever _const_scalar resolves.
+
+    definitions.rpyc is never in the compiled --files set (it declares
+    variables, it doesn't advance the story), so this is a second, separate
+    load, the same pattern as load_transform_animations() reading
+    transforms.rpyc. Only the ~40 of 58 Default statements whose value is a
+    plain literal are usable here; a handful default to a list
+    (`n_poemappeal = [0, 0, 0]`, `poemwinner = ['sayori', 'sayori',
+    'sayori']`) and stay out of scope until per-index variable slots exist
+    (see VN_MAX_VARS's task list) to hold them -- returning nothing for
+    those names is indistinguishable from "never referenced" to the caller,
+    which is the correct degrade: the variable still starts at plain 0
+    rather than a wrong guessed value.
+
+    Every variable really does start at 0 without this (a fresh vars[]
+    array is zeroed by vn_init) -- for most story counters that already
+    matches Ren'Py's own default (`playthrough = 0`, `chapter = 0`). It
+    matters where it doesn't: DDLC's own s_name/n_name/y_name/m_name default
+    to the real names, not empty/zero, which is what makes "???" a real
+    plot beat (the game *changes* them to "???" at specific points) rather
+    than an engine bug where they're unset from the start.
+    """
+    path = raw_dir / "definitions.rpyc"
+    if not path.is_file():
+        return {}
+
+    _, top = load_rpyc(path)
+    defaults: dict[str, int | str] = {}
+
+    def walk(nodes) -> None:
+        for node in nodes or []:
+            if kind(node) == "Default":
+                value = _const_scalar(pycode_source(getattr(node, "code", None)) and
+                                      _parse_default_value(pycode_source(node.code)))
+                if value is not None:
+                    defaults[node.varname] = value
+            walk(getattr(node, "block", None))
+
+    walk(top)
+    return defaults
+
+
+def _parse_default_value(src: str):
+    """definitions.rpyc's Default.code carries the value expression's source
+    text (e.g. `"Sayori"`, `0`, `None`) rather than a ready AST node --
+    parsed the same way pycode_source()'s callers elsewhere in this module
+    already parse condition strings."""
+    try:
+        return ast.parse(src, mode="eval").body
+    except SyntaxError:
+        return None
+
+
 def _pos_from_x(x: int) -> int:
     """Converts a canvas X (0..1280) to OP_SHOW's pos:u8 -- half the
     screen-space center X (image_resolve.py's 0.25 canvas-to-screen scale,
@@ -195,6 +251,7 @@ class Compiler:
     resolver: "image_resolve.ImageResolver"
     asm: vnasm.Assembler = field(default_factory=vnasm.Assembler)
     variables: dict = field(default_factory=dict)         # name -> slot
+    var_strings: dict = field(default_factory=dict)       # string -> interned id (VN_STR_BASE+n)
     last_sprite: dict = field(default_factory=dict)        # char id -> (base_id, overlay_id)
     last_pos: dict = field(default_factory=dict)            # char id -> pos enum
     last_flags: dict = field(default_factory=dict)          # char id -> OP_SHOW flags
@@ -205,6 +262,27 @@ class Compiler:
     _gensym_counter: itertools.count = field(default_factory=itertools.count, init=False)
 
     # -- driver ---------------------------------------------------------------
+
+    # The four character-name variables get slots 0..3, in TAG_TO_CHAR order,
+    # reserved before anything else can claim them. That makes a character's
+    # id also the slot holding her displayed name, so src/render.c can render
+    # the name plate straight from vars[speaker] with nothing shipped to map
+    # between them.
+    #
+    # DDLC drives the name plate through these: they default to the real
+    # names, script.rpyc opens by setting them to "???" / "Girl 1" / "Girl 2"
+    # / "Girl 3", ch0 assigns each real name at the introduction, and Act 2
+    # sets m_name back to "???". Rendering a fixed table instead is why every
+    # character used to be named from her first line.
+    #
+    # It is a contract with the engine, like TAG_TO_CHAR's ids themselves --
+    # hence reserving them up front rather than letting allocation order
+    # decide.
+    NAME_VARS = ("s_name", "n_name", "y_name", "m_name")
+
+    def __post_init__(self) -> None:
+        for name in self.NAME_VARS:
+            self._var_slot(name)
 
     def compile_file(self, path: Path) -> None:
         _, top = load_rpyc(path)
@@ -269,6 +347,29 @@ class Compiler:
         slot = len(self.variables)
         self.variables[name] = slot
         return slot
+
+    def _intern(self, text: str) -> int:
+        """The integer standing in for @p text -- see VN_STR_BASE. Stable for
+        the whole build (one Compiler compiles every chunk), so an id assigned
+        in one chunk still means the same string in another; the pool ships
+        separately from the per-chunk dialogue strings for exactly that
+        reason."""
+        if text in self.var_strings:
+            return self.var_strings[text]
+        value = VN_STR_BASE + len(self.var_strings)
+        if value > 32767:
+            raise CompileError(
+                f"interned string overflow: no room for {text!r} "
+                f"({len(self.var_strings)} already interned, ceiling is "
+                f"{32767 - VN_STR_BASE})")
+        self.var_strings[text] = value
+        return value
+
+    def _const_operand(self, node) -> int | None:
+        """A literal's i16 operand: a number as itself, a string as its
+        interned id."""
+        value = _const_scalar(node)
+        return self._intern(value) if isinstance(value, str) else value
 
     # -- scene buffering (so `scene X \n with dissolve` gets the real trans) ---
 
@@ -359,6 +460,15 @@ class Compiler:
         char = TAG_TO_CHAR.get(tag) if tag else None
         if char is not None:
             speaker = char
+        elif who == "mc":
+            # The protagonist speaking aloud, distinct from narration (who is
+            # None) -- DDLC writes these as different Character objects, and
+            # only one of them should carry the player's name on the plate.
+            # `char` stays None: "mc" isn't in TAG_TO_CHAR (no sprite/anim to
+            # resolve for the player), so the say-attribute handling below
+            # correctly still skips for this speaker, same as narration.
+            # See vn.h's VN_SPEAKER_PLAYER and main.c's speaker_display_name().
+            speaker = vnasm.SPEAKER_PLAYER
 
         # `s @5c "text"` -- Ren'Py's say-with-attributes shorthand for an
         # implicit sprite change tied to this line, used for ~1 in 5 lines
@@ -512,7 +622,7 @@ class Compiler:
     def _emit_python_stmt(self, stmt) -> bool:
         if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
             var = _ident_name(stmt.targets[0])
-            val = _const_int(stmt.value)
+            val = self._const_operand(stmt.value)
             if var is not None and val is not None:
                 self.asm.set(self._var_slot(var), val)
                 return True
@@ -619,7 +729,7 @@ class Compiler:
         # approves.
         cmp = _CMP_MAP[type(expr.ops[0])]
         slot = self._var_slot(_ident_name(expr.left))
-        val = _const_int(expr.comparators[0])
+        val = self._const_operand(expr.comparators[0])
         self.asm.if_(slot, cmp, val, true_label)
         self.asm.jump(false_label)
 
@@ -704,6 +814,41 @@ def _ident_name(node) -> str | None:
     if isinstance(node, ast.Attribute):
         base = _ident_name(node.value)
         return f"{base}.{node.attr}" if base else None
+    return None
+
+
+# String-valued variables, without runtime strings.
+#
+# The VM's variables are int16 and nothing else, which is why every
+# `nextscene = "..."` was dropped and every `ch2_winner == "Natsuki"` was
+# taken unconditionally. But DDLC never does arithmetic on these -- it
+# assigns a string and later compares it for equality, and that is exactly
+# what an integer can do if each distinct string gets a distinct integer.
+# So string literals are interned at compile time (Compiler._intern) and the
+# assignment becomes a plain OP_SET, the comparison a plain OP_IF.
+#
+# Interned ids start at VN_STR_BASE rather than 0 so a string-valued variable
+# never collides with the small integers real numeric variables hold. Nothing
+# in the game compares one variable against both kinds, so this is belt and
+# braces -- but it also makes a wrong value obvious on sight when reading a
+# trace, instead of looking like a plausible counter.
+VN_STR_BASE = 16384  # must match src/vn.h's VN_STR_BASE
+
+
+def _const_scalar(node):
+    """An integer literal as an int, a string literal as a str, else None.
+
+    The string case is what _const_int (below, still used where only a number
+    makes sense) deliberately refuses."""
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        inner = _const_scalar(node.operand)
+        return -inner if isinstance(inner, int) else None
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, str):
+            return node.value
+        if isinstance(node.value, int):
+            v = int(node.value)
+            return v if -32768 <= v <= 32767 else None
     return None
 
 
@@ -792,5 +937,8 @@ def _condition_supported(expr) -> bool:
     if isinstance(expr, ast.Compare) and len(expr.ops) == 1 and len(expr.comparators) == 1:
         if _CMP_MAP.get(type(expr.ops[0])) is None:
             return False
-        return _ident_name(expr.left) is not None and _const_int(expr.comparators[0]) is not None
+        # _const_scalar, not _const_int: a string comparand is fine, it just
+        # becomes an interned id at emit time (see Compiler._const_operand).
+        return (_ident_name(expr.left) is not None
+                and _const_scalar(expr.comparators[0]) is not None)
     return False

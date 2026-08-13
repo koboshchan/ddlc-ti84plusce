@@ -27,6 +27,8 @@
 
 #include <graphx.h>
 
+#include "vn.h"   /* vn_vm_t, for assets_apply_var_defaults() */
+
 /** Which step assets_init() got to before failing, for on-device diagnosis
  * (the AppVars can be present per the OS's own variable list yet loading
  * still fail, e.g. a corrupt/truncated transfer or a format mismatch --
@@ -69,6 +71,30 @@ const uint8_t *assets_script(size_t *size_out);
 
 /** Zero-copy pointer to string @p index's NUL-terminated UTF-8 bytes. */
 const char *assets_string(uint16_t index);
+
+/**
+ * Resolves a variable's value back to the string it stands for, or NULL if
+ * @p value is an ordinary number rather than an interned string id.
+ *
+ * The VM's variables are int16 and hold no strings, so tools/compile_script.py
+ * interns each distinct string literal to an integer at or above VN_STR_BASE
+ * (see vn.h) and ships the pool as DVSTR. That is what lets the script assign
+ * `s_name = "???"` and have the name plate render it -- see render.c.
+ *
+ * Points straight into the loaded pool, which lives for the whole run, so the
+ * result stays valid across chunk loads (unlike assets_string(), whose
+ * strings belong to the current chunk).
+ */
+const char *assets_var_string(int16_t value);
+
+/**
+ * Applies every loaded `default` value (DVDEF, from Ren'Py's own `default`
+ * statements) to @p vm's variables. Call once per New Game/Continue, right
+ * after vn_init() and *before* a possible save_load() -- a loaded save's own
+ * vars[] should stand as written, not be reset back to these. A no-op if the
+ * bundle ships no DVDEF.
+ */
+void assets_apply_var_defaults(vn_vm_t *vm);
 
 /**
  * Draws sprite @p id with its center-bottom anchored at

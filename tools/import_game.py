@@ -42,7 +42,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 import convert_images
 import extract
 import vnasm
-from compile_script import CompileError, Compiler, link_chunks, load_transform_animations
+from compile_script import (CompileError, Compiler, link_chunks,
+                            load_transform_animations, load_variable_defaults)
 from image_resolve import ImageResolver
 
 # Full Act 1 (ch0-ch4) plus the labels it calls into that live in other
@@ -181,6 +182,23 @@ def do_compile(raw_dir: Path, build_dir: Path,
 
     missing = link_chunks(assemblers)
     resolver.write_manifest()
+
+    # Ren'Py's `default` values (definitions.rpy), for every variable that
+    # actually got a slot -- see load_variable_defaults()'s docstring for
+    # why this can't just be done inside the Compiler as files compile
+    # (definitions.rpyc is never one of the compiled files). Resolved here,
+    # not left as raw text, so a string default is interned through this
+    # same Compiler instance and lands in the one DVSTR pool everything
+    # else's interned strings share -- calling compiler._intern() after
+    # compilation is done still assigns a fresh id if this default is the
+    # first thing to use that particular string.
+    raw_defaults = load_variable_defaults(raw_dir)
+    compiler.var_defaults = {}
+    for name, slot in compiler.variables.items():
+        if name not in raw_defaults:
+            continue
+        value = raw_defaults[name]
+        compiler.var_defaults[slot] = compiler._intern(value) if isinstance(value, str) else value
 
     total_code = sum(len(a.code) for a in assemblers)
     total_strings = sum(len(a.strings) for a in assemblers)
@@ -366,7 +384,8 @@ def do_poem_words(raw_dir: Path) -> bytes | None:
 
 
 def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
-               chunk_paths: list[Path], entry_chunk: int, entry_offset: int) -> list[Path]:
+               chunk_paths: list[Path], entry_chunk: int, entry_offset: int,
+               compiler: Compiler) -> list[Path]:
     step("package AppVars (convbin)")
     require("convbin", 'export PATH="$HOME/CEdev/bin:$PATH"')
     gfx_dir = build_dir / "gfx"
@@ -385,6 +404,32 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
     # that (see docs/FORMAT.md's "Chunking").
     appvars.append(write_appvar(struct.pack("<I", (entry_chunk << 16) | entry_offset),
                                 "DENTRY", appvar_dir))
+
+    # The interned string pool (compile_script.py's VN_STR_BASE). Ships
+    # separately from the per-chunk dialogue strings, and not inside any
+    # chunk, because a variable set in one chunk is read in another: a name
+    # assigned by script.rpyc has to still render three chunks later. Tiny --
+    # 37 strings, under a kilobyte for the whole game -- so it stays resident
+    # rather than being swapped like a chunk.
+    #
+    # Same container layout as a chunk's string pool (see vnasm.Assembler's
+    # to_bytes): u16 count, then per string a u16 byte length, the UTF-8
+    # bytes, and a trailing NUL so src/assets.c can hand out a `const char *`
+    # pointing straight into the archived AppVar.
+    pool = bytearray(struct.pack("<H", len(compiler.var_strings)))
+    for text in compiler.var_strings:                 # insertion order == id order
+        encoded = text.encode("utf-8")
+        pool += struct.pack("<H", len(encoded)) + encoded + b"\x00"
+    appvars.append(write_appvar(bytes(pool), "DVSTR", appvar_dir))
+
+    # Ren'Py's `default` values, applied to a fresh vars[] before a New
+    # Game/Continue starts (see src/main.c's assets_apply_var_defaults()) --
+    # u16 count, then per entry u8 slot + i16 value. Small and fixed
+    # (32 entries today), so like DVSTR it isn't per-chunk.
+    defaults = bytearray(struct.pack("<H", len(compiler.var_defaults)))
+    for slot, value in sorted(compiler.var_defaults.items()):
+        defaults += struct.pack("<Bh", slot, value)
+    appvars.append(write_appvar(bytes(defaults), "DVDEF", appvar_dir))
 
     poem_words = do_poem_words(raw_dir)
     if poem_words is not None:
@@ -540,7 +585,7 @@ def main() -> int:
         do_convert_images(args.build_dir, args.quality, args.skip_convimg)
         manifest = json.loads((args.build_dir / "manifest.json").read_text())
         appvars = do_package(args.build_dir, args.appvar_dir, args.raw_dir, manifest,
-                             chunk_paths, entry_chunk, entry_offset)
+                             chunk_paths, entry_chunk, entry_offset, compiler)
         do_bundle(args.prog, appvars, args.out, args.archive_budget)
     except CompileError as e:
         sys.exit(f"compile error: {e}")

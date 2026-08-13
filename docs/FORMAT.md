@@ -140,14 +140,60 @@ characters in the dialogue box.
 
 | Limit | Value | Notes |
 |---|---|---|
-| `VN_MAX_VARS` | 64 | Out-of-range access halts with `VN_ERR_BOUNDS` |
+| `VN_MAX_VARS` | 256 | The format ceiling -- every opcode encodes a variable as `u8` |
 | `VN_CALL_DEPTH` | 8 | Overflow halts with `VN_ERR_STACK` |
 | `VN_MAX_CHOICES` | 6 | Extra options are parsed but not offered, keeping `pc` valid |
 | `VN_MAX_CHARS` | 4 | A fifth simultaneous `SHOW` replaces the last slot |
 | `TEXT_MAX_LINES` | 4 | The compiler must split longer lines into separate `OP_SAY`s |
 
-Every operand read is bounds-checked. A truncated or corrupt chunk stops the VM
-with `VN_ERR_BOUNDS` rather than reading past the buffer.
+Every operand read is bounds-checked by construction now, not by a runtime
+guard: with `VN_MAX_VARS` at the `u8` operand's own ceiling, every possible
+slot index is valid, so the opcodes that index `vars[]` (`OP_SET`/`OP_ADD`/
+`OP_IF`/`OP_MINIGAME`) do so unchecked -- a `_Static_assert` in `vn.c` fails
+the build if `VN_MAX_VARS` is ever lowered back under 256, since that would
+silently reopen an out-of-bounds index. A truncated or corrupt chunk still
+stops the VM with `VN_ERR_BOUNDS` everywhere else an operand needs range
+validation (jump targets, string indices).
+
+### Story variables: numbers and interned strings
+
+`vars[]` holds `int16_t` and nothing else -- there is no runtime string type.
+DDLC's own scripts frequently assign a **string** to a story variable
+(`nextscene = "sayori_end"`, `s_name = "???"`) and later compare it for
+equality (`if ch2_winner == "Natsuki":`). Since the value is only ever
+compared, never concatenated or measured, an integer serves exactly as well
+as the string it stands for -- so `tools/compile_script.py` interns every
+distinct string literal assigned to or compared against a variable, at
+compile time, into an integer at or above `VN_STR_BASE` (16384). `OP_SET`/
+`OP_IF` then work on it exactly like any numeric variable; no VM change was
+needed.
+
+The pool of interned strings ships once, in `DVSTR` (not per-chunk, unlike
+dialogue text): `u16 count`, then per string `u16 byte_length`, the UTF-8
+bytes, and a trailing NUL, same layout as a chunk's own string pool. It is
+small (32 strings across the full game, 528 bytes) and loaded once at
+startup rather than swapped with the resident chunk, since a value set in
+one chunk is routinely read back several chunks later -- `src/assets.c`'s
+`assets_var_string(value)` resolves an `i16` back to its text, returning
+`NULL` for an ordinary number (`value < VN_STR_BASE`).
+
+Ids start at 16384 rather than 0 so a string-valued variable's value can
+never collide with the small integers a numeric variable holds -- nothing in
+the game compares one variable against both kinds, so this is redundant
+safety, but it also makes a wrong value obvious on sight in a trace (a
+`vars[]` dump) instead of looking like a plausible counter.
+
+Four variable slots are reserved before anything else can claim one:
+`s_name`/`n_name`/`y_name`/`m_name` get slots `0..3`, in the same order as
+`TAG_TO_CHAR`'s character ids (`Compiler.NAME_VARS`, applied in
+`__post_init__`). That makes a character's id *also* the slot holding her
+currently displayed name (`VN_NAME_VAR(ch)` in `vn.h`), so
+`src/main.c`'s `speaker_display_name()` can render the dialogue box's name
+plate straight from `vars[VN_NAME_VAR(speaker)]` with nothing shipped to map
+between them. This is what makes "???" work: DDLC's own script sets these
+variables to `"???"` before a character's introduction and to her real name
+at the moment she gives it, so the plate is driven by story state instead of
+a fixed table naming every character from her first line.
 
 ## Chunking
 
@@ -252,6 +298,7 @@ matched by `src/assets.c`:
 |---|---|
 | `DSCR0`, `DSCR1`, … | One chunk container (above) per compiled file, whole — every chunk measured so far fits one AppVar; see "Chunking" |
 | `DENTRY` | Packed `(chunk_id << 16) \| offset` for `label start` — see "Chunking" |
+| `DVSTR` | The interned variable-string pool, `u16 count` + per-string `u16 len` + UTF-8 bytes + NUL — see "Story variables: numbers and interned strings" |
 | `DPOEM` | The poem minigame's word bank — see "Poem minigame" |
 | `DSPR0`, `DSPR1`, … | Sprite bytes, greedily packed so no sprite's bytes ever straddle an AppVar boundary |
 | `DSPRLUT` | Lookup table: which `DSPRn` holds sprite id *i*, and where |

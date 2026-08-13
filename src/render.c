@@ -656,22 +656,15 @@ void render_scene_lazy(const vn_scene_t *scene)
      * on the next frame in that case. */
 }
 
-/* Character ids are fixed (compile_script.py's TAG_TO_CHAR), not part of
- * the imported data, so display names are a plain lookup table rather than
- * something assets.c needs to load. */
-static const char *speaker_name(uint8_t speaker)
+void render_box(const vn_scene_t *scene, const char *speaker,
+                const char *text, size_t visible)
 {
-    static const char *const names[] = { "Sayori", "Natsuki", "Yuri", "Monika" };
+    /* Kept in the signature although nothing reads it yet: the box is about
+     * to grow scene-dependent behaviour (`window hide` suppressing it
+     * entirely, and Act 3's alternate textbox art), and threading the scene
+     * back through five call sites then is worse than carrying it now. */
+    (void)scene;
 
-    if (speaker == VN_SPEAKER_NONE ||
-        speaker >= sizeof(names) / sizeof(names[0])) {
-        return NULL;
-    }
-    return names[speaker];
-}
-
-void render_box(const vn_scene_t *scene, const char *text, size_t visible)
-{
     const int pad = 6;
 
     gfx_SetColor(COL_BOX_FILL);
@@ -681,10 +674,9 @@ void render_box(const vn_scene_t *scene, const char *text, size_t visible)
 
     int y = BOX_Y + 4;
 
-    const char *name = speaker_name(scene->speaker);
-    if (name != NULL) {
+    if (speaker != NULL) {
         gfx_SetTextFGColor(COL_NAME);
-        gfx_PrintStringXY(name, pad, y);
+        gfx_PrintStringXY(speaker, pad, y);
         y += 11;
     }
 

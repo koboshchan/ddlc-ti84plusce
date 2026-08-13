@@ -97,11 +97,38 @@ enum vn_trans { TRANS_CUT = 0, TRANS_FADE = 1 };
  * about to start failing builds. Costs 512 bytes of RAM in vn_vm_t and the
  * same again in a save. */
 #define VN_MAX_VARS     256
+
+/* Where interned string ids begin. The VM's variables are int16 and hold no
+ * strings, but DDLC only ever assigns a string and later compares it for
+ * equality -- which an integer does perfectly well if each distinct string
+ * gets a distinct one. tools/compile_script.py interns them at compile time
+ * and ships the pool as DVSTR; assets_var_string() resolves a value back to
+ * its text for the one place that needs the characters themselves, the name
+ * plate.
+ *
+ * Ids start here rather than at 0 so a string-valued variable never collides
+ * with the small integers the numeric variables hold. Nothing in the game
+ * compares one variable against both kinds, so this is belt and braces -- it
+ * also makes a wrong value obvious in a trace instead of looking like a
+ * plausible counter. */
+#define VN_STR_BASE   16384
+
+/* The variable slot holding character @p ch's displayed name. The four name
+ * variables (s_name/n_name/y_name/m_name) are reserved slots 0..3 in
+ * character-id order by tools/compile_script.py's Compiler.NAME_VARS, so a
+ * character's id *is* the slot -- no table needs shipping to map between
+ * them. A contract with the compiler, like the character ids themselves. */
+#define VN_NAME_VAR(ch)  (ch)
 #define VN_CALL_DEPTH    8    /* nesting depth for OP_CALL                    */
 #define VN_MAX_CHOICES   6    /* menu options the UI can display at once      */
 #define VN_MAX_CHARS     4    /* simultaneously shown characters              */
 
 #define VN_SPEAKER_NONE  0xFF   /* narration: no name plate                   */
+#define VN_SPEAKER_PLAYER 0xFE  /* the protagonist: plate shows the player's
+                                 * own entered name. Distinct from NONE --
+                                 * narration is the MC's inner voice and gets
+                                 * no plate, while a line he says aloud does,
+                                 * and DDLC writes them as different speakers */
 #define VN_NO_SPRITE     0xFF   /* "unset" sprite/background id               */
 #define VN_NO_OVERLAY    0xFFFF /* actor has no second (expression) layer     */
 
