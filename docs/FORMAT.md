@@ -1069,45 +1069,85 @@ walks the real body at all. Kept: the real `bg/notebook.png` background
 (`explicit_bg_scene()`, always scene id 1 -- see "Startup sequence") and
 the "N/20" progress counter DDLC also shows.
 
-**`poemwinner[N]`/`*_poemappeal[N]` are real indexed variables, and DDLC's
-own script does read them downstream -- just not compilably yet.**
-Confirmed by decompiling `script-ch1.rpyc`/`script-ch2.rpyc`: right after
-each poem game, DDLC computes `nextscene = poemwinner[N] + "_exclusive_" +
-str(eval(poemwinner[N][0] + "_appeal"))` and dynamically calls it -- e.g.
-"sayori_exclusive_3" -- to play the winning character's own bonus scene,
-picked further by an appeal-score threshold. Two real gaps block this
-today, not one:
-- `poemwinner[N]` holds real DDLC's winner as a **string** tag name
-  (`"sayori"`); this engine's `OP_MINIGAME` stores the numeric `TAG_TO_CHAR`
-  id instead (0-3) -- there's no conversion back to the tag string yet.
-- `_dynamic_target_var()` only resolves a *bare identifier* holding a
-  previously-assigned label name (see "Support dynamic jump/call targets");
-  this is a two-piece *constructed* name (a converted winner id, plus an
-  appeal-threshold-bucketed suffix), a materially different, more general
-  pattern it doesn't attempt.
-Left unresolved, `Call expression nextscene` correctly degrades to
-`VN_FINISHED` (vn.h's documented fallback for an unresolvable dynamic
-target) rather than crashing -- which is *why* every `--files=act1` replay
-before this was found had been ending in the middle of Chapter 1 without
-any visible error. Tracked as its own task (see the task list): reaching
-it needs a winner-id-to-tag-string table, appeal-bucket logic matching
-DDLC's real thresholds, and generalizing dynamic-call resolution for a
-two-piece constructed name -- plus compiling in the 5
-`script-exclusives*.rpyc` files, none of which are in `--files=act1` yet.
+**`poemwinner[N]`/`*_poemappeal[N]` are real indexed variables, read
+downstream by two real DDLC dispatch idioms, both implemented as
+compile-time enumerable dispatches rather than runtime string
+construction** (this VM's variables are flat int16 slots -- there's no way
+to hold `"sayori"` distinctly from the number 0, so building a name at
+runtime the way DDLC's own script does was never an option here):
 
-**A real, session-wide verification gap, found and fixed alongside this:**
-`tools/host_sim`'s `--pc=` was being hand-picked once early in this
-project and never revisited. It happened to land inside `script-ch0`'s own
-chunk rather than through `label start`'s real dispatch, and stayed
-numerically "valid" (a real address, not out of bounds) as more files were
-added over many sessions -- so replaying it kept reporting the same
-line count and "finished cleanly" without ever actually exercising `label
-start`, the poem-minigame chapter dispatch, or anything past `ch0_main`.
-The exclusive-route gap above was only found by switching to the real
-entry point. `host_sim` now has `--dentry=path` (reads a real
-DENTRY/DSPLASH-format packed address instead of a hand-picked number) --
-prefer it over a hand-picked `--pc=` for "does the real game play
-through" checks going forward.
+- **The poem-winner exclusive scene.** Right after each poem game, DDLC
+  computes `nextscene = poemwinner[N] + "_exclusive_" +
+  str(eval(poemwinner[N][0] + "_appeal"))` and dynamically calls it -- e.g.
+  `"sayori_exclusive_1"` -- to play the winning character's own bonus
+  scene. `compile_script.py`'s `_match_poemwinner_dispatch()` recognizes
+  this AST shape at the `nextscene = ...` Assign and defers it (in
+  `Compiler._pending_dispatch`, keyed by variable name) until the paired
+  dynamic `Call` is reached; `_emit_poemwinner_dispatch()` then emits a
+  3-way (character) x 3-way (win count, 1..3 -- DDLC never authored more)
+  `OP_IF` chain straight to the real target label. The win count itself
+  (`s_appeal`/`n_appeal`/`y_appeal`) is DDLC's own `exec(poemwinner[chapter]
+  [0] + "_appeal += 1")`, which lives inside `label poem:`'s real body --
+  unreachable by construction, same as the Monika's-eyes/reaction logic
+  above -- so `_emit_Call`'s "poem" inline case replicates the increment
+  right where `OP_MINIGAME` runs (the same "just won" event, not an
+  approximation). A (character, count) combination DDLC never authored a
+  label for (there's no `"_exclusive_3"` for every character) falls
+  through to the existing "call to a label outside the compiled set"
+  stub, the same safe degrade any other unresolvable target already gets.
+  Needs the 5 `script-exclusives*.rpyc` files in `--files` (now default
+  in `act1`).
+
+- **The per-chapter poem-opinion reaction.** `script-poemresponses.rpyc`
+  computes an opinion (`"bad"`/`"med"`/`"good"`, from comparing
+  `s_poemappeal[chapter - 1]` etc against 0) then dynamically calls
+  `"ch" + pt + str(chapter) + "_s_" + poemopinion` (or `"..._s_end"` for a
+  follow-up with no opinion). The real target labels (`ch1_s_good`,
+  `ch2_n_bad`, ...) already exist as ordinary labels in the same file --
+  no inlining needed here, unlike `label poem:`. The one new capability
+  needed: `s_poemappeal[chapter - 1]` is a **runtime-indexed** read
+  (`chapter` is an ordinary 1..3-valued variable, not a compile-time
+  literal) -- the first case in this compiler where an indexed variable's
+  index isn't known at compile time. `_chapter_indexed_base()` recognizes
+  `BASE[chapter - 1]` as a condition leaf (alongside the existing
+  `renpy.random.randint()` leaf case) and `_emit_chapter_condition()`
+  dispatches on `chapter`'s real runtime value to compare whichever of the
+  3 pre-allocated per-chapter slots it selects. `_match_chapter_dispatch()`/
+  `_emit_chapter_opinion_dispatch()` mirror the exclusive-scene dispatch's
+  own approach for the `nextscene` construction: a 3-way (chapter) x 3-way
+  (opinion) compile-time dispatch straight to the real label. `pt` (an
+  unidentified variable in the constructed name) is dropped entirely, same
+  reasoning as the winner's own tag name -- this compiler never builds the
+  string, so `pt`'s own meaning doesn't matter here.
+
+**A real, session-wide verification gap, found and fixed alongside this
+work:** `tools/host_sim`'s `--pc=` was being hand-picked once early in
+this project and never revisited. It happened to land inside
+`script-ch0`'s own chunk rather than through `label start`'s real
+dispatch, and stayed numerically "valid" (a real address, not out of
+bounds) as more files were added over many sessions -- so replaying it
+kept reporting the same line count and "finished cleanly" without ever
+actually exercising `label start`, the poem-minigame chapter dispatch, or
+anything past `ch0_main`. Both dispatch idioms above were only found (and
+verified fixed) by switching to the real entry point. `host_sim` now has
+`--dentry=path` (reads a real DENTRY/DSPLASH-format packed address
+instead of a hand-picked number) -- prefer it over a hand-picked `--pc=`
+for "does the real game play through" checks going forward.
+
+**Act 1, as currently scoped, now plays start to finish.** With both
+dispatch idioms implemented and `script-ch5.rpyc` (Act 1's real ending) in
+`--files=act1`, a full `label start`-driven replay (seed 1, every choice
+defaulting to option 0) reaches `endgame`'s own closing Scene+Show and
+returns cleanly all the way out (`VN_FINISHED` via a real empty-call-stack
+`Return`, not a missing-label stub) -- 3,376 lines, 16 real menus
+navigated, confirmed via `--trace` showing `endgame`'s scene changes
+running immediately before the finish. The natural next content frontier
+is a *second* playthrough: `persistent.playthrough` is 1 after finishing
+once (set for real by `ch5_main`), and `label start`'s own dispatch takes
+a different branch on the next launch (`Call ch10_main`, whose own body
+`Jump`s to `ch20_from_ch10` -- both already real, compiled labels in
+`--files=act1`) -- not yet verified end-to-end by an actual second
+playthrough.
 
 ## Parameterized label calls
 

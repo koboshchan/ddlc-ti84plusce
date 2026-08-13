@@ -107,7 +107,7 @@ ARCHIVE_BUDGET = 2_900_000  # ~2.9MB real hardware archive capacity, confirmed
 # oversight: a build under THIS limit can still fail to actually fit or
 # run on-device. If save writes start failing once archive fills up,
 # lower this back toward (or below) ARCHIVE_BUDGET.
-ARCHIVE_LIMIT = 2_999_000
+ARCHIVE_LIMIT = 2_970_000
 
 MAXVARSIZE = 65000  # safely under the 65535-byte TI variable cap; also the
                      # real per-chunk ceiling now, since each chunk ships as
