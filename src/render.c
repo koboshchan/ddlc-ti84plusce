@@ -15,6 +15,11 @@
 #include <string.h>
 #include <time.h>
 
+/* Seeded by render_init(), used by the tear effect section further down --
+ * forward-declared here since render_init() runs before that section's own
+ * declaration would otherwise be visible. */
+static uint32_t tear_rng_state;
+
 void render_init(void)
 {
     /* No gfx_SetDefaultPalette() here: assets_init() already loaded the
@@ -31,6 +36,13 @@ void render_init(void)
      * gfx_TransparentSprite()-style call), but set here once anyway to keep
      * this convention fixed and documented in one place. */
     gfx_SetTransparentColor(COL_TRANSPARENT);
+
+    /* Seeds the tear effect's own PRNG -- see its section below for why
+     * this doesn't share vn.c's OP_RANDOM state. 0 remapped to a fixed
+     * nonzero fallback for the same reason vn_init() does: xorshift32
+     * can't recover from an all-zero state. */
+    uint32_t seed = (uint32_t)clock();
+    tear_rng_state = seed ? seed : 0x9E3779B9u;
 }
 
 void render_end(void)
@@ -503,6 +515,123 @@ static bool plate_capture(const vn_actor_t *a, int slot)
 }
 
 /* ---------------------------------------------------------------------------
+ * The tear glitch overlay (OP_TEAR_SHOW/OP_TEAR_HIDE)
+ *
+ * DDLC's real `tear` is a custom Python Displayable class (effects.rpy),
+ * not preserved in any compiled .rpyc this engine reads -- there is no
+ * exact pixel algorithm to recover, only the effect's name, its parameters
+ * (a chunk count and a displacement range, timed by two multipliers), and
+ * what "screen tearing" looks like as a genre convention. What follows is a
+ * faithful reinterpretation on those terms, not a decompilation: the scene
+ * area splits into horizontal bands, and each band independently redraws at
+ * a fresh random horizontal offset every so often, wrapping at the screen
+ * edges -- see tools/compile_script.py's _parse_tear_call() for how the
+ * source call's arguments map onto this.
+ * ------------------------------------------------------------------------ */
+
+#define TEAR_MAX_CHUNKS 64  /* generous headroom over every real call site
+                             * (8 or 20 chunks) -- a chunk count above this
+                             * clamps rather than overflowing tear_offset[]. */
+
+/* Independent of vn.c's OP_RANDOM state (vn_vm_t.rng_state) on purpose:
+ * this drives a cosmetic screen effect with no bearing on story branching,
+ * so it doesn't need to be part of the deterministic, host_sim-replayable
+ * VM state the way a real gameplay draw does. Same xorshift32 construction
+ * as vn.c's, seeded once at render_init() (tear_rng_state itself is
+ * declared up near the includes -- render_init() runs before this section
+ * would otherwise make it visible). */
+static uint32_t tear_rand_next(void)
+{
+    uint32_t x = tear_rng_state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    tear_rng_state = x;
+    return x;
+}
+
+static int16_t   tear_offset[TEAR_MAX_CHUNKS];
+static unsigned  tear_reroll_at[TEAR_MAX_CHUNKS];
+static bool      tear_was_on;
+
+/* Applies the current tear state to the draw buffer's scene rows -- called
+ * from render_scene() after the ordinary background+actor draw, so a
+ * displaced band shows the just-drawn frame shifted, not stale content.
+ * Every band re-rolls independently, so the bands drift out of sync with
+ * each other over time, which reads as a genuine glitch rather than the
+ * whole scene sliding as one piece. */
+static void apply_tear(const vn_scene_t *scene, unsigned t)
+{
+    if (!scene->tear_on) {
+        tear_was_on = false;
+        return;
+    }
+
+    uint8_t chunks = scene->tear_chunks;
+    if (chunks == 0) {
+        return;
+    }
+    if (chunks > TEAR_MAX_CHUNKS) {
+        chunks = TEAR_MAX_CHUNKS;
+    }
+
+    /* A band re-rolling the instant the effect turns on (rather than
+     * waiting out whatever stale reroll time an earlier, unrelated glitch
+     * left behind) is what makes it read as "just started" rather than
+     * picking up mid-flicker from nothing. */
+    if (!tear_was_on) {
+        for (uint8_t i = 0; i < chunks; i++) {
+            tear_reroll_at[i] = t;
+        }
+        tear_was_on = true;
+    }
+
+    int16_t span = scene->tear_offset_max - scene->tear_offset_min;
+    int     rows_per_chunk = (SCENE_H + chunks - 1) / chunks;
+
+    for (uint8_t i = 0; i < chunks; i++) {
+        if (t >= tear_reroll_at[i]) {
+            /* Magnitude uniform in [offset_min, offset_max], sign random --
+             * DDLC's own call sites always pass offset_min=0, so without
+             * randomizing the sign too every band would drift the same one
+             * direction, reading as a slide rather than a tear. */
+            int16_t mag = (span > 0)
+                        ? (int16_t)(scene->tear_offset_min + (int16_t)(tear_rand_next() % (uint32_t)(span + 1)))
+                        : scene->tear_offset_min;
+            tear_offset[i] = (tear_rand_next() & 1) ? mag : (int16_t)-mag;
+            tear_reroll_at[i] = t + scene->tear_period_ms;
+        }
+
+        int16_t off = tear_offset[i];
+        if (off == 0) {
+            continue;
+        }
+        /* off > 0 wraps a copy of the row from the left back in on the
+         * right (and vice versa) rather than leaving a blank edge -- an
+         * exposed solid-color strip would read as a rendering bug, not
+         * part of the effect. */
+        int y0 = i * rows_per_chunk;
+        int y1 = y0 + rows_per_chunk;
+        if (y1 > SCENE_H) {
+            y1 = SCENE_H;
+        }
+        for (int y = y0; y < y1; y++) {
+            uint8_t *row = (uint8_t *)gfx_vbuffer + (size_t)y * SCREEN_W;
+            uint8_t  tmp[SCREEN_W];
+            memcpy(tmp, row, SCREEN_W);
+            for (int x = 0; x < SCREEN_W; x++) {
+                int sx = x - off;
+                sx %= SCREEN_W;
+                if (sx < 0) {
+                    sx += SCREEN_W;
+                }
+                row[x] = tmp[sx];
+            }
+        }
+    }
+}
+
+/* ---------------------------------------------------------------------------
  * Public drawing
  * ------------------------------------------------------------------------ */
 
@@ -577,6 +706,17 @@ void render_scene(const vn_scene_t *scene)
 
     mover_slot  = (movers == 1) ? first_mover : -1;
     plate_valid = captured && movers == 1 && first_mover == capture_at;
+
+    apply_tear(scene, t);
+    if (scene->tear_on) {
+        /* Never settles while shown -- every band keeps re-rolling, so a
+         * frame is never "the same as last time" the way idle actors are.
+         * Also disqualifies the plate: apply_tear() touches rows across
+         * the whole scene area, not one actor's rectangle, so the plate's
+         * single-rectangle repair can't reconstruct it. */
+        anim_moving = true;
+        plate_valid = false;
+    }
 
     scene_settled   = !anim_moving;
     have_drawn_once = true;

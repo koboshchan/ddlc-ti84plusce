@@ -84,6 +84,23 @@ enum vn_op {
                           * this port before this opcode existed at all
                           * (see git history), not a default this engine
                           * would take on its own. */
+    OP_TEAR_SHOW = 0x14, /* chunks:u8 offset_min:i16 offset_max:i16
+                          * period_ms:u16 -- compiles `show screen
+                          * tear(...)`, Act 2's signature glitch: the
+                          * scene area splits into `chunks` horizontal
+                          * bands, each re-rolling a random horizontal
+                          * displacement in [offset_min, offset_max] every
+                          * period_ms while shown. `tear`'s real
+                          * implementation is a custom Python Displayable
+                          * class (effects.rpy) not preserved in any
+                          * compiled .rpyc this engine reads, so this is a
+                          * faithful reinterpretation from the effect's
+                          * name/parameters/genre convention -- not a
+                          * decompilation of its exact original pixel
+                          * algorithm, which isn't recoverable here. See
+                          * render.c's tear rendering and
+                          * docs/FORMAT.md's write-up.                   */
+    OP_TEAR_HIDE = 0x15, /* -- `hide screen tear`.                       */
 };
 
 /** Comparison selectors for OP_IF. */
@@ -220,6 +237,17 @@ typedef struct {
                                           * into this run's malloc'd DSCRIPT
                                           * copy, unsafe to persist across a
                                           * restart (see save.h)             */
+
+    /* The tear glitch overlay (OP_TEAR_SHOW/OP_TEAR_HIDE) -- see render.c.
+     * Purely a rendering instruction, not story state a save needs to
+     * capture exactly (a loaded save resuming with the tear off, even if
+     * it was mid-glitch when saved, is imperceptible -- the beat this
+     * plays under isn't one that offers a save point anyway). */
+    bool     tear_on;
+    uint8_t  tear_chunks;
+    int16_t  tear_offset_min;
+    int16_t  tear_offset_max;
+    uint16_t tear_period_ms;
 } vn_scene_t;
 
 /**

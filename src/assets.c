@@ -371,13 +371,14 @@ void assets_apply_var_defaults(vn_vm_t *vm)
     if (count > max_count) {
         count = max_count;
     }
+    /* No `slot < VN_MAX_VARS` guard: slot is a uint8_t and VN_MAX_VARS is
+     * 256, the full range that type can hold -- see vn.c's _Static_assert,
+     * the same invariant src/persist.c also leans on. */
     for (uint16_t i = 0; i < count; i++) {
         uint8_t slot  = p[0];
         int16_t value = (int16_t)read_u16le(p + 1);
         p += 3;
-        if (slot < VN_MAX_VARS) {
-            vm->vars[slot] = value;
-        }
+        vm->vars[slot] = value;
     }
 }
 

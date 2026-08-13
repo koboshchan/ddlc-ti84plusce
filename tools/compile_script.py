@@ -645,9 +645,18 @@ class Compiler:
     def _emit_UserStatement(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)
         line = node.line if isinstance(node.line, str) else ""
-        if line.strip().startswith(_AUDIO_PREFIXES):
+        stripped = line.strip()
+        if stripped.startswith(_AUDIO_PREFIXES):
             self.asm.sound(0)
             return
+        if stripped == "hide screen tear":
+            self.asm.tear_hide()
+            return
+        if stripped.startswith("show screen tear("):
+            call = _parse_tear_call(stripped)
+            if call is not None:
+                self.asm.tear_show(*call)
+                return
         self._skip(node, fname, f"unsupported statement: {line!r}")
         self.asm.nop()
 
@@ -1101,6 +1110,69 @@ def _randint_call(node) -> tuple[int, int] | None:
         lo, hi = _const_int(node.args[0]), _const_int(node.args[1])
         return (lo, hi) if lo is not None and hi is not None else None
     return None
+
+
+# Real defaults for the `tear` screen's parameters (effects.rpy's own
+# `screen tear(number=10, offtimeMult=1, ontimeMult=1, offsetMin=0,
+# offsetMax=50, srf=None)`), used by _parse_tear_call() below for whichever
+# ones a given call site leaves unspecified.
+_TEAR_DEFAULTS = {"number": 10, "offtimeMult": 1, "ontimeMult": 1,
+                  "offsetMin": 0, "offsetMax": 50}
+_TEAR_PARAM_ORDER = ("number", "offtimeMult", "ontimeMult", "offsetMin", "offsetMax")
+
+# The `tear` displayable itself is a custom Python class (effects.rpy), not
+# preserved in any compiled .rpyc this pipeline reads -- there is no exact
+# pixel algorithm to recover here. offtimeMult/ontimeMult scale some base
+# on/off cadence this compiler has no access to either; folding both into
+# one re-roll period (how often a displaced band picks a fresh offset) is a
+# faithful reinterpretation of "the glitch flickers faster/slower", not a
+# claim of matching the original frame-for-frame. TEAR_BASE_MS is the unit
+# that scaling is read against.
+TEAR_BASE_MS = 50
+
+
+def _parse_tear_call(stmt: str) -> tuple[int, int, int, int] | None:
+    """(chunks, offset_min, offset_max, period_ms) for a `show screen
+    tear(...)` statement's exact source text, or None if its arguments
+    aren't literal constants. @p stmt still has its `show screen ` prefix;
+    only the `tear(...)` call itself is parsed."""
+    call_src = stmt[len("show screen "):]
+    try:
+        node = ast.parse(call_src, mode="eval").body
+    except SyntaxError:
+        return None
+    if not isinstance(node, ast.Call):
+        return None
+
+    # _pure_number(), not _const_scalar(): tear's offtimeMult/ontimeMult are
+    # genuinely arbitrary floats (0.1, 0.3, ...), not values meant to live in
+    # a story variable -- _const_scalar()'s half-integer restriction (built
+    # for `ac += 0.5`, see its docstring) doesn't apply to a value that's
+    # consumed immediately at compile time and never stored, same reasoning
+    # as pause()'s own duration parsing.
+    values = dict(_TEAR_DEFAULTS)
+    for name, arg in zip(_TEAR_PARAM_ORDER, node.args):
+        v = _pure_number(arg)
+        if v is None:
+            return None
+        values[name] = v
+    for kw in node.keywords:
+        if kw.arg not in _TEAR_DEFAULTS:
+            continue   # `srf`, or anything else -- irrelevant to a
+                       # parameter-based reinterpretation, not an error
+        v = _pure_number(kw.value)
+        if v is None:
+            return None
+        values[kw.arg] = v
+
+    chunks = int(values["number"])
+    if not (0 < chunks <= 255):
+        return None
+    offset_min = round(values["offsetMin"])
+    offset_max = round(values["offsetMax"])
+    period_ms = round(max(values["offtimeMult"], values["ontimeMult"]) * TEAR_BASE_MS)
+    period_ms = max(1, min(period_ms, 65535))
+    return chunks, offset_min, offset_max, period_ms
 
 
 def _is_music_get_playing_call(node) -> bool:

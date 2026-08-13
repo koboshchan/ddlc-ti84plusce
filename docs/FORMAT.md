@@ -632,6 +632,53 @@ via `assets_scene_palette()` and applies it differently depending on `trans`:
   up. Sandwiching the retarget inside the black hold instead means the
   palette and the pixel data change together, both hidden.
 
+## The tear glitch effect
+
+DDLC's own `show screen tear(...)`/`hide screen tear` is Act 2's signature
+visual: real DDLC implements `tear` as a custom Python `Displayable` class
+(`effects.rpy`), not as ATL or a compiled screen body, so unlike everything
+else this pipeline reads out of a `.rpyc`, its exact pixel algorithm is
+**not recoverable** from the compiled game -- there is no bytecode for it to
+decompile. `OP_TEAR_SHOW`/`OP_TEAR_HIDE` (`0x14`/`0x15`) and `render.c`'s
+`apply_tear()` are a faithful reinterpretation from the effect's name, its
+five parameters, and what "screen tearing" means as a genre convention --
+not a claim of matching the original frame-for-frame.
+
+`tools/compile_script.py`'s `_parse_tear_call()` reads the real call's
+arguments (`show screen tear(20, 0.1, 0.1, 0, 40)`, defaults from the real
+`screen tear(number=10, offtimeMult=1, ontimeMult=1, offsetMin=0,
+offsetMax=50, srf=None)`) and emits `OP_TEAR_SHOW(chunks, offset_min,
+offset_max, period_ms)`. `offtimeMult`/`ontimeMult` scale some on/off
+cadence this engine has no access to; folding both into one re-roll period
+(`max(offtimeMult, ontimeMult) * TEAR_BASE_MS`) is a reinterpretation of
+"the glitch flickers faster or slower", not a precision claim.
+
+At render time, the scene area splits into `chunks` horizontal bands. Each
+band independently re-rolls a random horizontal displacement (magnitude
+uniform in `[offset_min, offset_max]`, sign random -- every real call site
+passes `offsetMin=0`, so randomizing sign too is what keeps the bands from
+all drifting one direction, which would read as a slide rather than a
+tear) every `period_ms`, applied by shifting each row in the band with
+wraparound at the screen edges rather than exposing a blank strip. Bands
+drift out of sync with each other over time, which is what makes it read
+as a glitch rather than the whole scene sliding as one piece.
+
+The effect never lets `render_scene_lazy()` settle while shown (every band
+keeps re-rolling, so no frame is ever identical to the last) and
+disqualifies the moving-actor plate for the same frame (`apply_tear()`
+touches rows across the whole scene area, not one actor's rectangle, so the
+plate's single-rectangle repair can't reconstruct it) -- both handled in
+`render_scene()` right after the ordinary actor draw.
+
+Two Act 2 images -- Natsuki's "realistic mouth" and her `ghost4` variant --
+turned out, on closer inspection, to be genuine ATL *animations* rather
+than static composites (confirmed by decompiling their actual `image`
+definitions), and stayed out of scope here: this engine bakes one flat PNG
+per sprite, with no path to feed an animation into that. `ShowLayer`
+(whole-scene zoom/rotate/pan, a *different* mechanism from `tear` bundled
+into the same original task) is tracked separately for the same reason --
+a materially different rendering problem, not a variant of this one.
+
 ## Save data
 
 Each `DSAVEn` is one fixed-layout `save_blob_t` (`src/save.c`), written with a

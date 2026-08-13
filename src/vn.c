@@ -493,6 +493,30 @@ bool vn_step(vn_vm_t *vm)
             break;
         }
 
+        case OP_TEAR_SHOW: {
+            uint8_t  chunks = read_u8(vm);
+            int16_t  lo     = read_i16(vm);
+            int16_t  hi     = read_i16(vm);
+            uint16_t period = read_u16(vm);
+            if (vm->status != VN_RUNNING) {
+                break;
+            }
+            vm->scene.tear_on         = true;
+            vm->scene.tear_chunks     = chunks;
+            vm->scene.tear_offset_min = lo;
+            vm->scene.tear_offset_max = hi;
+            vm->scene.tear_period_ms  = period;
+            break;
+        }
+
+        case OP_TEAR_HIDE: {
+            if (vm->status != VN_RUNNING) {
+                break;
+            }
+            vm->scene.tear_on = false;
+            break;
+        }
+
         case OP_END:
             vm->status = VN_FINISHED;
             break;
