@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import vnasm
-from rpyc_ast import kind, load_rpyc, pycode_source
+from rpyc_ast import flatten, kind, load_rpyc, pycode_source
 
 # Speaker codes are stable across the whole game (renpy.ast.Define confirms
 # s/n/y/m = DynamicCharacter(image='sayori'|'natsuki'|'yuri'|'monika')).
@@ -172,6 +172,37 @@ def load_variable_defaults(raw_dir: Path) -> dict[str, int | str]:
     return defaults
 
 
+def load_label_params(raw_dir: Path, files: list[str]) -> dict[str, list[tuple[str, str]]]:
+    """Ren'Py label parameter declarations (`label showpoem(poem=None,
+    music=True, ...):`) across every file in this build's --files selection,
+    name -> [(param_name, default_source_text), ...] straight from the
+    decompiled ParameterInfo.
+
+    Scanned once, up front (import_game.py's do_compile(), before any file
+    actually compiles), the same reasoning as load_transform_animations()/
+    load_variable_defaults(): a call site is very often in a different,
+    earlier-compiled file than the label it targets (showpoem is called
+    from poemresponses.rpyc but declared in poems.rpyc), so _emit_Call
+    can't just remember whatever _emit_Label happened to see already --
+    the callee's parameter list has to be known regardless of compile
+    order. See Compiler.label_params/_emit_Call.
+    """
+    result: dict[str, list[tuple[str, str]]] = {}
+    for stem in files:
+        path = raw_dir / f"{stem}.rpyc"
+        if not path.is_file():
+            continue
+        _, top = load_rpyc(path)
+        for node in flatten(top):
+            if kind(node) != "Label" or not isinstance(node.name, str):
+                continue
+            info = getattr(node, "parameters", None)
+            params = getattr(info, "parameters", None) if info is not None else None
+            if params:
+                result[node.name] = list(params)
+    return result
+
+
 def _parse_default_value(src: str):
     """definitions.rpyc's Default.code carries the value expression's source
     text (e.g. `"Sayori"`, `0`, `None`) rather than a ready AST node --
@@ -259,6 +290,14 @@ class Compiler:
                                                              # tracking in
                                                              # _emit_python_stmt
     transform_animations: dict = field(default_factory=dict) # transform name -> (X, flags)
+    # Ren'Py label parameter declarations (`label X(a=1, b=2):`), name ->
+    # [(param_name, default_source), ...] -- see load_label_params() and
+    # _emit_Call. Populated up front (import_game.py's do_compile(), before
+    # any file actually compiles) rather than as each Label is walked,
+    # since a call site is very often in a different, earlier-compiled
+    # file than the label it targets (showpoem, called from
+    # poemresponses.rpyc but declared in poems.rpyc).
+    label_params: dict = field(default_factory=dict)
     skipped: list = field(default_factory=list)            # [SkipEntry]
     stats: dict = field(default_factory=dict)               # kind -> count
     _pending_scene: int | None = field(default=None, init=False)
@@ -823,7 +862,49 @@ class Compiler:
                              self._var_slot(f"n_poemappeal[{ch}]"),
                              self._var_slot(f"y_poemappeal[{ch}]"))
             return
+        params = self.label_params.get(node.label)
+        if params:
+            self._emit_call_args(node, params, fname)
         self.asm.call(node.label)
+
+    def _emit_call_args(self, node, params: list, fname: str) -> None:
+        """Binds a parameterized Call's arguments onto the callee's declared
+        slots before the real OP_CALL -- see Compiler.label_params.
+
+        This engine's variables are flat global slots, not a real per-call
+        stack frame, so every declared parameter is set on every call
+        (defaults included, not just the ones this call overrides) --
+        otherwise a parameter this call leaves at its default would read
+        whatever a PREVIOUS, different call happened to leave behind, since
+        nothing else resets it between calls.
+        """
+        info = getattr(node, "arguments", None)
+        args = list(info.arguments) if info is not None and info.arguments else []
+        positional_names = [name for name, _ in params]
+
+        bound: dict[str, str] = {}
+        pos_i = 0
+        for kw, val_src in args:
+            if kw is None:
+                if pos_i < len(positional_names):
+                    bound[positional_names[pos_i]] = val_src
+                pos_i += 1
+            else:
+                bound[kw] = val_src
+
+        for name, default_src in params:
+            src = bound.get(name, default_src)
+            expr = _parse_condition_expr(src)
+            value = self._const_operand(expr) if expr is not None else None
+            if value is None:
+                # Not a literal -- e.g. showpoem's `where=i11`, a transform
+                # name, not a constant this compiler can bind to a variable.
+                # Left at whatever the slot already holds rather than
+                # guessed; every other parameter on this same call still
+                # binds correctly.
+                self._skip(node, fname, f"call argument {name}={src!r} not a constant")
+                continue
+            self.asm.set(self._var_slot(name), value)
 
     def _emit_Return(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)
@@ -1223,6 +1304,14 @@ def _const_scalar(node):
         inner = _const_scalar(node.operand)
         return -inner if isinstance(inner, int) else None
     if isinstance(node, ast.Constant):
+        if node.value is None:
+            # Ren'Py label parameter defaults lean on this heavily
+            # (`label showpoem(poem=None, track=None, img=None, ...)`) --
+            # every VM variable is a plain int16 with no separate "unset"
+            # state, and 0 is already what one starts at (vn_init()'s
+            # memset), so this is the natural match, not a special case
+            # invented for this one caller.
+            return 0
         if isinstance(node.value, str):
             return node.value
         if isinstance(node.value, int):

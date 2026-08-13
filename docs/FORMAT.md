@@ -1069,16 +1069,75 @@ walks the real body at all. Kept: the real `bg/notebook.png` background
 (`explicit_bg_scene()`, always scene id 1 -- see "Startup sequence") and
 the "N/20" progress counter DDLC also shows.
 
-**`poemwinner[N]`/`*_poemappeal[N]` are real indexed variables, and they're
-write-only today.** Real DDLC's downstream reaction to the poem's winner
-(`exec(poemwinner[chapter][0] + "_appeal += 1")`) is Python-dict/`exec()`-
-driven -- already unreachable by this project's AST-structural compiler
-regardless of minigame support, the same category of gap as the `Menu`
-item-condition one below. These slots exist so compiled content *could*
-branch on them (`OP_IF` doesn't care where a variable's value came from),
-but nothing in the currently-translatable script does yet -- this is
-infrastructure for future hand-authored content, not a claim that DDLC's
-own poem-outcome branching is reproduced.
+**`poemwinner[N]`/`*_poemappeal[N]` are real indexed variables, and DDLC's
+own script does read them downstream -- just not compilably yet.**
+Confirmed by decompiling `script-ch1.rpyc`/`script-ch2.rpyc`: right after
+each poem game, DDLC computes `nextscene = poemwinner[N] + "_exclusive_" +
+str(eval(poemwinner[N][0] + "_appeal"))` and dynamically calls it -- e.g.
+"sayori_exclusive_3" -- to play the winning character's own bonus scene,
+picked further by an appeal-score threshold. Two real gaps block this
+today, not one:
+- `poemwinner[N]` holds real DDLC's winner as a **string** tag name
+  (`"sayori"`); this engine's `OP_MINIGAME` stores the numeric `TAG_TO_CHAR`
+  id instead (0-3) -- there's no conversion back to the tag string yet.
+- `_dynamic_target_var()` only resolves a *bare identifier* holding a
+  previously-assigned label name (see "Support dynamic jump/call targets");
+  this is a two-piece *constructed* name (a converted winner id, plus an
+  appeal-threshold-bucketed suffix), a materially different, more general
+  pattern it doesn't attempt.
+Left unresolved, `Call expression nextscene` correctly degrades to
+`VN_FINISHED` (vn.h's documented fallback for an unresolvable dynamic
+target) rather than crashing -- which is *why* every `--files=act1` replay
+before this was found had been ending in the middle of Chapter 1 without
+any visible error. Tracked as its own task (see the task list): reaching
+it needs a winner-id-to-tag-string table, appeal-bucket logic matching
+DDLC's real thresholds, and generalizing dynamic-call resolution for a
+two-piece constructed name -- plus compiling in the 5
+`script-exclusives*.rpyc` files, none of which are in `--files=act1` yet.
+
+**A real, session-wide verification gap, found and fixed alongside this:**
+`tools/host_sim`'s `--pc=` was being hand-picked once early in this
+project and never revisited. It happened to land inside `script-ch0`'s own
+chunk rather than through `label start`'s real dispatch, and stayed
+numerically "valid" (a real address, not out of bounds) as more files were
+added over many sessions -- so replaying it kept reporting the same
+line count and "finished cleanly" without ever actually exercising `label
+start`, the poem-minigame chapter dispatch, or anything past `ch0_main`.
+The exclusive-route gap above was only found by switching to the real
+entry point. `host_sim` now has `--dentry=path` (reads a real
+DENTRY/DSPLASH-format packed address instead of a hand-picked number) --
+prefer it over a hand-picked `--pc=` for "does the real game play
+through" checks going forward.
+
+## Parameterized label calls
+
+Ren'Py labels can declare parameters with defaults (`label showpoem(poem=None,
+music=True, track=None, revert_music=True, img=None, where=i11, paper=None):`),
+and a `call`/`jump` site can override any of them by position or keyword
+(`call showpoem(poem_y1, img="yuri 3t")`). This engine's variables are flat
+global slots, not a real per-call stack frame, so a parameter is just an
+ordinary variable named after it -- `Compiler.label_params` (populated by
+`load_label_params()`, scanned across every file in a build's `--files`
+selection *before* any file compiles, since a call site is very often in
+a different, earlier-compiled file than the label it targets --
+`showpoem` is called from `poemresponses.rpyc` but declared in
+`poems.rpyc`) records each parameterized label's real (name, default)
+list. `_emit_Call` binds **every** declared parameter on every call to
+that label, defaults included, not only the ones a given call overrides --
+otherwise a parameter this call leaves at its default would read whatever
+a *previous*, different call happened to leave behind, since nothing else
+resets it between calls.
+
+Only a literal (or Ren'Py's `None`, mapped to `0` -- every VM variable
+already starts there) binds; a name reference (`where=i11`, a transform
+name, not a constant) is left unresolved and skipped, same
+degrade-gracefully convention as everywhere else in this compiler. A
+label's own body still can't reconstruct a full **object** passed as an
+argument -- `showpoem`'s `poem` parameter is really one of DDLC's own
+hand-written `Poem(author=, title=, text=)` instances, not a scalar, and
+displaying its actual title/text is real content work, tracked separately
+(see the task list) -- but the parameter-binding mechanism itself is
+general and already covers every other parameterized call found so far.
 
 ## `If` conditions: compound `and`/`or`/`not` are supported; `Menu` item conditions are not
 

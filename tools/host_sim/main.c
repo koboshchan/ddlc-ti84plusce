@@ -24,6 +24,13 @@
  *               actual entry point (Ren'Py's `label start`) usually isn't at
  *               offset 0 either, since compile_script.py emits files in the
  *               order they were given, not by role.
+ *   --dentry=F  same as --pc, but reads the packed address from a real
+ *               DENTRY/DSPLASH-format AppVar file (4 bytes, little-endian)
+ *               instead of a hand-picked number -- prefer this for "does
+ *               the real game play through", since a hand-picked --pc can
+ *               stay numerically valid (and silently stop meaning `label
+ *               start`) as chunk layout shifts across builds. A --pc= later
+ *               on the same command line still overrides it.
  *   --choices=  comma-separated menu picks, e.g. --choices=0,1,2,3
  *   --trace     also print SCENE/SHOW/HIDE state changes
  *   --seed=N    OP_RANDOM's PRNG seed (default 1) -- fixed rather than
@@ -399,6 +406,35 @@ int main(int argc, char **argv)
             fclose(f);
         } else if (strncmp(argv[i], "--pc=", 5) == 0) {
             start_pc = (uint32_t)strtoul(argv[i] + 5, NULL, 0);
+        } else if (strncmp(argv[i], "--dentry=", 9) == 0) {
+            /* Reads a real DENTRY/DSPLASH-format AppVar (4 bytes, packed
+             * little-endian chunk_id<<16|offset -- see tools/import_game.py's
+             * do_package()) and starts execution there. Exists because
+             * hand-picking --pc directly is exactly what produced a real,
+             * session-wide verification gap: an early --pc value that
+             * happened to land inside script-ch0's own chunk (not through
+             * `label start`'s real dispatch) stayed numerically valid as
+             * more files were added to the build, so replaying it kept
+             * "succeeding" without ever actually exercising label start,
+             * the poem-minigame chapter dispatch, or anything past
+             * ch0_main. Preferring the real packed entry point removes
+             * that whole class of mistake -- a later --pc= on the same
+             * command line still overrides it, for deliberately testing
+             * some other address (an easter egg's own entry, etc). */
+            FILE *f = fopen(argv[i] + 9, "rb");
+            if (!f) {
+                fprintf(stderr, "can't open %s\n", argv[i] + 9);
+                return 2;
+            }
+            uint8_t buf[4];
+            bool ok = fread(buf, 1, 4, f) == 4;
+            fclose(f);
+            if (!ok) {
+                fprintf(stderr, "failed to read 4 bytes from %s\n", argv[i] + 9);
+                return 2;
+            }
+            start_pc = (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) |
+                      ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
         } else {
             fprintf(stderr, "unknown option: %s\n", argv[i]);
             return 2;

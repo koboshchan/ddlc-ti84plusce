@@ -43,7 +43,8 @@ import convert_images
 import extract
 import vnasm
 from compile_script import (VN_STR_BASE, CompileError, Compiler, link_chunks,
-                            load_transform_animations, load_variable_defaults)
+                            load_label_params, load_transform_animations,
+                            load_variable_defaults)
 from image_resolve import ImageResolver
 
 # Full Act 1 (ch0-ch4) plus the labels it calls into that live in other
@@ -55,8 +56,9 @@ from image_resolve import ImageResolver
 # the default is just `script,script-ch0` -- see the module docstring.
 ACT1_FILES = [
     "script-ch0", "script-ch1", "script-ch2", "script-ch3", "script-ch4",
-    "script-ch10", "script-ch20", "script-ch21", "script-ch22", "script-ch23",
-    "script-poemgame", "script-poemresponses", "script", "splash",
+    "script-ch5", "script-ch10", "script-ch20", "script-ch21", "script-ch22",
+    "script-ch23", "script-poemgame", "script-poemresponses", "poems",
+    "script", "splash",
 ]
 
 # Every real script file DDLC ships (all three acts, every exclusive route,
@@ -70,7 +72,7 @@ ALL_FILES = [
     "script-ch23", "script-ch30", "script-ch40",
     "script-exclusives-sayori", "script-exclusives-natsuki", "script-exclusives-yuri",
     "script-exclusives2-natsuki", "script-exclusives2-yuri",
-    "script-poemgame", "script-poemresponses", "script-poemresponses2",
+    "script-poemgame", "script-poemresponses", "script-poemresponses2", "poems",
     "script", "splash",
 ]
 
@@ -144,6 +146,12 @@ def do_compile(raw_dir: Path, build_dir: Path,
     resolver = ImageResolver(raw_dir, build_dir)
     compiler = Compiler(resolver=resolver,
                         transform_animations=load_transform_animations(raw_dir))
+    # Every parameterized label's real (name, default) list, scanned across
+    # this build's own --files selection before any file compiles -- a call
+    # site is very often in a different, earlier-compiled file than the
+    # label it targets (showpoem: called from poemresponses.rpyc, declared
+    # in poems.rpyc). See compile_script.py's load_label_params/_emit_Call.
+    compiler.label_params = load_label_params(raw_dir, files)
 
     # A background no dialogue references by name, baked first and
     # unconditionally (regardless of --files) so its scene id is always the
