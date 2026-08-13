@@ -302,6 +302,13 @@ class Compiler:
     stats: dict = field(default_factory=dict)               # kind -> count
     _pending_scene: int | None = field(default=None, init=False)
     _gensym_counter: itertools.count = field(default_factory=itertools.count, init=False)
+    # variable name -> (prefix, chapter, separator) for a Python Assign
+    # this compiler recognized as DDLC's own poem-winner dispatch idiom
+    # (`nextscene = poemwinner[N] + "_exclusive_" + str(eval(...))`) but
+    # deferred instead of emitting -- the real bytecode is a compile-time
+    # enumerable dispatch, only buildable once the matching dynamic Call is
+    # reached. See _match_poemwinner_dispatch()/_emit_poemwinner_dispatch().
+    _pending_dispatch: dict = field(default_factory=dict, init=False)
 
     # -- driver ---------------------------------------------------------------
 
@@ -836,6 +843,11 @@ class Compiler:
     def _emit_Call(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)
         if getattr(node, "expression", False):
+            dispatch = (self._pending_dispatch.pop(node.label, None)
+                       if isinstance(node.label, str) else None)
+            if dispatch is not None:
+                self._emit_poemwinner_dispatch(dispatch, fname)
+                return
             var = self._dynamic_target_var(node.label)
             if var is None:
                 self._skip(node, fname, "dynamic call target unsupported")
@@ -857,15 +869,92 @@ class Compiler:
             # doesn't assume it won't -- correctly reuse the same slots
             # rather than silently allocating new ones.
             ch = self.last_chapter
-            self.asm.minigame(self._var_slot(f"poemwinner[{ch}]"),
+            winner_slot = self._var_slot(f"poemwinner[{ch}]")
+            self.asm.minigame(winner_slot,
                              self._var_slot(f"s_poemappeal[{ch}]"),
                              self._var_slot(f"n_poemappeal[{ch}]"),
                              self._var_slot(f"y_poemappeal[{ch}]"))
+            # DDLC's real `label poem:` body -- never walked, since every
+            # resolvable call site is inlined here instead (see above) --
+            # does `exec(poemwinner[chapter][0] + "_appeal += 1")`
+            # immediately after computing the winner: a plain per-character
+            # win counter (s_appeal/n_appeal/y_appeal, confirmed by
+            # decompiling script-poemgame.rpyc), read downstream by the
+            # poem-winner exclusive-scene dispatch (see
+            # _match_poemwinner_dispatch/_emit_poemwinner_dispatch). Since
+            # the inlined OP_MINIGAME already IS that "just won" moment,
+            # replicating the increment here is exact, not approximated --
+            # it's the same event, just not reached by walking the body it
+            # lives in.
+            self._emit_appeal_increment(winner_slot)
             return
         params = self.label_params.get(node.label)
         if params:
             self._emit_call_args(node, params, fname)
         self.asm.call(node.label)
+
+    # TAG_TO_CHAR order (0 sayori, 1 natsuki, 2 yuri) -- monika can't win
+    # the poem minigame under this engine's scoring (see "Poem minigame" in
+    # FORMAT.md), so there's no m_appeal counterpart to maintain here.
+    _APPEAL_VARS = ("s_appeal", "n_appeal", "y_appeal")
+    _WINNER_TAGS = ("sayori", "natsuki", "yuri")
+
+    def _emit_appeal_increment(self, winner_slot: int) -> None:
+        end_label = self._gensym("appeal_end")
+        for winner_id, appeal_name in enumerate(self._APPEAL_VARS):
+            next_label = self._gensym("appeal_next")
+            match_label = self._gensym("appeal_match")
+            self.asm.if_(winner_slot, vnasm.CMP_EQ, winner_id, match_label)
+            self.asm.jump(next_label)
+            self.asm.label(match_label)
+            self.asm.add(self._var_slot(appeal_name), 1)
+            self.asm.jump(end_label)
+            self.asm.label(next_label)
+        self.asm.label(end_label)
+
+    def _emit_poemwinner_dispatch(self, dispatch: tuple, fname: str) -> None:
+        """The real bytecode for a recognized poem-winner dispatch (see
+        _match_poemwinner_dispatch) -- a compile-time enumerable N-way
+        (character) x M-way (win count) dispatch to real, statically known
+        labels (e.g. "sayori_exclusive_1"), instead of constructing the
+        target name at runtime the way DDLC's own script does (something
+        this VM's variables, plain int16s, can't represent -- there's no
+        way to hold "sayori" distinctly from the number 0). A combination
+        that isn't a real compiled label (an appeal count higher than DDLC
+        ever actually authored a variant for) falls through to the existing
+        "call to a label outside the compiled set" stub -- the same safe,
+        silent degrade every other unresolvable target in this compiler
+        already gets, not a new failure mode.
+        """
+        prefix, chapter, sep = dispatch
+        winner_slot = self._var_slot(f"poemwinner[{chapter}]")
+        end_label = self._gensym("poemwinner_end")
+        for winner_id, (tag, appeal_name) in enumerate(zip(self._WINNER_TAGS, self._APPEAL_VARS)):
+            appeal_slot = self._var_slot(appeal_name)
+            char_next = self._gensym("poemwinner_next")
+            char_match = self._gensym("poemwinner_match")
+            self.asm.if_(winner_slot, vnasm.CMP_EQ, winner_id, char_match)
+            self.asm.jump(char_next)
+            self.asm.label(char_match)
+            # DDLC only ever authored up to 3 win-count variants for any
+            # character (confirmed: m_sayori_1/2/3, the highest-numbered
+            # real labels found using this pattern) -- trying a fixed 1..3
+            # regardless of which prefix/chapter this call site uses is
+            # simpler than tracking each site's real bound, and costs
+            # nothing when a given (character, count) combination isn't a
+            # real label: it just stubs, like any other missing target.
+            for appeal in range(1, 4):
+                appeal_next = self._gensym("poemwinner_appeal_next")
+                appeal_match = self._gensym("poemwinner_appeal_match")
+                self.asm.if_(appeal_slot, vnasm.CMP_EQ, appeal, appeal_match)
+                self.asm.jump(appeal_next)
+                self.asm.label(appeal_match)
+                self.asm.call(f"{prefix}{tag}{sep}{appeal}")
+                self.asm.jump(end_label)
+                self.asm.label(appeal_next)
+            self.asm.jump(end_label)
+            self.asm.label(char_next)
+        self.asm.label(end_label)
 
     def _emit_call_args(self, node, params: list, fname: str) -> None:
         """Binds a parameterized Call's arguments onto the callee's declared
@@ -999,6 +1088,15 @@ class Compiler:
                 return True
         if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
             var = _ident_name(stmt.targets[0])
+            if var is not None:
+                dispatch = _match_poemwinner_dispatch(stmt.value)
+                if dispatch is not None:
+                    # No bytecode here -- the real dispatch is a compile-time
+                    # enumerable N-way (character) x M-way (win count) call,
+                    # only buildable once the matching dynamic Call is
+                    # reached (see _emit_Call's use of _pending_dispatch).
+                    self._pending_dispatch[var] = dispatch
+                    return True
             val = self._const_operand(stmt.value)
             if var is not None and val is not None:
                 self.asm.set(self._var_slot(var), val)
@@ -1341,6 +1439,89 @@ def _parse_condition_expr(cond_str: str) -> "ast.expr | None":
         return ast.parse(cond_str, mode="eval").body
     except SyntaxError:
         return None
+
+
+def _match_poemwinner_dispatch(node) -> tuple[str, int, str] | None:
+    """Recognizes DDLC's own poem-winner dispatch idiom -- confirmed in two
+    real shapes: `poemwinner[N] + "_exclusive_" + str(eval(poemwinner[N][0]
+    + "_appeal"))` (script-ch1/ch2.rpyc, picking the winning character's own
+    bonus scene) and `"m_" + poemwinner[N] + "_" + str(eval(...))`
+    (script-poemresponses.rpyc, Monika's own reaction) -- a literal prefix,
+    `poemwinner[N]` (the winner's tag name), a literal separator, then the
+    SAME character's cumulative win count (`s_appeal`/`n_appeal`/`y_appeal`,
+    incremented once per real poem game -- see the "poem" Call special case
+    in _emit_Call, which replicates the increment DDLC's own `label poem:`
+    body does since that body is otherwise never walked).
+
+    Returns (prefix, chapter, separator) if @p node is this shape (any
+    literal prefix, including none), else None. Both real values are
+    strings this compiler can't represent as-is (a variable can't hold a
+    "sayori"-vs-"natsuki" distinction, only the numeric TAG_TO_CHAR winner
+    id OP_MINIGAME already stores) -- recognizing the shape at compile time
+    sidesteps needing to, by building a small enumerable N-way (character)
+    x M-way (win count) dispatch to the real, compile-time-known target
+    labels instead of trying to construct the name at runtime.
+    """
+    if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add)):
+        return None
+
+    # Flatten the left-associative `a + b + c + ...` chain into source order.
+    terms = []
+    cur = node
+    while isinstance(cur, ast.BinOp) and isinstance(cur.op, ast.Add):
+        terms.append(cur.right)
+        cur = cur.left
+    terms.append(cur)
+    terms.reverse()
+
+    if len(terms) < 3:
+        return None
+    appeal_term, sep_term, winner_terms = terms[-1], terms[-2], terms[:-2]
+    if not (isinstance(sep_term, ast.Constant) and isinstance(sep_term.value, str)):
+        return None
+
+    winner_idx = chapter = None
+    for i, t in enumerate(winner_terms):
+        if (isinstance(t, ast.Subscript) and isinstance(t.value, ast.Name)
+                and t.value.id == "poemwinner" and isinstance(t.slice, ast.Constant)
+                and isinstance(t.slice.value, int)):
+            winner_idx, chapter = i, t.slice.value
+            break
+    if winner_idx is None:
+        return None
+
+    prefix = ""
+    for i, t in enumerate(winner_terms):
+        if i == winner_idx:
+            continue
+        if isinstance(t, ast.Constant) and isinstance(t.value, str):
+            prefix += t.value
+        else:
+            return None   # an extra term this shape doesn't account for
+
+    # str(eval(poemwinner[chapter][0] + "_appeal"))
+    if not (isinstance(appeal_term, ast.Call) and isinstance(appeal_term.func, ast.Name)
+            and appeal_term.func.id == "str" and len(appeal_term.args) == 1):
+        return None
+    inner = appeal_term.args[0]
+    if not (isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
+            and inner.func.id == "eval" and len(inner.args) == 1):
+        return None
+    expr = inner.args[0]
+    if not (isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add)
+            and isinstance(expr.right, ast.Constant) and expr.right.value == "_appeal"):
+        return None
+    letter = expr.left
+    if not (isinstance(letter, ast.Subscript) and isinstance(letter.slice, ast.Constant)
+            and letter.slice.value == 0):
+        return None
+    base = letter.value
+    if not (isinstance(base, ast.Subscript) and isinstance(base.value, ast.Name)
+            and base.value.id == "poemwinner" and isinstance(base.slice, ast.Constant)
+            and base.slice.value == chapter):
+        return None
+
+    return (prefix, chapter, sep_term.value)
 
 
 def _pure_number(node) -> float | int | None:

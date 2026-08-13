@@ -30,6 +30,7 @@ just compiling.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import struct
@@ -57,7 +58,9 @@ from image_resolve import ImageResolver
 ACT1_FILES = [
     "script-ch0", "script-ch1", "script-ch2", "script-ch3", "script-ch4",
     "script-ch5", "script-ch10", "script-ch20", "script-ch21", "script-ch22",
-    "script-ch23", "script-poemgame", "script-poemresponses", "poems",
+    "script-ch23", "script-exclusives-sayori", "script-exclusives-natsuki",
+    "script-exclusives-yuri", "script-exclusives2-natsuki", "script-exclusives2-yuri",
+    "script-poemgame", "script-poemresponses", "poems",
     "script", "splash",
 ]
 
