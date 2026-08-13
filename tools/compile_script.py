@@ -628,8 +628,15 @@ class Compiler:
                 return True
         if isinstance(stmt, ast.AugAssign) and isinstance(stmt.op, (ast.Add, ast.Sub)):
             var = _ident_name(stmt.target)
-            val = _const_int(stmt.value)
-            if var is not None and val is not None:
+            # _const_scalar, not _const_int: it accepts the one shape this
+            # engine needs a float for, an exact half-integer literal like
+            # `ac += 0.5` (pre-doubled to an int -- see its docstring). Guard
+            # the result to int explicitly since _const_scalar can also
+            # return a str (a plain `x += "..."` isn't a numeric delta and
+            # was never int-only to begin with; nothing in the real game
+            # does this, but the guard keeps it that way rather than assuming).
+            val = _const_scalar(stmt.value)
+            if var is not None and isinstance(val, int):
                 delta = val if isinstance(stmt.op, ast.Add) else -val
                 self.asm.add(self._var_slot(var), delta)
                 return True
@@ -872,7 +879,21 @@ def _const_scalar(node):
     """An integer literal as an int, a string literal as a str, else None.
 
     The string case is what _const_int (below, still used where only a number
-    makes sense) deliberately refuses."""
+    makes sense) deliberately refuses.
+
+    A float literal is accepted too, but only an exact half-integer (n*0.5) --
+    the one place the real game needs it (script-exclusives2-yuri.rpyc's `ac`,
+    an affection counter incremented by 0/0.5/1/2 -- confirmed by exhaustive
+    search that nothing anywhere in the compiled game ever reads or compares
+    it, so there's no un-doubled reference it could drift out of sync with).
+    Returned pre-doubled (v*2) so the variable's effective unit becomes
+    "halves" and stays a plain int16 -- exact, no VM change, no float support
+    needed anywhere else. This makes 0.5 a genuine value this compiler can
+    represent, not a special case for that one name: any float assignment or
+    comparison against the SAME variable has to consistently go through this
+    same doubling, which holds here because it's the only literal `ac` is
+    ever written or (per that search) read against.
+    """
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
         inner = _const_scalar(node.operand)
         return -inner if isinstance(inner, int) else None
@@ -881,6 +902,12 @@ def _const_scalar(node):
             return node.value
         if isinstance(node.value, int):
             v = int(node.value)
+            return v if -32768 <= v <= 32767 else None
+        if isinstance(node.value, float):
+            doubled = node.value * 2
+            if doubled != int(doubled):
+                return None      # not a half-integer -- out of scope, skip
+            v = int(doubled)
             return v if -32768 <= v <= 32767 else None
     return None
 
