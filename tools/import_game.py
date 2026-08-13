@@ -298,19 +298,67 @@ def write_chunks(assemblers: list[vnasm.Assembler], build_dir: Path) -> list[Pat
     return paths
 
 
-def do_convert_images(build_dir: Path, quality: int, skip: bool) -> None:
+def _convimg_cache_key(build_dir: Path, manifest_bytes: bytes, quality: int) -> str:
+    """A content hash covering everything that actually affects convimg's
+    output: manifest.json (which images go in which palette group) plus
+    every resolved PNG's own bytes under build/img/, plus quality (a
+    quantization knob, not reflected in either of those). Deliberately not
+    a mtime/exists check -- image_resolve.py regenerates build/img/ fresh
+    on every run regardless of whether the actual pixels changed, so
+    mtimes are never a useful signal here; only content is."""
+    h = hashlib.sha256()
+    h.update(str(quality).encode())
+    h.update(manifest_bytes)
+    img_dir = build_dir / "img"
+    for path in sorted(img_dir.rglob("*")) if img_dir.is_dir() else []:
+        if path.is_file():
+            h.update(str(path.relative_to(img_dir)).encode())
+            h.update(path.read_bytes())
+    return h.hexdigest()
+
+
+def do_convert_images(build_dir: Path, quality: int, skip: bool,
+                      cache_dir: Path | None = None) -> None:
     step("convert images (convimg)")
     gfx_dir = build_dir / "gfx"
     if skip and gfx_dir.exists() and any(gfx_dir.iterdir()):
         print(f"skipping (--skip-convimg, {gfx_dir} already has output)")
         return
 
-    manifest = json.loads((build_dir / "manifest.json").read_text())
+    manifest_bytes = (build_dir / "manifest.json").read_bytes()
+    manifest = json.loads(manifest_bytes)
+
+    # convimg's palette quantization + zx7 compression is by far the
+    # slowest step in this whole pipeline (single-digit minutes across
+    # ~200+ sprites), and its output depends only on the resolved image
+    # content + quality -- not on anything else that changes between runs
+    # (compiled bytecode, --files selection beyond what images it pulls
+    # in). Caching it outside build/ (survives `rm -rf build`, which every
+    # other step in this pipeline is safely rerunnable after) turns a
+    # rebuild where only script/compiler logic changed from minutes back
+    # into the seconds the rest of the pipeline actually takes.
+    key = _convimg_cache_key(build_dir, manifest_bytes, quality)
+    cached = (cache_dir / key) if cache_dir is not None else None
+    if cached is not None and cached.is_dir():
+        print(f"reusing cached convimg output ({key[:12]}...)")
+        if gfx_dir.exists():
+            shutil.rmtree(gfx_dir)
+        shutil.copytree(cached, gfx_dir)
+        return
+
     gfx_dir.mkdir(parents=True, exist_ok=True)
     doc = convert_images.build_yaml(manifest, build_dir / "img", gfx_dir, quality=quality)
     yaml_path = build_dir / "convimg.yaml"
     yaml_path.write_text(__import__("yaml").safe_dump(doc, sort_keys=False))
     convert_images.run_convimg(yaml_path)
+
+    if cache_dir is not None:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        tmp = cache_dir / f".{key}.tmp"
+        if tmp.exists():
+            shutil.rmtree(tmp)
+        shutil.copytree(gfx_dir, tmp)
+        tmp.replace(cache_dir / key)
 
 
 def require(tool: str, hint: str) -> None:
@@ -643,6 +691,11 @@ def main() -> int:
                          "docstring. Default: script,script-ch0")
     ap.add_argument("--skip-extract", action="store_true")
     ap.add_argument("--skip-convimg", action="store_true")
+    ap.add_argument("--convimg-cache", type=Path, default=Path(".cache/convimg"),
+                    help="reuse convimg's output across builds when the resolved "
+                         "image set is unchanged (survives `rm -rf build`, unlike "
+                         "--skip-convimg -- default .cache/convimg, gitignored; "
+                         "pass an empty string to disable)")
     ap.add_argument("--archive-budget", type=int, default=ARCHIVE_LIMIT,
                     help=f"fail the build if on-calc archive usage exceeds this "
                          f"many bytes (default {ARCHIVE_LIMIT})")
@@ -662,7 +715,8 @@ def main() -> int:
         entry_chunk, entry_offset = find_entry_point(assemblers)
         splash_pc = find_label_pc(assemblers, "splashscreen")
         chunk_paths = write_chunks(assemblers, args.build_dir)
-        do_convert_images(args.build_dir, args.quality, args.skip_convimg)
+        convimg_cache = args.convimg_cache if str(args.convimg_cache) else None
+        do_convert_images(args.build_dir, args.quality, args.skip_convimg, convimg_cache)
         manifest = json.loads((args.build_dir / "manifest.json").read_text())
         appvars = do_package(args.build_dir, args.appvar_dir, args.raw_dir, manifest,
                              chunk_paths, entry_chunk, entry_offset, compiler, splash_pc)

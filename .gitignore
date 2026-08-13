@@ -29,6 +29,12 @@ __pycache__/
 venv/
 *.egg-info/
 
+# --- Local session notes ---
+TODO.md
+
+# --- Cached convimg output (tools/import_game.py --convimg-cache) ---
+.cache/
+
 # --- Editors ---
 .vscode/
 .idea/
