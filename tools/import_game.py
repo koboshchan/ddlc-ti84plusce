@@ -93,15 +93,21 @@ ARCHIVE_BUDGET = 2_900_000  # ~2.9MB real hardware archive capacity, confirmed
                              # land in archive -- confirmed as a real failure
                              # on-hardware, not just a docs gap.
 
-# The budget the build is actually held to, below the raw capacity above so
-# there is room to install and to keep saves. Exceeding it *fails the build*
+# The budget the build is actually held to. Exceeding it *fails the build*
 # rather than printing a warning: a warning scrolls past in a few hundred
 # lines of convimg output, and the failure it precedes -- an AppVar that
 # won't fit in archive -- doesn't surface until the calculator is out of
-# space mid-chapter. The full game measures 2,282,897 bytes today, so the
-# margin exists to be spent deliberately on Act 2/3 art, not by accident.
-# Override with --archive-budget if a build genuinely needs to run over.
-ARCHIVE_LIMIT = 2_850_000
+# space mid-chapter. Override with --archive-budget if a build genuinely
+# needs a different value.
+#
+# Deliberately set ABOVE ARCHIVE_BUDGET (2,900,000, the confirmed-on-device
+# hardware ceiling), not below it -- an explicit choice, made after being
+# shown that this leaves no margin above the ceiling for saves/installs
+# once archive is full. This is real hardware risk, not a documentation
+# oversight: a build under THIS limit can still fail to actually fit or
+# run on-device. If save writes start failing once archive fills up,
+# lower this back toward (or below) ARCHIVE_BUDGET.
+ARCHIVE_LIMIT = 2_999_000
 
 MAXVARSIZE = 65000  # safely under the 65535-byte TI variable cap; also the
                      # real per-chunk ceiling now, since each chunk ships as
