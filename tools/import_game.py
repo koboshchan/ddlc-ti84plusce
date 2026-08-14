@@ -353,10 +353,10 @@ def do_convert_images(build_dir: Path, quality: int, skip: bool,
         return
 
     gfx_dir.mkdir(parents=True, exist_ok=True)
-    doc = convert_images.build_yaml(manifest, build_dir / "img", gfx_dir, quality=quality)
+    doc = convert_images.build_yaml(manifest, img_dir, gfx_dir, quality=quality)
     yaml_path = build_dir / "convimg.yaml"
     yaml_path.write_text(__import__("yaml").safe_dump(doc, sort_keys=False))
-    convert_images.run_convimg(yaml_path)
+    convert_images.run_convimg(yaml_path, img_dir)
 
     if cache_dir is not None:
         cache_dir.mkdir(parents=True, exist_ok=True)

@@ -54,20 +54,30 @@ TITLE_FIXED_ENTRIES = [
 
 
 def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -> dict:
-    # Paths relative to run_convimg()'s own cwd (yaml_path.parent, i.e. this
-    # build's --build-dir) rather than absolute: confirmed real, not
-    # theoretical -- convimg's own output-path handling on Windows doesn't
-    # recognize a drive-letter-prefixed absolute path (`E:\...`) as already
-    # absolute, and naively concatenates it onto `directory:` instead of
-    # taking just the basename, producing a broken nested path
-    # (`gfx/E:\...\sprite.png.bin`) and a hard failure. POSIX absolute paths
-    # never hit this (a leading `/` reads as "already absolute" everywhere),
-    # which is why this went unnoticed until building on an actual Windows
-    # host. img_dir.parent is this build's own --build-dir in both real
-    # callers (import_game.py and this module's own main()).
-    build_dir = img_dir.parent
+    # Every input image path is bare (no directory component at all) and
+    # run_convimg() runs convimg with cwd=img_dir to match -- two real,
+    # confirmed-on-Windows bugs ruled this out any other way:
+    #
+    # 1. An absolute path (what this used to pass, via .resolve()): convimg's
+    #    own output-path handling on Windows doesn't recognize a
+    #    drive-letter-prefixed absolute path (`E:\...`) as already absolute,
+    #    and naively concatenates it onto `directory:` instead of taking
+    #    just the basename -- produces a broken nested path
+    #    (`gfx/E:\...\sprite.png.bin`) and a hard failure. POSIX absolute
+    #    paths never hit this (a leading `/` reads as already-absolute
+    #    everywhere), which is why this went unnoticed until building on an
+    #    actual Windows host.
+    #
+    # 2. A relative path *with a directory component* (the first fix tried
+    #    here, build-dir-relative so images read like `img/sprite.png`):
+    #    convimg preserves that directory component in the OUTPUT filename
+    #    too (`gfx/img/sprite.bin`), which doesn't exist as a directory --
+    #    also a hard failure, also only surfaced on the real Windows build.
+    #
+    # A bare filename with convimg's cwd pointed straight at img_dir sidesteps
+    # both: there's no directory component for either bug to mishandle.
     def rel(p: Path) -> str:
-        return os.path.relpath(p, build_dir)
+        return p.name
 
     sprite_files = [rel(img_dir / s["file"]) for s in manifest["sprites"]]
     shared_files = [rel(img_dir / s["file"])
@@ -215,14 +225,16 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
         "converts": converts,
         "outputs": [{
             "type": "bin",
-            "directory": rel(gfx_dir),
+            # Relative from img_dir (see rel()'s own docstring -- that's
+            # where convimg actually runs from), not img_dir itself.
+            "directory": os.path.relpath(gfx_dir, img_dir),
             "palettes": outputs_palettes,
             "converts": outputs_converts,
         }],
     }
 
 
-def run_convimg(yaml_path: Path, threads: int | None = None) -> None:
+def run_convimg(yaml_path: Path, img_dir: Path, threads: int | None = None) -> None:
     if shutil.which("convimg") is None:
         sys.exit("convimg not found on PATH. Export CEdev/bin, e.g.:\n"
                   '  export PATH="$HOME/CEdev/bin:$PATH"')
@@ -232,8 +244,12 @@ def run_convimg(yaml_path: Path, threads: int | None = None) -> None:
     # every logical core by default rather than convimg's conservative
     # built-in default.
     threads = threads or os.cpu_count() or 4
-    subprocess.run(["convimg", "-i", yaml_path.name, "--threads", str(threads)],
-                   check=True, cwd=yaml_path.parent)
+    # cwd=img_dir, not yaml_path.parent: build_yaml()'s own image paths are
+    # bare filenames assuming that cwd (see its docstring for the two real
+    # Windows bugs that forced this).
+    yaml_rel = os.path.relpath(yaml_path, img_dir)
+    subprocess.run(["convimg", "-i", yaml_rel, "--threads", str(threads)],
+                   check=True, cwd=img_dir)
 
 
 def main() -> int:
@@ -251,8 +267,9 @@ def main() -> int:
 
     gfx_dir = args.build_dir / "gfx"
     gfx_dir.mkdir(parents=True, exist_ok=True)
+    img_dir = args.build_dir / "img"
 
-    doc = build_yaml(manifest, args.build_dir / "img", gfx_dir, quality=args.quality)
+    doc = build_yaml(manifest, img_dir, gfx_dir, quality=args.quality)
     yaml_path = args.build_dir / "convimg.yaml"
     yaml_path.write_text(yaml.safe_dump(doc, sort_keys=False))
     print(f"wrote {yaml_path} "
@@ -261,7 +278,7 @@ def main() -> int:
     if args.dry_run:
         return 0
 
-    run_convimg(yaml_path)
+    run_convimg(yaml_path, img_dir)
     print(f"done: converted images in {gfx_dir}")
     return 0
 
