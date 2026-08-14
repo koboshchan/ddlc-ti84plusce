@@ -289,6 +289,10 @@ class Compiler:
     last_chapter: int | None = None                        # see `chapter = N`
                                                              # tracking in
                                                              # _emit_python_stmt
+    time_anchor_var: str | None = None   # see _match_absolute_pause's own
+    time_anchor_ms: int = 0              # comment -- credits.rpyc's `pause(
+                                          # TARGET - (datetime.datetime.now()
+                                          # - VAR).total_seconds())` idiom
     transform_animations: dict = field(default_factory=dict) # transform name -> (X, flags)
     # Ren'Py label parameter declarations (`label X(a=1, b=2):`), name ->
     # [(param_name, default_source), ...] -- see load_label_params() and
@@ -638,6 +642,11 @@ class Compiler:
             self._skip(node, fname, "Show with empty imspec")
             return
 
+        if len(imgname) == 1:
+            credits_cg = _match_credits_cg_tag(imgname[0])
+            if credits_cg is not None:
+                imgname = (credits_cg,)
+
         if imgname[0] == "splash_warning":
             # DDLC's own `show splash_warning "..."` idiom (splash.rpyc,
             # script-poemresponses2.rpyc) -- a centered warning-style text
@@ -664,6 +673,19 @@ class Compiler:
             text = (self._SPLASH_MESSAGE_DEFAULT if text_expr.value == "[splash_message]"
                    else text_expr.value)
             self.asm.narrate(_strip_text_tags(text))
+            return
+
+        if imgname[0] in ("credits_header", "credits_text") and len(imgname) > 1:
+            # credits.rpyc's own `show credits_header "..."`/`show
+            # credits_text "..."` idiom -- same ParameterizedText reasoning
+            # as splash_warning above, always a literal caption in every
+            # real use (unlike splash_warning's one dynamic case).
+            text_expr = (_parse_condition_expr(imgname[1])
+                        if isinstance(imgname[1], str) else None)
+            if isinstance(text_expr, ast.Constant) and isinstance(text_expr.value, str):
+                self.asm.narrate(_strip_text_tags(text_expr.value))
+                return
+            self._skip(node, fname, f"unsupported {imgname[0]} text {imgname!r}")
             return
 
         text_literal = _text_call_literal(imgname[0]) if len(imgname) == 1 else None
@@ -1287,6 +1309,15 @@ class Compiler:
             if confirm is not None:
                 self._emit_confirm_screen(*confirm)
                 return
+        if stripped.startswith("call screen dialog("):
+            # credits.rpyc's postcredits_loop: a one-button "Error: Script
+            # file is missing or corrupt" acknowledgement shown if a 100%-
+            # complete player re-enters credits -- see _parse_dialog_call.
+            message = _parse_dialog_call(stripped)
+            if message is not None:
+                self.asm.narrate(_strip_text_tags(message))
+                self.asm.end()
+                return
         if stripped == "pause":
             # Ren'Py's own bare `pause` statement (distinct from DDLC's
             # `pause(seconds)` helper in _emit_python_stmt) -- s_kill_early's
@@ -1295,6 +1326,19 @@ class Compiler:
             # same as a no-args `pause()` call.
             self.asm.pause(0)
             return
+        if stripped.startswith("pause "):
+            # Ren'Py's own `pause N` statement (a literal duration, unlike
+            # the bare `pause` above) -- credits.rpyc's own `pause 9.3`/
+            # `pause 41`/`pause 0.5` between the opening beats, before the
+            # scrolling credits' own absolute-clock pauses take over (see
+            # _match_absolute_pause).
+            try:
+                seconds = float(stripped[len("pause "):].strip())
+            except ValueError:
+                seconds = None
+            if seconds is not None:
+                self.asm.pause(max(1, round(seconds * 1000)))
+                return
         self._skip(node, fname, f"unsupported statement: {line!r}")
         self.asm.nop()
 
@@ -1362,6 +1406,19 @@ class Compiler:
             if ms is not None:
                 self.asm.pause(ms)
                 return True
+            absolute = _match_absolute_pause(stmt.value)
+            if absolute is not None and absolute[1] == self.time_anchor_var:
+                # credits.rpyc's own absolute-wall-clock-target pause -- see
+                # _match_absolute_pause's own comment. Each one advances the
+                # tracked "virtual clock" forward to its own target instead
+                # of emitting a raw duration, so the real schedule (each
+                # beat landing at a fixed elapsed time, not a fixed gap from
+                # the previous one) survives compilation exactly.
+                target_ms = round(absolute[0] * 1000)
+                delta_ms = max(1, target_ms - self.time_anchor_ms)
+                self.asm.pause(delta_ms)
+                self.time_anchor_ms = target_ms
+                return True
             return False
         if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
             fn = _ident_name(stmt.value.func)
@@ -1393,6 +1450,17 @@ class Compiler:
         if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
             var = _ident_name(stmt.targets[0])
             if var is not None:
+                if (isinstance(stmt.value, ast.Call)
+                        and _ident_name(stmt.value.func) == "datetime.datetime.now"
+                        and not stmt.value.args and not stmt.value.keywords):
+                    # `VAR = datetime.datetime.now()` -- resets the virtual
+                    # clock _match_absolute_pause's own handling (above,
+                    # this same function) measures against. No bytecode:
+                    # pure compile-time bookkeeping, the same way
+                    # `chapter = N` tracking below needs no runtime read.
+                    self.time_anchor_var = var
+                    self.time_anchor_ms = 0
+                    return True
                 glitch_bounds = _match_glitchtext_call(stmt.value)
                 if glitch_bounds is not None:
                     # `VAR = glitchtext(...)` -- VAR itself never gets a real
@@ -1670,11 +1738,13 @@ def link_chunks(assemblers: list[vnasm.Assembler]) -> list[str]:
     still what a single-assembler caller like tools/gen_demo.py uses).
 
     A name missing from every chunk (content outside the compiled --files
-    set) is stubbed to a local OP_END in whichever chunk references it
-    first, the same "content wasn't imported" idea as
-    Assembler.patch_missing_labels() -- and that stub is then registered
-    into the global table, so any other chunk referencing the same missing
-    name correctly cross-chunk-jumps to it instead of getting a second stub.
+    set) is stubbed to a local OP_RETURN in whichever chunk references it
+    first, the same "content wasn't imported, resume after it" idea as
+    Assembler.patch_missing_labels() (see its own comment on why OP_RETURN,
+    not OP_END, is the correct stub -- a Call needs to resume its caller,
+    not end the session) -- and that stub is then registered into the
+    global table, so any other chunk referencing the same missing name
+    correctly cross-chunk-jumps to it instead of getting a second stub.
 
     Returns the sorted list of names that had to be stubbed, for logging.
     """
@@ -1688,7 +1758,7 @@ def link_chunks(assemblers: list[vnasm.Assembler]) -> list[str]:
         local_missing = {name for _, name in asm._patches if name not in global_labels}
         if local_missing:
             stub = len(asm.code)
-            asm.end()
+            asm.ret()
             for name in local_missing:
                 global_labels.setdefault(name, (asm.chunk_id, stub))
             missing |= local_missing
@@ -1960,6 +2030,64 @@ def _match_prefixed_int_call(expr_src: str) -> tuple[str, str] | None:
     return expr.left.value, var
 
 
+def _match_credits_cg_tag(expr_src: str) -> str | None:
+    """Recognizes credits.rpyc's own `("credits_cgN" + lockedtext)` idiom --
+    a literal CG name concatenated with a runtime "_locked"/"_clearall"
+    suffix tracking Ren'Py's own per-scene completion gallery
+    (persistent.clear[]/persistent.clearall, set by `lockedtext = "" if
+    persistent.clear[imagenum] else "_locked"` right before each Show).
+    This engine has no gallery/completion tracking at all -- reproducing it
+    faithfully would mean a new persistent array plus writing to it from
+    every real "you've seen this ending" site across the whole game, for a
+    credits-screen-only cosmetic. Always resolves to the literal unlocked
+    name instead: every credits CG shows in full, never a locked
+    silhouette -- a documented simplification, not a missing feature.
+    Returns the literal prefix, or None if @p expr_src isn't this shape."""
+    expr = _parse_condition_expr(expr_src)
+    if not (isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add)):
+        return None
+    if not (isinstance(expr.left, ast.Constant) and isinstance(expr.left.value, str)
+            and expr.left.value.startswith("credits_cg")):
+        return None
+    if not (isinstance(expr.right, ast.Name) and expr.right.id == "lockedtext"):
+        return None
+    return expr.left.value
+
+
+def _match_absolute_pause(call: ast.Call) -> tuple[float, str] | None:
+    """Recognizes credits.rpyc's own `pause(TARGET -
+    (datetime.datetime.now() - VAR).total_seconds())` idiom -- an
+    absolute-wall-clock-target pause used throughout the credits scroll to
+    keep each beat landing on a fixed schedule regardless of how long the
+    statements before it actually took (VAR is set once by `VAR =
+    datetime.datetime.now()` at the top of the sequence -- see
+    Compiler._emit_python_stmt's own handling of that assignment).
+    Returns (TARGET, VAR), or None if @p call isn't this shape."""
+    if len(call.args) != 1 or call.keywords:
+        return None
+    expr = call.args[0]
+    if not (isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Sub)):
+        return None
+    target = _pure_number(expr.left)
+    if target is None:
+        return None
+    right = expr.right
+    if not (isinstance(right, ast.Call) and isinstance(right.func, ast.Attribute)
+            and right.func.attr == "total_seconds" and not right.args and not right.keywords):
+        return None
+    inner = right.func.value
+    if not (isinstance(inner, ast.BinOp) and isinstance(inner.op, ast.Sub)):
+        return None
+    now_call = inner.left
+    if not (isinstance(now_call, ast.Call) and _ident_name(now_call.func) == "datetime.datetime.now"
+            and not now_call.args and not now_call.keywords):
+        return None
+    var = _ident_name(inner.right)
+    if var is None:
+        return None
+    return (target, var)
+
+
 def _chapter_indexed_base(node) -> str | None:
     """Recognizes `BASE[chapter - 1]` -- BASE one of poemwinner/
     s_poemappeal/n_poemappeal/y_poemappeal/m_poemappeal, the arrays the
@@ -2186,6 +2314,31 @@ def _parse_confirm_call(stripped: str) -> tuple[str, bool, bool] | None:
     if yes_value is None or no_value is None:
         return None
     return (message.value, yes_value, no_value)
+
+
+def _parse_dialog_call(stripped: str) -> str | None:
+    """The message string for DDLC's own `call screen dialog(message="...",
+    ok_action=Quit(...))` idiom -- postcredits_loop's own fake "save file
+    corrupt" error, shown if a 100%-complete player re-enters credits.
+    Always just a one-button acknowledgement-then-quit in the one real use
+    found, so only the message matters; the caller treats it as narration
+    followed by an unconditional OP_END regardless of what ok_action itself
+    says. None if @p stripped isn't this shape. @p stripped still has its
+    `call screen ` prefix; only the `dialog(...)` call itself is parsed."""
+    prefix = "call screen "
+    if not stripped.startswith(prefix):
+        return None
+    try:
+        call = ast.parse(stripped[len(prefix):], mode="eval").body
+    except SyntaxError:
+        return None
+    if not (isinstance(call, ast.Call) and _ident_name(call.func) == "dialog"):
+        return None
+    for kw in call.keywords:
+        if (kw.arg == "message" and isinstance(kw.value, ast.Constant)
+                and isinstance(kw.value.value, str)):
+            return kw.value.value
+    return None
 
 
 def _text_call_literal(src: str) -> str | None:

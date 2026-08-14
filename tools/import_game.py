@@ -76,7 +76,7 @@ ALL_FILES = [
     "script-exclusives-sayori", "script-exclusives-natsuki", "script-exclusives-yuri",
     "script-exclusives2-natsuki", "script-exclusives2-yuri",
     "script-poemgame", "script-poemresponses", "script-poemresponses2", "poems",
-    "poems_special", "script", "splash",
+    "poems_special", "script", "splash", "credits",
 ]
 
 DEFAULT_FILES = ["script", "script-ch0", "splash"]

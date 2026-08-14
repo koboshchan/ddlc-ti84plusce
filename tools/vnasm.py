@@ -118,26 +118,37 @@ class Assembler:
         self._labels[name] = len(self.code)
 
     def patch_missing_labels(self) -> list[str]:
-        """Point every referenced-but-undefined label at a shared OP_END stub.
+        """Point every referenced-but-undefined label at a shared OP_RETURN stub.
 
         Used when compiling a subset of a larger game: a Call/Jump to a label
         that lives in a file outside the compiled set would otherwise make
-        resolve() raise. Landing on OP_END there is a deliberate, visible
-        "this content wasn't imported" stop rather than undefined behavior.
+        resolve() raise. OP_RETURN there is a deliberate "this content wasn't
+        imported, resume wherever this was reached from" -- correct for both
+        directions a missing label can be reached from: a Call (the normal
+        case; OP_RETURN pops back to the real caller and play continues
+        exactly as if the missing content had simply done nothing) and a Jump
+        with an empty call stack (OP_RETURN's own sp==0 case finishes the
+        whole session, the same visible stop OP_END used to give directly --
+        see vn.c's OP_RETURN). An OP_END stub got this half wrong: any Call
+        to missing content ended the entire session on the spot rather than
+        resuming after it, confirmed as a real bug once credits.rpyc's own
+        repeated `Call updateconsole` (a label deliberately left uncompiled,
+        console.rpyc's fake-terminal mechanic) cut the whole credits sequence
+        short at its very first beat.
         Returns the sorted list of missing label names, for logging.
 
         Only meaningful for a single-chunk assembler resolved on its own
         (tools/gen_demo.py) -- a multi-chunk compile's missing-label check has
         to happen after every chunk's labels are known, so it uses the
         top-level link_chunks() in compile_script.py instead, which stubs
-        into whichever assembler needs it via the same OP_END-stub idea.
+        into whichever assembler needs it via the same OP_RETURN-stub idea.
         """
         missing = sorted({name for _, name in self._patches if name not in self._labels})
         if not missing:
             return missing
 
         stub = len(self.code)
-        self.end()
+        self.ret()
         for name in missing:
             self._labels[name] = stub
         return missing
