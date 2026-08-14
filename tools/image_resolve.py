@@ -158,6 +158,27 @@ class ImageDef:
                                                     # compile_script.py's _emit_condswitch_dispatch
 
 
+def _find_path_in_call(node: ast.Call, depth: int = 0) -> Optional[str]:
+    """Recursively searches @p node's positional args for the first string
+    constant that looks like a real image path (has an image extension),
+    descending into nested Calls (im.Crop(...), im.FactorScale(...), etc)
+    -- see _first_atl_string's own comment on why this is worth doing
+    (Monika's face-pixelation effect nests a real path two Call levels
+    deep). depth guards against unreasonable recursion; real ATL call
+    trees are never more than 2-3 levels deep."""
+    if depth > 6:
+        return None
+    for arg in node.args:
+        if (isinstance(arg, ast.Constant) and isinstance(arg.value, str)
+                and _IMAGE_EXT.search(arg.value)):
+            return arg.value
+        if isinstance(arg, ast.Call):
+            found = _find_path_in_call(arg, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
 def _first_atl_string(atl_node) -> Optional[str]:
     """Pull the first quoted-string literal out of an ATL RawBlock (CG/bg frames).
 
@@ -183,21 +204,42 @@ def _first_atl_string(atl_node) -> Optional[str]:
                     node = ast.parse(src, mode="eval").body
                 except SyntaxError:
                     continue
-                if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                        and not _HEX_COLOR.match(node.value)):
+                    # Skip a bare hex color rather than returning it as if it
+                    # were a real frame -- confirmed real, not hypothetical:
+                    # natsuki_ghost_blood's own ATL starts with a fully
+                    # transparent "#00000000" (an ImageDissolve's start
+                    # state) *before* its real static frame
+                    # ("natsuki/ghost_blood.png", a real shipped file) a
+                    # couple statements later in the same block. Returning
+                    # early on the color would resolve to a nonexistent
+                    # "#00000000" file instead of the real picture one
+                    # statement further on.
                     return node.value
+                # `.sm`/`.dm` (Ren'Py's displayable-manager accessors) wrap
+                # the real Call one Attribute level up -- confirmed real:
+                # `RectStatic(...).sm`, `Blood(...).sm`, `RectCluster(...)
+                # .sm` all parse as Attribute(Call(...), 'sm'), not a bare
+                # Call, so unwrap it before searching args.
+                if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Call):
+                    node = node.value
                 if isinstance(node, ast.Call) and node.args:
-                    # A displayable call whose first positional arg is a real
-                    # image path, e.g. Act 3's veins effect --
-                    # AnimatedMask("images/bg/veinmask.png", "mask", ...).
-                    # The mask/animation itself isn't reproducible (no
-                    # per-pixel masking), but the underlying picture is a
-                    # reasonable static stand-in -- same "drop the transform,
-                    # keep the real picture" call as the zoom/dizzy cases
-                    # below.
-                    first = node.args[0]
-                    if (isinstance(first, ast.Constant) and isinstance(first.value, str)
-                            and _IMAGE_EXT.search(first.value)):
-                        return first.value
+                    # A displayable call referencing a real image path
+                    # somewhere in its arguments, e.g. Act 3's veins effect
+                    # -- AnimatedMask("images/bg/veinmask.png", "mask",
+                    # ...) -- or, nested a level deeper, Monika's own
+                    # face-pixelation effect -- RectStatic(im.FactorScale(
+                    # im.Crop("gui/logo.png", (100,100,128,128)), 0.25), 2,
+                    # 32, 32) -- the crop/scale/pixelate steps aren't
+                    # reproducible, but the underlying source picture is a
+                    # reasonable static stand-in (uncropped, since this
+                    # engine has no crop-region concept in an ImageDef) --
+                    # same "drop the transform, keep the real picture" call
+                    # as the zoom/dizzy cases below.
+                    found = _find_path_in_call(node)
+                    if found is not None:
+                        return found
 
         elif k == "RawChoice" and stmt.choices:
             _weight, block = stmt.choices[0]
@@ -302,9 +344,22 @@ def _resolve_source(imgname: tuple, src: str) -> ImageDef:
         # reason that matters to how it renders.
         func = node.func
         fname = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
-        if (fname == "Image" and len(node.args) >= 1 and not node.keywords
+        if (fname in ("Image", "LiveTile") and len(node.args) >= 1 and not node.keywords
                 and isinstance(node.args[0], ast.Constant)
                 and isinstance(node.args[0].value, str)):
+            # Image("path.png") -- Ren'Py's explicit constructor for a plain
+            # image, functionally identical to just writing the path string
+            # (`image X = "path.png"`) for anything that isn't animated.
+            # Found in DDLC's own definitions.rpy for a couple of the Act 2
+            # "ghost" sprites, written this way rather than as a bare string
+            # for no reason that matters to how it renders.
+            #
+            # LiveTile("path.jpg", ...) -- Act 2's `bg glitch` effect
+            # (definitions.rpyc), a real background tiled/re-randomized live
+            # every frame. The tiling itself isn't reproducible, but the
+            # source picture makes a perfectly good static "glitched"
+            # background on its own -- same "drop the transform, keep the
+            # real picture" reasoning as _find_path_in_call's ATL cases.
             return ImageDef(imgname, "path", path=node.args[0].value)
 
         if (fname == "ConditionSwitch" and not node.keywords and len(node.args) >= 2
