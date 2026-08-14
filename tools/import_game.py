@@ -327,6 +327,7 @@ def do_convert_images(build_dir: Path, quality: int, skip: bool,
                       cache_dir: Path | None = None) -> None:
     step("convert images (convimg)")
     gfx_dir = build_dir / "gfx"
+    img_dir = build_dir / "img"
     if skip and gfx_dir.exists() and any(gfx_dir.iterdir()):
         print(f"skipping (--skip-convimg, {gfx_dir} already has output)")
         return
