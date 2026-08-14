@@ -88,6 +88,10 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
     title_bg_file = rel(img_dir / title_bg["file"]) if title_bg else None
     poem_bg = manifest.get("poem_bg") or {}
     poem_bg_file = rel(img_dir / poem_bg["file"]) if poem_bg else None
+    textbox = manifest.get("textbox") or {}
+    textbox_file = rel(img_dir / textbox["file"]) if textbox else None
+    namebox = manifest.get("namebox") or {}
+    namebox_file = rel(img_dir / namebox["file"]) if namebox else None
 
     palettes = [{
         "name": "pal_game",
@@ -98,7 +102,10 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
         # --quality for a final release build.
         "quality": quality,
         "fixed-entries": [{"color": {"index": i, "hex": h}} for i, h in FIXED_ENTRIES],
-        "images": sprite_files + shared_files + ([poem_bg_file] if poem_bg_file else []),
+        "images": sprite_files + shared_files
+                 + ([poem_bg_file] if poem_bg_file else [])
+                 + ([textbox_file] if textbox_file else [])
+                 + ([namebox_file] if namebox_file else []),
     }]
     converts = []
     outputs_converts = []
@@ -159,6 +166,25 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
             "images": [poem_bg_file],
         })
         outputs_converts.append("poem_bg")
+
+    if textbox_file:
+        converts.append({
+            # Same reasoning as poem_bg above: flat raw indices, no
+            # compression -- src/render.c's render_box() draws this every
+            # typewriter tick (see assets_textbox()'s own comment).
+            "name": "textbox", "palette": "pal_game", "style": "palette",
+            "dither": 0.4, "width-and-height": False,
+            "images": [textbox_file],
+        })
+        outputs_converts.append("textbox")
+
+    if namebox_file:
+        converts.append({
+            "name": "namebox", "palette": "pal_game", "style": "palette",
+            "dither": 0.4, "width-and-height": False,
+            "images": [namebox_file],
+        })
+        outputs_converts.append("namebox")
 
     # The title screen gets its own palette rather than sharing pal_game.
     # Its art is a separate DDLC asset set (pastel pinks, the logo's flat

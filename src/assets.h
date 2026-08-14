@@ -262,4 +262,14 @@ bool assets_title_bg(uint8_t px, uint8_t py, uint8_t *dest);
  */
 bool assets_poem_bg(uint8_t *dest);
 
+/**
+ * Fills @p dest with the real dialogue box art (TEXTBOX_W x TEXTBOX_H raw
+ * palette indices, see render.h) / the real speaker namebox art (NAMEBOX_W
+ * x NAMEBOX_H). False if the respective AppVar is missing -- an older
+ * build without this art, or one where tools/import_game.py's raw DDLC
+ * copy didn't have it.
+ */
+bool assets_textbox(uint8_t *dest);
+bool assets_namebox(uint8_t *dest);
+
 #endif /* ASSETS_H */

@@ -854,6 +854,38 @@ bool assets_poem_bg(uint8_t *dest)
     return true;
 }
 
+/* The real dialogue box/namebox art (tools/image_resolve.py's
+ * ui_box_art()): raw, uncompressed palette indices, same reasoning
+ * assets_draw_sprite()'s own comment gives for shipping sprites
+ * uncompressed -- render_box() (src/render.c) draws these every typewriter
+ * tick, so paying a decompression cost on every single one of those calls
+ * would be real, avoidable per-frame work. Both are small enough (19200 and
+ * 1224 bytes) that copying them out to a caller buffer once at first use
+ * and caching there (render_box()'s own job) is cheap regardless -- see
+ * SCENE_BYTES's neighboring comment for why a same-sized copy every
+ * render_scene() call already isn't a real cost on this hardware. */
+bool assets_textbox(uint8_t *dest)
+{
+    uint8_t handle = ti_Open("DTXTBOX", "r");
+    if (!handle) {
+        return false;
+    }
+    memcpy(dest, ti_GetDataPtr(handle), TEXTBOX_W * TEXTBOX_H);
+    ti_Close(handle);
+    return true;
+}
+
+bool assets_namebox(uint8_t *dest)
+{
+    uint8_t handle = ti_Open("DNAMEBOX", "r");
+    if (!handle) {
+        return false;
+    }
+    memcpy(dest, ti_GetDataPtr(handle), NAMEBOX_W * NAMEBOX_H);
+    ti_Close(handle);
+    return true;
+}
+
 /* Fixed size of every background/CG (image_resolve.py's BG_SIZE/CG_SIZE) --
  * both are baked to exactly this many raw palette-index bytes, so no length
  * needs reading out of the LUT entry. */

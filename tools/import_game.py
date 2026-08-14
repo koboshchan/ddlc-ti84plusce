@@ -46,7 +46,7 @@ import vnasm
 from compile_script import (VN_STR_BASE, CompileError, Compiler, link_chunks,
                             load_label_params, load_transform_animations,
                             load_variable_defaults)
-from image_resolve import ImageResolver
+from image_resolve import NAMEBOX_SIZE, TEXTBOX_SIZE, ImageResolver
 
 # Full Act 1 (ch0-ch4) plus the labels it calls into that live in other
 # files (side-story chapters, the poem minigame, and the top-level
@@ -172,6 +172,13 @@ def do_compile(raw_dir: Path, build_dir: Path,
     # reasoning), but full-screen and outside the DSCNn scene id space --
     # see poem_background()'s docstring.
     resolver.poem_background()
+
+    # The real dialogue box/namebox art -- unconditional for the same
+    # reason as the two above (no Show/Scene node ever references either
+    # by name; render.c draws them at a fixed screen position every frame
+    # regardless of what --files selection compiled).
+    resolver.textbox = resolver.ui_box_art("gui/textbox.png", TEXTBOX_SIZE) or {}
+    resolver.namebox = resolver.ui_box_art("gui/namebox.png", NAMEBOX_SIZE) or {}
 
     # One Assembler (chunk) per compiled file, or more than one for a file
     # too big to fit a single chunk (compile_file_chunked() -- only
@@ -618,6 +625,17 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
         poem_bg_bytes = bin_for(manifest["poem_bg"]["file"]).read_bytes()
         appvars.append(write_appvar(poem_bg_bytes[:MAXVARSIZE], "DPOEMBG0", appvar_dir))
         appvars.append(write_appvar(poem_bg_bytes[MAXVARSIZE:], "DPOEMBG1", appvar_dir))
+
+    # The real dialogue box/namebox art (see ImageResolver.ui_box_art()).
+    # Both fit comfortably in one AppVar each (320x60 = 19200 bytes,
+    # 72x17 = 1224 bytes -- nowhere near poem_bg's 76800-byte need to
+    # split), so no LUT/multi-part handling needed, unlike DPOEMBG above.
+    if manifest.get("textbox"):
+        appvars.append(write_appvar(
+            bin_for(manifest["textbox"]["file"]).read_bytes(), "DTXTBOX", appvar_dir))
+    if manifest.get("namebox"):
+        appvars.append(write_appvar(
+            bin_for(manifest["namebox"]["file"]).read_bytes(), "DNAMEBOX", appvar_dir))
 
     cg_count = sum(1 for s in manifest["scenes"] if s["palette"] == "own")
     if cg_count:

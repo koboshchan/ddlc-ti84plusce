@@ -65,6 +65,18 @@ BG_SIZE = (320, 180)
 POEM_BG_SIZE = (320, 240)   # full screen -- the poem minigame has no dialogue
                             # box reserving the bottom 60px, unlike an
                             # ordinary VN scene (see poem_background())
+
+# The dialogue box's own screen real estate (SCREEN_W x (SCREEN_H-SCENE_H),
+# src/render.h) -- 320px wide alone is already over gfx_rletsprite_t's
+# uint8_t width field (255px max), so textbox/namebox art can't go through
+# the ordinary RLET sprite pipeline the way a character atom does (see
+# ui_box_art()). 320 wide would also be an unusually large single sprite to
+# scale/composite per-frame even if the dimension cap didn't rule it out.
+TEXTBOX_SIZE = (320, 60)
+# DDLC's own namebox.png is 168x39 (~4.3:1) -- sized independently here
+# (not derived from TEXTBOX_SIZE's own scale factor) to a close aspect
+# match that fits comfortably in the box's top-left corner alongside it.
+NAMEBOX_SIZE = (72, 17)
 CG_SIZE = (320, 180)
 
 # --- title screen ------------------------------------------------------------
@@ -394,6 +406,8 @@ class ImageResolver:
         self.title_items: list = [] # title screen art, index == id (see title_art())
         self.title_bg: dict = {}     # the scrolling background strip (see title_bg_strip())
         self.poem_bg: dict = {}      # the poem minigame's notebook (see poem_background())
+        self.textbox: dict = {}      # the real dialogue box art (see ui_box_art())
+        self.namebox: dict = {}      # the real speaker namebox art (see ui_box_art())
         # backgrounds and CGs share ONE id space here: OP_SCENE has a single
         # `bg:u8` operand with no room for a bucket discriminator, so the
         # engine (Milestone 3) tells them apart by each entry's "palette"
@@ -770,6 +784,51 @@ class ImageResolver:
         self.poem_bg = entry
         return entry
 
+    def ui_box_art(self, rel_path: str, size: tuple) -> Optional[dict]:
+        """Bakes a fixed-size UI element (the real textbox.png/namebox.png)
+        for a direct full-block blit, the same reasoning as
+        poem_background() but generalized to an arbitrary @p size instead of
+        always full-screen.
+
+        Composited onto a solid COL_BOX_FILL-matching backdrop (#5A1030,
+        see convert_images.py's FIXED_ENTRIES) rather than kept transparent:
+        this engine's scene/background blits are always opaque (no
+        per-pixel alpha compositing at draw time -- see assets_scene()'s own
+        doc comment), so the real art's alpha channel (rounded corners,
+        soft edges) can only be *resolved* here at bake time, not carried
+        through to the calculator. The result reads as slightly squared-off
+        corners against the box's own real fill color rather than a hard
+        rectangle against whatever's behind it -- a deliberate, visible
+        simplification in the same spirit as this project's other
+        alpha-flattening bakes (poem_background()'s own white backdrop,
+        _bake_flat()'s CG letterboxing), not a silent one.
+
+        Real width/height for either real source image is well over
+        gfx_rletsprite_t's uint8_t 255px dimension cap once scaled to fill
+        anywhere near this engine's own 320px-wide screen (see TEXTBOX_SIZE's
+        own comment) -- which is why this bakes to a plain full-block raw
+        image (like a scene) rather than through the RLET sprite pipeline
+        every character atom and the namebox's real rounded shape would
+        otherwise be a natural fit for.
+        """
+        art = _find_art_file(self.raw_dir, rel_path)
+        if art is None:
+            self._log_unsupported((rel_path,), "UI box art not found")
+            return None
+
+        img = PILImage.open(art).convert("RGBA")
+        canvas = PILImage.new("RGBA", size, (0x5A, 0x10, 0x30, 255))
+        ratio = min(size[0] / img.width, size[1] / img.height)
+        scaled_size = (max(1, round(img.width * ratio)), max(1, round(img.height * ratio)))
+        scaled = img.resize(scaled_size, PILImage.LANCZOS)
+        canvas.alpha_composite(scaled, ((size[0] - scaled_size[0]) // 2,
+                                        (size[1] - scaled_size[1]) // 2))
+
+        filename = f"ui_{Path(rel_path).stem}.png"
+        canvas.save(self.img_dir / filename)
+
+        return {"source": rel_path, "file": filename, "w": size[0], "h": size[1]}
+
     def title_bg_strip(self, rel_path: str = "gui/menu_bg.png") -> Optional[dict]:
         """Bakes the scrolling title background as a short repeating strip.
 
@@ -915,6 +974,8 @@ class ImageResolver:
             "title_art": self.title_items,
             "title_bg": self.title_bg,
             "poem_bg": self.poem_bg,
+            "textbox": self.textbox,
+            "namebox": self.namebox,
             "unsupported": [{"imgname": list(name), "reason": reason}
                             for name, reason in self.unsupported],
         }

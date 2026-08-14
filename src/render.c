@@ -815,17 +815,58 @@ void render_box(const vn_scene_t *scene, const char *speaker,
 
     const int pad = 6;
 
-    gfx_SetColor(COL_BOX_FILL);
-    gfx_FillRectangle_NoClip(0, BOX_Y, SCREEN_W, BOX_H);
-    gfx_SetColor(COL_BOX_EDGE);
-    gfx_HorizLine_NoClip(0, BOX_Y, SCREEN_W);
+    /* The real textbox/namebox art (tools/image_resolve.py's ui_box_art()),
+     * loaded once and cached here rather than re-read from the AppVar every
+     * call -- render_box() runs on every typewriter tick, so this avoids
+     * paying that (cheap, but nonzero) ti_Open/memcpy cost dozens of times
+     * per line. Falls back to the old flat-rectangle box when the AppVar is
+     * missing (an older raw DDLC copy this port's own asset pipeline
+     * couldn't find gui/textbox.png in -- see ui_box_art()'s own
+     * "not found" degrade) rather than drawing nothing. */
+    static uint8_t textbox_px[TEXTBOX_W * TEXTBOX_H];
+    static uint8_t namebox_px[NAMEBOX_W * NAMEBOX_H];
+    static bool    box_art_loaded, have_textbox, have_namebox;
+    if (!box_art_loaded) {
+        have_textbox   = assets_textbox(textbox_px);
+        have_namebox   = assets_namebox(namebox_px);
+        box_art_loaded = true;
+    }
+
+    if (have_textbox) {
+        for (int r = 0; r < TEXTBOX_H; r++) {
+            uint8_t *fb = (uint8_t *)gfx_vbuffer + (size_t)(BOX_Y + r) * SCREEN_W;
+            memcpy(fb, textbox_px + (size_t)r * TEXTBOX_W, TEXTBOX_W);
+        }
+    } else {
+        gfx_SetColor(COL_BOX_FILL);
+        gfx_FillRectangle_NoClip(0, BOX_Y, SCREEN_W, BOX_H);
+        gfx_SetColor(COL_BOX_EDGE);
+        gfx_HorizLine_NoClip(0, BOX_Y, SCREEN_W);
+    }
 
     int y = BOX_Y + 4;
 
     if (speaker != NULL) {
-        gfx_SetTextFGColor(COL_NAME);
-        gfx_PrintStringXY(speaker, pad, y);
-        y += 11;
+        /* Kept fully inside the box's own y >= BOX_Y territory (a few px
+         * short of the real game's namebox, which overlaps up into the
+         * scene area) -- see render_scene_lazy()'s "plate" redraw-avoidance
+         * machinery just above, which assumes only actors touch y <
+         * SCENE_H; a namebox poking up into that space would need to
+         * participate in that same bookkeeping to avoid flicker. */
+        if (have_namebox) {
+            const int nb_x = pad, nb_y = BOX_Y + 2;
+            for (int r = 0; r < NAMEBOX_H; r++) {
+                uint8_t *fb = (uint8_t *)gfx_vbuffer + (size_t)(nb_y + r) * SCREEN_W + nb_x;
+                memcpy(fb, namebox_px + (size_t)r * NAMEBOX_W, NAMEBOX_W);
+            }
+            gfx_SetTextFGColor(COL_NAME);
+            gfx_PrintStringXY(speaker, nb_x + 8, nb_y + 4);
+            y = nb_y + NAMEBOX_H + 2;
+        } else {
+            gfx_SetTextFGColor(COL_NAME);
+            gfx_PrintStringXY(speaker, pad, y);
+            y += 11;
+        }
     }
 
     /* text_wrap() re-measures every character-width prefix of every line it

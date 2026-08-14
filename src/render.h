@@ -27,6 +27,16 @@
 #define BOX_Y        SCENE_H
 #define BOX_H        (SCREEN_H - SCENE_H)
 
+/* The real dialogue box/namebox art (tools/image_resolve.py's
+ * ui_box_art()/TEXTBOX_SIZE/NAMEBOX_SIZE -- keep these in sync with those).
+ * TEXTBOX_W spans the full box width/height (BOX_H) exactly; a namebox
+ * this size fits the box's own top-left corner without covering more than
+ * a sliver of the scene area above it. */
+#define TEXTBOX_W    320
+#define TEXTBOX_H    BOX_H
+#define NAMEBOX_W    72
+#define NAMEBOX_H    17
+
 /* Reserved palette entries. The generated game palette (tools/convert_images.py)
  * fills 8..255; these low indices are pinned via convimg 'fixed-entries' so
  * UI colors stay stable no matter which images the palette was built from.
