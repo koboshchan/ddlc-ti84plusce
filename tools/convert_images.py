@@ -54,15 +54,30 @@ TITLE_FIXED_ENTRIES = [
 
 
 def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -> dict:
-    sprite_files = [str((img_dir / s["file"]).resolve()) for s in manifest["sprites"]]
-    shared_files = [str((img_dir / s["file"]).resolve())
+    # Paths relative to run_convimg()'s own cwd (yaml_path.parent, i.e. this
+    # build's --build-dir) rather than absolute: confirmed real, not
+    # theoretical -- convimg's own output-path handling on Windows doesn't
+    # recognize a drive-letter-prefixed absolute path (`E:\...`) as already
+    # absolute, and naively concatenates it onto `directory:` instead of
+    # taking just the basename, producing a broken nested path
+    # (`gfx/E:\...\sprite.png.bin`) and a hard failure. POSIX absolute paths
+    # never hit this (a leading `/` reads as "already absolute" everywhere),
+    # which is why this went unnoticed until building on an actual Windows
+    # host. img_dir.parent is this build's own --build-dir in both real
+    # callers (import_game.py and this module's own main()).
+    build_dir = img_dir.parent
+    def rel(p: Path) -> str:
+        return os.path.relpath(p, build_dir)
+
+    sprite_files = [rel(img_dir / s["file"]) for s in manifest["sprites"]]
+    shared_files = [rel(img_dir / s["file"])
                     for s in manifest["scenes"] if s["palette"] == "shared"]
     own_scenes = [s for s in manifest["scenes"] if s["palette"] == "own"]
-    title_files = [str((img_dir / t["file"]).resolve()) for t in manifest.get("title_art", [])]
+    title_files = [rel(img_dir / t["file"]) for t in manifest.get("title_art", [])]
     title_bg = manifest.get("title_bg") or {}
-    title_bg_file = str((img_dir / title_bg["file"]).resolve()) if title_bg else None
+    title_bg_file = rel(img_dir / title_bg["file"]) if title_bg else None
     poem_bg = manifest.get("poem_bg") or {}
-    poem_bg_file = str((img_dir / poem_bg["file"]).resolve()) if poem_bg else None
+    poem_bg_file = rel(img_dir / poem_bg["file"]) if poem_bg else None
 
     palettes = [{
         "name": "pal_game",
@@ -179,7 +194,7 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
     # shared block (like sprites/backgrounds above) can't express this.
     for i, scene in enumerate(own_scenes):
         name = f"cg_{i:03d}"
-        path = str((img_dir / scene["file"]).resolve())
+        path = rel(img_dir / scene["file"])
         palettes.append({
             # FIXED_ENTRIES pinned here too (like pal_title): the dialogue box
             # stays on screen over a CG, so its COL_* indices need to mean the
@@ -200,7 +215,7 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
         "converts": converts,
         "outputs": [{
             "type": "bin",
-            "directory": str(gfx_dir.resolve()),
+            "directory": rel(gfx_dir),
             "palettes": outputs_palettes,
             "converts": outputs_converts,
         }],
