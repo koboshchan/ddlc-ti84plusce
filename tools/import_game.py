@@ -404,46 +404,65 @@ def write_appvar(data: bytes, name: str, appvar_dir: Path) -> Path:
     return out
 
 
-_ZX0_MIN_INPUT = 16  # see zx0_compress's own comment on why this exists
+_ZX0_MIN_INPUT = 16   # first padding attempt -- see zx0_compress's own comment
+_ZX0_MAX_ATTEMPTS = 12  # doubling from 16 bytes reaches 32768, well past any real sprite/chunk
 
 
 def zx0_compress(data: bytes, appvar_dir: Path) -> bytes:
     """Compresses @p data with the same zx0 codec convimg already uses for
     backgrounds/CGs (src/assets.c's assets_scene(), via zx0_Decompress) --
-    through convbin directly instead, since this is plain script bytecode,
-    not an image (convbin -c zx0 compresses arbitrary binary input just as
-    well; confirmed ~55-60% on real chunk data, script text compresses at
-    least as well as pixel data).
+    through convbin directly instead, since this is plain binary (script
+    bytecode, sprite RLET data), not an image (convbin -c zx0 compresses
+    arbitrary binary input just as well; confirmed ~55-60% on real script
+    chunk data, in line with what backgrounds already get).
 
     Returns a 2-byte little-endian uncompressed size followed by the raw
-    zx0 stream. assets_load_chunk() reads that header to size its malloc
-    before decompressing -- unlike a background's fixed SCENE_BYTES (a
-    compile-time constant every scene shares), a chunk's uncompressed size
-    varies per chunk, so it has to travel with the data. zx0_Decompress
-    itself is still the same self-terminating-stream call either way (see
-    assets_scene()'s own comment on why it needs no length parameter).
+    zx0 stream. The reader (assets_load_chunk(), sprite_decompress()) reads
+    that header to size its malloc before decompressing -- unlike a
+    background's fixed SCENE_BYTES (a compile-time constant every scene
+    shares), a chunk's or sprite's uncompressed size varies per entry, so
+    it has to travel with the data. zx0_Decompress itself is still the same
+    self-terminating-stream call either way (see assets_scene()'s own
+    comment on why it needs no length parameter).
 
-    A tiny input (confirmed real: an 11-byte chunk, one file whose whole
-    compiled body is a handful of statements) makes convbin's zx0 encoder
-    fail outright ("Input too large", confirmed real error text for exactly
-    this case -- not a size *limit* in the normal sense, some encoder edge
-    case near its minimum). Padding with trailing zero bytes up to
-    _ZX0_MIN_INPUT sidesteps it harmlessly: the header still records the
-    padded (not the original) length, so the decompressed buffer comes back
-    padded too, and that's fine -- assets_load_chunk() only ever reads as
-    far as script_buf's own embedded code_len/string_count say to, never
-    the literal end of the buffer.
+    A small input makes convbin's zx0 encoder fail outright ("Input too
+    large", confirmed real error text -- not a size *limit* in the normal
+    sense, some encoder edge case near its minimum). Confirmed NOT a fixed
+    byte-count cutoff: an 11-byte script chunk needed padding to only 16
+    bytes, but one 33-byte sprite (a tiny 7x4 RLET atom) failed all the way
+    up to 35 bytes and only succeeded at 36 -- the real threshold depends on
+    how the padded content itself happens to encode, not just its length.
+    Rather than guess a single safe constant, pad to _ZX0_MIN_INPUT and, on
+    failure, keep doubling and retrying until convbin succeeds or
+    _ZX0_MAX_ATTEMPTS is exhausted. The header always records the padded
+    (not the original) length, so the decompressed buffer comes back padded
+    too, and that's fine -- every reader only walks as far as its own
+    embedded structure (code_len/string_count, or a sprite's own
+    width/height + RLE run lengths) says to, never the literal end of the
+    buffer.
     """
     if len(data) > 0xFFFF:
         sys.exit(f"zx0_compress: {len(data)} bytes exceeds the u16 uncompressed-size header")
-    if len(data) < _ZX0_MIN_INPUT:
-        data = data + b"\x00" * (_ZX0_MIN_INPUT - len(data))
     appvar_dir.mkdir(parents=True, exist_ok=True)
     tmp_in = appvar_dir / "_zx0_in.bin"
     tmp_out = appvar_dir / "_zx0_out.bin"
-    tmp_in.write_bytes(data)
-    subprocess.run(["convbin", "-i", str(tmp_in), "-j", "bin", "-c", "zx0",
-                    "-k", "bin", "-o", str(tmp_out)], check=True, capture_output=True)
+
+    pad_to = max(len(data), _ZX0_MIN_INPUT)
+    last_stderr = ""
+    for _attempt in range(_ZX0_MAX_ATTEMPTS):
+        padded = data + b"\x00" * (pad_to - len(data))
+        tmp_in.write_bytes(padded)
+        result = subprocess.run(["convbin", "-i", str(tmp_in), "-j", "bin", "-c", "zx0",
+                                 "-k", "bin", "-o", str(tmp_out)], capture_output=True, text=True)
+        if result.returncode == 0:
+            data = padded
+            break
+        last_stderr = result.stderr
+        pad_to *= 2
+    else:
+        sys.exit(f"zx0_compress: convbin never succeeded even padded to {pad_to} bytes "
+                 f"(original {len(data)} bytes): {last_stderr}")
+
     compressed = tmp_out.read_bytes()
     tmp_in.unlink()
     tmp_out.unlink()
