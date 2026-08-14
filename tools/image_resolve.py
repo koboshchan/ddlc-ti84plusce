@@ -28,8 +28,10 @@ the full cartesian product of bodies x faces.
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import re
+import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -447,6 +449,8 @@ class ImageResolver:
 
         self._sprite_ids: dict = {}
         self._scene_ids: dict = {}
+        self._scene_content: dict = {}  # (pixel-content hash, fit) -> existing scene id, see _bake_flat
+        self._sprite_content: dict = {}  # pixel-content hash -> existing sprite id, see _bake_sprite
         self._layer_result: dict = {}   # imgname -> (base_id, overlay_id) -- sprite_layers()
         self._layer_ids: dict = {}      # dedup key -> sprite id -- see _bake_layer_atom()
 
@@ -473,7 +477,13 @@ class ImageResolver:
         entry = self._bake_sprite(imgname)
         if entry is None:
             return None
+        if isinstance(entry, int):
+            # _bake_sprite found this content already baked under a
+            # different tag -- see _bake_flat's own comment, same reasoning.
+            self._sprite_ids[imgname] = entry
+            return entry
         idx = len(self.sprites)
+        self._sprite_content[entry.pop("_content_hash")] = idx
         self.sprites.append(entry)
         self._sprite_ids[imgname] = idx
         return idx
@@ -653,6 +663,13 @@ class ImageResolver:
         entry = self._bake_flat(imgname, BG_SIZE if is_bg else CG_SIZE, fit=not is_bg)
         if entry is None:
             return None
+        if isinstance(entry, int):
+            # _bake_flat found this content already baked under a different
+            # tag (see its own comment) -- reuse that scene id rather than
+            # shipping a duplicate AppVar (and, for an "own" CG, a duplicate
+            # palette).
+            self._scene_ids[imgname] = entry
+            return entry
         entry["palette"] = "shared" if is_bg else "own"
         # Which pal_cg_NNN convimg emits for this scene (matches
         # convert_images.py's `own_scenes` enumeration order) -- None for
@@ -663,6 +680,7 @@ class ImageResolver:
             self._own_scene_count += 1
 
         idx = len(self.scenes)
+        self._scene_content[(entry.pop("_content_hash"), not is_bg)] = idx
         self.scenes.append(entry)
         self._scene_ids[imgname] = idx
         return idx
@@ -1012,12 +1030,23 @@ class ImageResolver:
         scaled = cropped.resize(size, PILImage.LANCZOS)
         dx, dy = self._canvas_offsets(canvas.size, bbox, size)
 
+        # Same dedup as _bake_flat's, but the draw offset (derived from
+        # where this content sat in its own, possibly differently-sized
+        # source canvas) has to match too, not just pixels -- two tags with
+        # identical cropped content from differently shaped canvases would
+        # otherwise reuse an id whose dx/dy means something else.
+        content_hash = hashlib.sha256(scaled.tobytes() + struct.pack("<hh", dx, dy)).digest()
+        existing = self._sprite_content.get(content_hash)
+        if existing is not None:
+            return existing
+
         name = _safe_filename_part(imgname) or "sprite"
         filename = f"sprite_{len(self.sprites):03d}_{name}.png"
         scaled.save(self.img_dir / filename)
 
         return {"imgname": list(imgname), "file": filename,
-                "w": size[0], "h": size[1], "dx": dx, "dy": dy}
+                "w": size[0], "h": size[1], "dx": dx, "dy": dy,
+                "_content_hash": content_hash}
 
     def _bake_flat(self, imgname: tuple, size: tuple, fit: bool) -> Optional[dict]:
         defn = self.table.get(imgname)
@@ -1042,11 +1071,31 @@ class ImageResolver:
             else:
                 canvas = art.resize(size, PILImage.LANCZOS).convert("RGBA")
 
+        # Several real Act 3 tags bake to pixel-identical content under this
+        # engine's own simplifications -- confirmed real, not hypothetical:
+        # a zoom/dizzy ATL wrapper (s_kill_zoom et al) resolves to the exact
+        # same picture as its un-zoomed base once the zoom transform is
+        # dropped (no per-frame transform support at all, see
+        # _first_atl_string's RawChild case above), a weighted RawChoice
+        # background variant (bg club_day/club_day2) always takes the first
+        # branch (no randomization), and more than one "dark overlay" tag
+        # (black/vignette/dark) quantizes to the same flat color. Baking and
+        # shipping each as its own AppVar (plus, for an "own"-palette CG, its
+        # own duplicate palette) is pure waste -- reuse the existing scene id
+        # instead of a fresh bake whenever the *rendered* content (not the
+        # tag) already matches one, keyed on `fit` too since a CG and a
+        # background can't share a palette bucket even from identical pixels.
+        content_hash = hashlib.sha256(canvas.tobytes()).digest()
+        existing = self._scene_content.get((content_hash, fit))
+        if existing is not None:
+            return existing
+
         name = _safe_filename_part(imgname) or "scene"
         filename = f"{'cg' if fit else 'bg'}_{len(self.scenes):03d}_{name}.png"
         canvas.save(self.img_dir / filename)
 
-        return {"imgname": list(imgname), "file": filename, "w": size[0], "h": size[1]}
+        return {"imgname": list(imgname), "file": filename, "w": size[0], "h": size[1],
+                "_content_hash": content_hash}
 
     # -- output ---------------------------------------------------------------
 
