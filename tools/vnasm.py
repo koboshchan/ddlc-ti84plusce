@@ -35,6 +35,7 @@ OP_TEAR_SHOW = 0x14
 OP_TEAR_HIDE = 0x15
 OP_WINDOW_HIDE = 0x16
 OP_WINDOW_SHOW = 0x17
+OP_GLITCHTEXT = 0x18
 
 CMP_EQ, CMP_NE, CMP_LT, CMP_LE, CMP_GT, CMP_GE = range(6)
 TRANS_CUT, TRANS_FADE = 0, 1
@@ -280,6 +281,13 @@ class Assembler:
         self._u8(var)
         self._i16(lo)
         self._i16(hi)
+
+    def glitchtext(self, lo: int, hi: int) -> None:
+        """Compiles DDLC's own `VAR = glitchtext(N)` (lo == hi) or
+        `VAR = glitchtext(renpy.random.randint(lo, hi))` -- see OP_GLITCHTEXT."""
+        self._u8(OP_GLITCHTEXT)
+        self._u8(lo)
+        self._u8(hi)
 
     def pause(self, ms: int) -> None:
         """0 means wait for input with no timeout (DDLC's own bare

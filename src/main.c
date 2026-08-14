@@ -676,10 +676,50 @@ static const char *speaker_display_name(const vn_vm_t *vm, uint8_t speaker)
     return (name != NULL && name[0] != '\0') ? name : fallback[speaker];
 }
 
+/* Replaces the first "[gtext]"/"[s_name]"/"[m_name]"/"[ntext]" in @p s with
+ * vm->glitch_buf's current content -- the same "[player]" idiom
+ * substitute_player_name() already handles, generalized to a small fixed
+ * set of tag names. DDLC's real script assigns the corrupted text to a
+ * different local variable per call site (gtext/s_name/m_name/ntext), but
+ * every one of them is always immediately interpolated and never read any
+ * other way (confirmed across every real call site -- see
+ * _match_glitchtext_call's own comment), and only one is ever "live" for a
+ * given line, so there's no ambiguity in backing all four with the one
+ * buffer OP_GLITCHTEXT just filled. */
+static const char *substitute_glitch_text(const vn_vm_t *vm, const char *s)
+{
+    static const char *const tags[] = { "[gtext]", "[s_name]", "[m_name]", "[ntext]" };
+    static char buf[256];
+
+    for (size_t i = 0; i < sizeof(tags) / sizeof(tags[0]); i++) {
+        const char *tag = strstr(s, tags[i]);
+        if (!tag) {
+            continue;
+        }
+
+        size_t tag_len = strlen(tags[i]);
+        size_t prefix_len = (size_t)(tag - s);
+        size_t glitch_len = strlen(vm->glitch_buf);
+        size_t suffix_len = strlen(tag + tag_len);
+
+        if (prefix_len + glitch_len + suffix_len >= sizeof(buf)) {
+            return s; /* would overflow the scratch buffer -- degrade to the
+                        * literal tag rather than corrupt, see
+                        * substitute_player_name()'s own comment */
+        }
+
+        memcpy(buf, s, prefix_len);
+        memcpy(buf + prefix_len, vm->glitch_buf, glitch_len);
+        memcpy(buf + prefix_len + glitch_len, tag + tag_len, suffix_len + 1); /* +NUL */
+        return buf;
+    }
+    return s; /* common case: no substitution, zero-copy */
+}
+
 static const char *host_string(void *ctx, uint16_t index)
 {
-    (void)ctx;
-    return substitute_player_name(assets_string(index));
+    const vn_vm_t *vm = ctx;
+    return substitute_glitch_text(vm, substitute_player_name(assets_string(index)));
 }
 
 static void host_update(void *ctx, const vn_scene_t *scene, uint8_t trans)

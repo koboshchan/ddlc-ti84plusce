@@ -119,6 +119,29 @@ enum vn_op {
                           * when there's dialogue" mean anything beyond
                           * "showing", since a real Say always draws the
                           * box regardless of this flag.                */
+    OP_GLITCHTEXT = 0x18, /* lo:u8 hi:u8 -- refills vm->glitch_buf with a
+                          * fresh run of random "corrupted" characters,
+                          * count uniform in [lo, hi] (lo==hi for DDLC's
+                          * many fixed-length calls, e.g. glitchtext(48);
+                          * a real lo<hi range only appears via
+                          * glitchtext(renpy.random.randint(lo, hi)) --
+                          * script-ch23.rpyc). Compiles DDLC's own
+                          * `VAR = glitchtext(N)` (glitchtext.rpyc):
+                          * VAR itself is never a real story variable this
+                          * engine needs a slot for, since every real use
+                          * immediately interpolates it into dialogue via
+                          * "[gtext]"/"[s_name]"/"[m_name]"/"[ntext]" and
+                          * never reads it any other way -- see
+                          * main.c's substitute_glitch_text(), the same
+                          * "[player]" idiom generalized to a small fixed
+                          * set of tag names all backed by this one
+                          * buffer. DDLC's own charset is Latin-Extended/
+                          * accented Unicode glyphs (glitchtext.rpyc's
+                          * `nonunicode`); this engine's font is ASCII-only,
+                          * so vn.c substitutes a documented, visually
+                          * "corrupted" ASCII punctuation set instead --
+                          * same "approximate, don't just drop it" call as
+                          * the zoom/dizzy ATL simplifications.          */
 };
 
 /** Comparison selectors for OP_IF. */
@@ -165,6 +188,12 @@ enum vn_trans { TRANS_CUT = 0, TRANS_FADE = 1 };
  * about to start failing builds. Costs 512 bytes of RAM in vn_vm_t and the
  * same again in a save. */
 #define VN_MAX_VARS     256
+
+/* OP_GLITCHTEXT's buffer capacity -- 200 covers the largest real call found
+ * (script-exclusives2-yuri.rpyc's glitchtext(200)) with no headroom needed,
+ * since nothing ever asks for more. +1 for the NUL terminator main.c's
+ * substitute_glitch_text() reads it as a plain C string with. */
+#define VN_GLITCH_MAX   200
 
 /* Where interned string ids begin. The VM's variables are int16 and hold no
  * strings, but DDLC only ever assigns a string and later compares it for
@@ -415,6 +444,15 @@ typedef struct {
      * replaying the exact same sequence of future draws, which is what a
      * player would actually expect from "random". */
     uint32_t       rng_state;
+
+    /* OP_GLITCHTEXT's output -- always NUL-terminated after a write, so the
+     * host can treat it as a plain C string (see main.c's
+     * substitute_glitch_text()). Not part of a save, same reasoning as
+     * rng_state: whatever a loaded game shows here gets redrawn by the
+     * script's own logic before it matters again, nothing reads this
+     * buffer's content independent of a fresh OP_GLITCHTEXT run right
+     * before the OP_SAY that uses it. */
+    char           glitch_buf[VN_GLITCH_MAX + 1];
 
     const vn_host_t *host;
     vn_status_t      status;

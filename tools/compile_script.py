@@ -1393,6 +1393,16 @@ class Compiler:
         if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
             var = _ident_name(stmt.targets[0])
             if var is not None:
+                glitch_bounds = _match_glitchtext_call(stmt.value)
+                if glitch_bounds is not None:
+                    # `VAR = glitchtext(...)` -- VAR itself never gets a real
+                    # slot: every real use immediately interpolates it into
+                    # dialogue as "[gtext]"/"[s_name]"/"[m_name]"/"[ntext]"
+                    # and never reads it any other way (confirmed across
+                    # every real call site), so there's nothing to name a
+                    # variable for -- just refill the one shared buffer.
+                    self.asm.glitchtext(*glitch_bounds)
+                    return True
                 dispatch = _match_poemwinner_dispatch(stmt.value)
                 if dispatch is not None:
                     # No bytecode here -- the real dispatch is a compile-time
@@ -2099,6 +2109,21 @@ def _randint_call(node) -> tuple[int, int] | None:
         lo, hi = _const_int(node.args[0]), _const_int(node.args[1])
         return (lo, hi) if lo is not None and hi is not None else None
     return None
+
+
+def _match_glitchtext_call(node) -> tuple[int, int] | None:
+    """(lo, hi) if @p node is `glitchtext(N)` (a literal count -- most real
+    calls, e.g. glitchtext(48)) or `glitchtext(renpy.random.randint(lo,
+    hi))` (script-ch23.rpyc's two dynamic-length calls), else None. See
+    OP_GLITCHTEXT -- both compile to the same lo/hi draw, lo==hi for the
+    literal case."""
+    if not (isinstance(node, ast.Call) and _ident_name(node.func) == "glitchtext"
+            and len(node.args) == 1 and not node.keywords):
+        return None
+    n = _const_int(node.args[0])
+    if n is not None:
+        return (n, n)
+    return _randint_call(node.args[0])
 
 
 # Real defaults for the `tear` screen's parameters (effects.rpy's own
