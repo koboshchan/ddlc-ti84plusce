@@ -36,7 +36,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+import random
+
 from PIL import Image as PILImage
+from PIL import ImageDraw
 
 from rpyc_ast import flatten, kind, load_rpyc, pycode_source
 
@@ -156,6 +159,104 @@ class ImageDef:
                                                     # declared order (first true wins, matching
                                                     # ConditionSwitch's own semantics) -- see
                                                     # compile_script.py's _emit_condswitch_dispatch
+
+
+# --- procedural approximations -----------------------------------------------
+#
+# A handful of Act 2/3 effects are pure runtime particle sims or animated
+# per-pixel masks with no static frame anywhere to fall back to (unlike the
+# zoom/dizzy/crop cases _first_atl_string already handles by keeping the real
+# underlying picture) -- effects.rpy's Blood() particle displayable, ch30's
+# AnimatedMask color-wash overlays, and script-exclusives2-natsuki.rpyc's
+# RectCluster speck cluster easter egg. Rather than leave these as bare
+# skips, each gets a synthetic static approximation baked here with Pillow --
+# clearly not the real animation, but closer to the real moment than a flat
+# rectangle or a missing image. Every generator is deterministic (seeded
+# RNG) so re-running the import pipeline bakes byte-identical output, the
+# same as everything else -- the convimg cache and content-hash dedup both
+# depend on that.
+
+def _procedural_blood(size: tuple) -> "PILImage.Image":
+    """blood/blood_eye/blood_eye2 (effects.rpy's Blood() particle
+    displayable, yuri_kill's death scene and later corruption beats) -- a
+    real-time particle spray simulation, no source image at all. Bakes a
+    dark red wash with random darker blotches as a static "already
+    splattered" stand-in."""
+    rng = random.Random(1337)
+    canvas = PILImage.new("RGBA", size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+    draw.rectangle([0, 0, size[0], size[1]], fill=(70, 0, 0, 255))
+    for _ in range(28):
+        cx = rng.randint(0, size[0])
+        cy = rng.randint(0, size[1])
+        r = rng.randint(2, max(3, size[0] // 8))
+        shade = rng.randint(90, 170)
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(shade, 0, 0, 255))
+    return canvas
+
+
+def _procedural_room_mask(size: tuple) -> "PILImage.Image":
+    """room_mask/room_mask2 (script-ch30.rpyc's AnimatedMask-based color-
+    wash dissolve, two real color variants composited together -- #ff6000
+    orange at amount 0.10, #ffffff white at amount 0.03). A pure animated
+    per-pixel mask, no source image. Bakes a flat opaque tint in the more
+    prominent (higher-amount) orange -- this engine has no per-pixel alpha
+    to blend the two the way the real mask does (see render.h's file
+    comment), so picking the dominant color is closer than an even 50/50
+    blend would be."""
+    return PILImage.new("RGBA", size, (255, 96, 0, 255))
+
+
+# n_rects_ghost1-5's real (pos, size), decompiled straight from
+# script-exclusives2-natsuki.rpyc's own ATL (DDLC's 1280x720 canvas) --
+# small moving black rect-cluster specks plus a final jump-scare zoom
+# (4/5). Scaled by BG_SIZE[0]/1280 (== BG_SIZE[1]/720, same 16:9 ratio) to
+# land at the right relative position on the half-resolution baked canvas.
+_N_RECTS_GHOST_GEOMETRY = {
+    ("n_rects_ghost1",): ((580, 270), (20, 25)),
+    ("n_rects_ghost2",): ((652, 264), (20, 25)),
+    ("n_rects_ghost3",): ((616, 310), (25, 15)),
+    ("n_rects_ghost4",): ((735, 310), (25, 20)),
+    ("n_rects_ghost5",): ((740, 376), (25, 20)),
+}
+
+
+def _procedural_ghost_speck(imgname: tuple, size: tuple) -> "PILImage.Image":
+    """Natsuki's own "ghost" easter egg (script-exclusives2-natsuki.rpyc):
+    small dark rect-cluster specks that fade in over her portrait during a
+    specific second-playthrough exclusive scene, described on the DDLC
+    wiki as barely-noticeable creepy background shapes. This engine has no
+    layered-overlay-on-an-existing-scene concept for a bare Show like this
+    one (see _emit_Show's own comment -- a non-character Show always
+    replaces the whole scene, same as everywhere else in this compiler),
+    so showing one of these necessarily blanks whatever was on screen
+    rather than overlaying it -- a real fidelity loss, documented here
+    rather than silently accepted. Bakes a near-black backdrop with the
+    speck's own real position/size (scaled down) drawn as a slightly
+    lighter dark-red blob, evoking the "something's wrong" mood even
+    without the real portrait underneath."""
+    (px, py), (pw, ph) = _N_RECTS_GHOST_GEOMETRY[imgname]
+    scale = size[0] / 1280.0
+    x, y = round(px * scale), round(py * scale)
+    w, h = max(2, round(pw * scale)), max(2, round(ph * scale))
+    canvas = PILImage.new("RGBA", size, (8, 4, 4, 255))
+    draw = ImageDraw.Draw(canvas)
+    draw.ellipse([x, y, x + w, y + h], fill=(40, 10, 10, 255))
+    return canvas
+
+
+_PROCEDURAL_GENERATORS = {
+    ("blood",): lambda size: _procedural_blood(size),
+    ("blood_eye",): lambda size: _procedural_blood(size),
+    ("blood_eye2",): lambda size: _procedural_blood(size),
+    ("room_mask",): lambda size: _procedural_room_mask(size),
+    ("room_mask2",): lambda size: _procedural_room_mask(size),
+    ("n_rects_ghost1",): lambda size: _procedural_ghost_speck(("n_rects_ghost1",), size),
+    ("n_rects_ghost2",): lambda size: _procedural_ghost_speck(("n_rects_ghost2",), size),
+    ("n_rects_ghost3",): lambda size: _procedural_ghost_speck(("n_rects_ghost3",), size),
+    ("n_rects_ghost4",): lambda size: _procedural_ghost_speck(("n_rects_ghost4",), size),
+    ("n_rects_ghost5",): lambda size: _procedural_ghost_speck(("n_rects_ghost5",), size),
+}
 
 
 def _find_path_in_call(node: ast.Call, depth: int = 0) -> Optional[str]:
@@ -1041,6 +1142,13 @@ class ImageResolver:
         return self._render_def(defn, depth + 1) if defn else None
 
     def _render_def(self, defn: ImageDef, depth: int = 0) -> Optional[PILImage.Image]:
+        procedural = _PROCEDURAL_GENERATORS.get(defn.imgname)
+        if procedural is not None:
+            # A pure runtime particle sim / animated mask / speck cluster
+            # with no static frame at all -- see the "procedural
+            # approximations" section above the ImageResolver class.
+            return procedural(BG_SIZE)
+
         if defn.kind == "solid":
             return PILImage.new("RGBA", (64, 64), defn.color + (255,))
 
