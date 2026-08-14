@@ -160,11 +160,29 @@ bool assets_load_chunk(uint8_t chunk_id)
     char name[9];
     sprintf(name, "DSCR%u", chunk_id);
 
-    uint16_t total;
-    script_buf = read_whole(name, &total);
-    if (!script_buf) {
+    /* Chunks ship zx0-compressed now (tools/import_game.py's
+     * zx0_compress()): a 2-byte uncompressed-size header (unlike a
+     * background's fixed SCENE_BYTES, a chunk's real size varies, so it
+     * has to travel with the data) followed by the compressed stream.
+     * Safe the same way assets_scene() already is -- the header gives an
+     * exact malloc size before zx0_Decompress ever writes a byte, so
+     * there's no risk of it overrunning a too-small destination. This
+     * only runs once per chunk *swap* (not per frame, unlike
+     * assets_scene()'s per-redraw decompress), so the decode cost here is
+     * negligible next to what it buys back in archive space. */
+    uint8_t handle = ti_Open(name, "r");
+    if (!handle) {
         return false;
     }
+    const uint8_t *packed = ti_GetDataPtr(handle);
+    uint16_t total = read_u16le(packed);
+    script_buf = malloc(total);
+    if (!script_buf) {
+        ti_Close(handle);
+        return false;
+    }
+    zx0_Decompress(script_buf, packed + 2);
+    ti_Close(handle);
 
     uint16_t code_len = read_u16le(script_buf);
     script_code = script_buf + 2;

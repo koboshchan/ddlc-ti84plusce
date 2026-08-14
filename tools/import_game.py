@@ -404,6 +404,52 @@ def write_appvar(data: bytes, name: str, appvar_dir: Path) -> Path:
     return out
 
 
+_ZX0_MIN_INPUT = 16  # see zx0_compress's own comment on why this exists
+
+
+def zx0_compress(data: bytes, appvar_dir: Path) -> bytes:
+    """Compresses @p data with the same zx0 codec convimg already uses for
+    backgrounds/CGs (src/assets.c's assets_scene(), via zx0_Decompress) --
+    through convbin directly instead, since this is plain script bytecode,
+    not an image (convbin -c zx0 compresses arbitrary binary input just as
+    well; confirmed ~55-60% on real chunk data, script text compresses at
+    least as well as pixel data).
+
+    Returns a 2-byte little-endian uncompressed size followed by the raw
+    zx0 stream. assets_load_chunk() reads that header to size its malloc
+    before decompressing -- unlike a background's fixed SCENE_BYTES (a
+    compile-time constant every scene shares), a chunk's uncompressed size
+    varies per chunk, so it has to travel with the data. zx0_Decompress
+    itself is still the same self-terminating-stream call either way (see
+    assets_scene()'s own comment on why it needs no length parameter).
+
+    A tiny input (confirmed real: an 11-byte chunk, one file whose whole
+    compiled body is a handful of statements) makes convbin's zx0 encoder
+    fail outright ("Input too large", confirmed real error text for exactly
+    this case -- not a size *limit* in the normal sense, some encoder edge
+    case near its minimum). Padding with trailing zero bytes up to
+    _ZX0_MIN_INPUT sidesteps it harmlessly: the header still records the
+    padded (not the original) length, so the decompressed buffer comes back
+    padded too, and that's fine -- assets_load_chunk() only ever reads as
+    far as script_buf's own embedded code_len/string_count say to, never
+    the literal end of the buffer.
+    """
+    if len(data) > 0xFFFF:
+        sys.exit(f"zx0_compress: {len(data)} bytes exceeds the u16 uncompressed-size header")
+    if len(data) < _ZX0_MIN_INPUT:
+        data = data + b"\x00" * (_ZX0_MIN_INPUT - len(data))
+    appvar_dir.mkdir(parents=True, exist_ok=True)
+    tmp_in = appvar_dir / "_zx0_in.bin"
+    tmp_out = appvar_dir / "_zx0_out.bin"
+    tmp_in.write_bytes(data)
+    subprocess.run(["convbin", "-i", str(tmp_in), "-j", "bin", "-c", "zx0",
+                    "-k", "bin", "-o", str(tmp_out)], check=True, capture_output=True)
+    compressed = tmp_out.read_bytes()
+    tmp_in.unlink()
+    tmp_out.unlink()
+    return struct.pack("<H", len(data)) + compressed
+
+
 def pack_group(files: list[Path],
                max_size: int = MAXVARSIZE) -> tuple[list[bytes], list[tuple[int, int, int]]]:
     """Greedily pack files into <=max_size pieces, one AppVar's worth each,
@@ -508,7 +554,8 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
     appvars: list[Path] = []
     for chunk_path in chunk_paths:
         chunk_id = int(chunk_path.stem.removeprefix("chunk"))
-        appvars.append(write_appvar(chunk_path.read_bytes(), ti_name("DSCR", chunk_id), appvar_dir))
+        compressed = zx0_compress(chunk_path.read_bytes(), appvar_dir)
+        appvars.append(write_appvar(compressed, ti_name("DSCR", chunk_id), appvar_dir))
 
     # Packed (chunk_id << 16 | offset) for `label start` -- see vn.h's
     # VN_PACK_ADDR and find_entry_point(). src/assets.c reads this instead of
