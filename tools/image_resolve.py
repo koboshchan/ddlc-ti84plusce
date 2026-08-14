@@ -44,7 +44,7 @@ from rpyc_ast import flatten, kind, load_rpyc, pycode_source
 # here only as documentation of where definitions actually live.
 _KNOWN_IMAGE_FILES = ("definitions.rpyc", "cgs.rpyc", "poems.rpyc", "effects.rpyc")
 
-_HEX_COLOR = re.compile(r"^#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$")
+_HEX_COLOR = re.compile(r"^#([0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3})$")
 
 # DDLC's real character scale, not a tuned one. Every character transform in
 # transforms.rpy (`tcommon`/`focus`/`hop`/`sink`, all of them) takes `z=0.80`
@@ -136,12 +136,16 @@ class Layer:
 @dataclass
 class ImageDef:
     imgname: tuple
-    kind: str                      # 'solid' | 'path' | 'composite' | 'unsupported'
+    kind: str                      # 'solid' | 'path' | 'composite' | 'condswitch' | 'unsupported'
     color: Optional[tuple] = None  # (r,g,b) for 'solid'
     path: Optional[str] = None     # for 'path'
     canvas: Optional[tuple] = None # (w,h) for 'composite'
     layers: list = field(default_factory=list)  # [Layer, ...] for 'composite'
     reason: Optional[str] = None   # for 'unsupported'
+    variants: list = field(default_factory=list)  # [(cond_src, path), ...] for 'condswitch',
+                                                    # declared order (first true wins, matching
+                                                    # ConditionSwitch's own semantics) -- see
+                                                    # compile_script.py's _emit_condswitch_dispatch
 
 
 def _first_atl_string(atl_node) -> Optional[str]:
@@ -171,6 +175,19 @@ def _first_atl_string(atl_node) -> Optional[str]:
                     continue
                 if isinstance(node, ast.Constant) and isinstance(node.value, str):
                     return node.value
+                if isinstance(node, ast.Call) and node.args:
+                    # A displayable call whose first positional arg is a real
+                    # image path, e.g. Act 3's veins effect --
+                    # AnimatedMask("images/bg/veinmask.png", "mask", ...).
+                    # The mask/animation itself isn't reproducible (no
+                    # per-pixel masking), but the underlying picture is a
+                    # reasonable static stand-in -- same "drop the transform,
+                    # keep the real picture" call as the zoom/dizzy cases
+                    # below.
+                    first = node.args[0]
+                    if (isinstance(first, ast.Constant) and isinstance(first.value, str)
+                            and _IMAGE_EXT.search(first.value)):
+                        return first.value
 
         elif k == "RawChoice" and stmt.choices:
             _weight, block = stmt.choices[0]
@@ -183,11 +200,19 @@ def _first_atl_string(atl_node) -> Optional[str]:
             if found is not None:
                 return found
 
-        elif k == "RawBlock":
-            # A bare nested block, e.g. monika g2's animation wraps a
-            # RawChoice one level deeper than club_day2's did -- recurse the
-            # same way rather than assuming one fixed nesting depth.
-            found = _first_atl_string(stmt)
+        elif k in ("RawBlock", "RawChild"):
+            # RawBlock: a bare nested block, e.g. monika g2's animation wraps
+            # a RawChoice one level deeper than club_day2's did. RawChild:
+            # ATL's `contains` form (e.g. Act 3's s_kill_zoom family, a real
+            # dizzy/zoom wrapper one level around the actual picture, itself
+            # referenced by name rather than inline) -- its payload lives in
+            # .children instead of .statements. Recurse either way rather
+            # than assuming one fixed nesting shape; a symbolic name this
+            # returns (not a literal path) is resolved against the rest of
+            # the image table later, in ImageResolver._render_ref().
+            children = getattr(stmt, "children", None)
+            block = children[0] if k == "RawChild" and children else stmt
+            found = _first_atl_string(block)
             if found is not None:
                 return found
 
@@ -242,6 +267,13 @@ def _resolve_source(imgname: tuple, src: str) -> ImageDef:
             hex_digits = value[1:]
             if len(hex_digits) == 3:
                 hex_digits = "".join(c * 2 for c in hex_digits)
+            # An 8-digit form (#RRGGBBAA, e.g. Act 3's "dark"/"darkred"
+            # dimming overlays) carries an alpha byte this engine's blits
+            # can't use -- render.c has no per-pixel alpha compositing (see
+            # render.h's file comment). Drop it and bake the color fully
+            # opaque rather than reject the whole definition: a documented
+            # fidelity loss (a translucent tint becomes a solid one), not a
+            # missing image.
             rgb = tuple(int(hex_digits[i:i + 2], 16) for i in (0, 2, 4))
             return ImageDef(imgname, "solid", color=rgb)
         return ImageDef(imgname, "path", path=value)
@@ -264,6 +296,22 @@ def _resolve_source(imgname: tuple, src: str) -> ImageDef:
                 and isinstance(node.args[0], ast.Constant)
                 and isinstance(node.args[0].value, str)):
             return ImageDef(imgname, "path", path=node.args[0].value)
+
+        if (fname == "ConditionSwitch" and not node.keywords and len(node.args) >= 2
+                and len(node.args) % 2 == 0
+                and all(isinstance(a, ast.Constant) and isinstance(a.value, str) for a in node.args)):
+            # Act 3's y_kill portrait: a threshold ladder over
+            # persistent.yuri_kill, e.g. ConditionSwitch("persistent.yuri_kill
+            # >= 1380", "images/cg/y_kill/3a.png", ..., "True",
+            # "images/cg/y_kill/1a.png"). Ren'Py evaluates these in
+            # declaration order and uses the first true condition -- kept as
+            # a raw (condition source, path) list rather than parsed here so
+            # compile_script.py's own condition machinery (already handling
+            # comparisons like this for `if` statements) does the parsing,
+            # not a second copy of it.
+            values = [a.value for a in node.args]
+            variants = list(zip(values[0::2], values[1::2]))
+            return ImageDef(imgname, "condswitch", variants=variants)
 
         return ImageDef(imgname, "unsupported", reason=f"unsupported call: {ast.dump(node)[:80]}")
 
@@ -619,6 +667,33 @@ class ImageResolver:
         self._scene_ids[imgname] = idx
         return idx
 
+    def condswitch_variants(self, imgname: tuple) -> Optional[list]:
+        """For a ConditionSwitch-backed image (e.g. y_kill's corruption-tier
+        portrait -- see _resolve_source), bakes each distinct real PNG it
+        references as its own scene and returns [(condition_source_or_None,
+        scene_id), ...] in declared order (condition_source is None for the
+        unconditional "True" fallback). None if @p imgname isn't one.
+
+        Each variant is registered under a synthetic table key derived from
+        its path, not imgname + index, so two thresholds that happen to
+        share a picture (confirmed real: y_kill's >=1380 and >=920 both
+        point at 3a.png) bake and cache to the same scene id via scene_id()'s
+        own dedup rather than shipping the same art twice.
+        """
+        defn = self.table.get(imgname)
+        if defn is None or defn.kind != "condswitch":
+            return None
+
+        out = []
+        for cond_src, path in defn.variants:
+            synth = (f"{imgname[0]}$cond${path}",)
+            self.table.setdefault(synth, ImageDef(imgname=synth, kind="path", path=path))
+            sid = self.scene_id(synth)
+            if sid is None:
+                continue
+            out.append((None if cond_src.strip() == "True" else cond_src, sid))
+        return out or None
+
     # -- title screen ---------------------------------------------------------
 
     def _title_entry(self, name: str, rel_path: str, img, x: int, y: int,
@@ -893,12 +968,20 @@ class ImageResolver:
 
         if defn.kind == "composite":
             canvas = PILImage.new("RGBA", defn.canvas, (0, 0, 0, 0))
+            any_layer = False
             for layer in defn.layers:
                 img = self._render_ref(layer.path, depth)
                 if img is None:
-                    return None
+                    # A decorative layer this engine can't resolve (e.g. Act
+                    # 3's n_cg1b overlays procedural RectCluster specks with
+                    # no static frame) shouldn't sink an otherwise-good base
+                    # CG -- drop just that layer and keep going, same
+                    # "approximate rather than refuse" precedent as the
+                    # zoom/dizzy ATL cases above.
+                    continue
                 canvas.alpha_composite(img, (layer.x, layer.y))
-            return canvas
+                any_layer = True
+            return canvas if any_layer else None
 
         return None
 
