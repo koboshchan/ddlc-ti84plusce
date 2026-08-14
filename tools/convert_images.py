@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -206,11 +207,18 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
     }
 
 
-def run_convimg(yaml_path: Path) -> None:
+def run_convimg(yaml_path: Path, threads: int | None = None) -> None:
     if shutil.which("convimg") is None:
         sys.exit("convimg not found on PATH. Export CEdev/bin, e.g.:\n"
                   '  export PATH="$HOME/CEdev/bin:$PATH"')
-    subprocess.run(["convimg", "-i", yaml_path.name], check=True, cwd=yaml_path.parent)
+    # convimg's own default is a fixed 4 threads regardless of the host --
+    # a huge waste on a many-core machine for the palette quantization pass,
+    # which is CPU-bound and embarrassingly parallel across images. Use
+    # every logical core by default rather than convimg's conservative
+    # built-in default.
+    threads = threads or os.cpu_count() or 4
+    subprocess.run(["convimg", "-i", yaml_path.name, "--threads", str(threads)],
+                   check=True, cwd=yaml_path.parent)
 
 
 def main() -> int:
