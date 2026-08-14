@@ -480,27 +480,62 @@ static bool sprite_lookup(uint16_t id, uint8_t *appvar_out, uint16_t *offset_out
     return true;
 }
 
-bool assets_draw_sprite(uint16_t id, int center_x, int feet_y)
+/* Sprites ship zx0-compressed now, same as script chunks (see
+ * assets_load_chunk()'s own comment on the header format) -- a 2-byte
+ * uncompressed-size prefix followed by the zx0 stream. Unlike script
+ * chunks, there's no single resident buffer to hold onto: each draw
+ * decompresses fresh into a caller-owned, caller-freed buffer, which costs
+ * a real decode on every single call (including every hop/sink animation
+ * frame, since the sprite id doesn't change mid-animation, only its
+ * position). That's the same tradeoff assets_scene() already made for
+ * backgrounds -- "decompressing straight into dest every call... is the
+ * correctness-first fallback" -- and a much smaller one here: a typical
+ * sprite atom is a few KB against a background's fixed 57,600 bytes, so
+ * this is proportionally cheaper than a cost this engine already pays on
+ * every typewriter tick and idle-bob redraw, not a new class of expense.
+ *
+ * Returns NULL (nothing to free) on any failure -- no id, no AppVar, or the
+ * malloc failing. Callers must free() a non-NULL result once done reading
+ * it as a gfx_rletsprite_t*. */
+static uint8_t *sprite_decompress(uint16_t id, int16_t *dx_out, int16_t *dy_out)
 {
     uint8_t appvar_idx;
     uint16_t offset;
-    int16_t dx, dy;
-    if (!sprite_lookup(id, &appvar_idx, &offset, &dx, &dy)) {
-        return false;
+    if (!sprite_lookup(id, &appvar_idx, &offset, dx_out, dy_out)) {
+        return NULL;
     }
 
     char name[9];
     sprintf(name, "DSPR%u", appvar_idx);
     uint8_t handle = ti_Open(name, "r");
     if (!handle) {
+        return NULL;
+    }
+
+    const uint8_t *packed = ti_GetDataPtr(handle) + offset;
+    uint16_t total = read_u16le(packed);
+    uint8_t *buf = malloc(total);
+    if (!buf) {
+        ti_Close(handle);
+        return NULL;
+    }
+    zx0_Decompress(buf, packed + 2);
+    ti_Close(handle);
+    return buf;
+}
+
+bool assets_draw_sprite(uint16_t id, int center_x, int feet_y)
+{
+    int16_t dx, dy;
+    uint8_t *buf = sprite_decompress(id, &dx, &dy);
+    if (!buf) {
         return false;
     }
 
-    const uint8_t *data = ti_GetDataPtr(handle);
-    const gfx_rletsprite_t *sprite = (const gfx_rletsprite_t *)(data + offset);
+    const gfx_rletsprite_t *sprite = (const gfx_rletsprite_t *)buf;
     gfx_RLETSprite(sprite, center_x - sprite->width / 2 + dx, feet_y - sprite->height + dy);
 
-    ti_Close(handle);
+    free(buf);
     return true;
 }
 
@@ -531,25 +566,22 @@ static int zoom_scale_off(int v)
 
 bool assets_sprite_bounds(uint16_t id, int *w, int *h, int *dx, int *dy)
 {
-    uint8_t appvar_idx;
-    uint16_t offset;
     int16_t sdx, sdy;
-    if (!sprite_lookup(id, &appvar_idx, &offset, &sdx, &sdy)) {
+    /* Decompresses the whole sprite just to read a 2-byte width/height
+     * header -- wasteful (width/height used to be readable straight off
+     * flash with zero decode), but correct, and this only runs once per
+     * Show (assets_zoom_available()/draw_actor() call it to lay out before
+     * drawing), not per frame -- see sprite_decompress()'s own comment on
+     * why the repeat-decode-per-draw-call tradeoff is fine here at all. */
+    uint8_t *buf = sprite_decompress(id, &sdx, &sdy);
+    if (!buf) {
         return false;
     }
 
-    char name[9];
-    sprintf(name, "DSPR%u", appvar_idx);
-    uint8_t handle = ti_Open(name, "r");
-    if (!handle) {
-        return false;
-    }
-
-    const gfx_rletsprite_t *sprite =
-        (const gfx_rletsprite_t *)(ti_GetDataPtr(handle) + offset);
+    const gfx_rletsprite_t *sprite = (const gfx_rletsprite_t *)buf;
     *w = sprite->width;
     *h = sprite->height;
-    ti_Close(handle);
+    free(buf);
     *dx = sdx;
     *dy = sdy;
     return true;
@@ -621,30 +653,20 @@ static gfx_sprite_t *zoom_cache_find(uint16_t id)
  * worth doing exactly once per sprite rather than once per frame. */
 static gfx_sprite_t *zoom_cache_fill(uint16_t id)
 {
-    uint8_t appvar_idx;
-    uint16_t offset;
     int16_t dx, dy;
-    if (!sprite_lookup(id, &appvar_idx, &offset, &dx, &dy)) {
+    uint8_t *packed_buf = sprite_decompress(id, &dx, &dy);
+    if (!packed_buf) {
         return NULL;
     }
-
-    char name[9];
-    sprintf(name, "DSPR%u", appvar_idx);
-    uint8_t handle = ti_Open(name, "r");
-    if (!handle) {
-        return NULL;
-    }
-
-    const gfx_rletsprite_t *rle =
-        (const gfx_rletsprite_t *)(ti_GetDataPtr(handle) + offset);
+    const gfx_rletsprite_t *rle = (const gfx_rletsprite_t *)packed_buf;
 
     gfx_sprite_t *plain = malloc((size_t)2 + (size_t)rle->width * rle->height);
     if (plain == NULL) {
-        ti_Close(handle);
+        free(packed_buf);
         return NULL;
     }
     gfx_ConvertFromRLETSprite(rle, plain);
-    ti_Close(handle);
+    free(packed_buf);
 
     int zw_i = zoom_scale_dim(plain->width);
     int zh_i = zoom_scale_dim(plain->height);
