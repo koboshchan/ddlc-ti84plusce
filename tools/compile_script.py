@@ -700,6 +700,20 @@ class Compiler:
             # simplification, see "Scene transitions" in FORMAT.md), so
             # immediate emission costs nothing bypassing the deferred path
             # would have bought anyway.
+            variants = self.resolver.condswitch_variants(imgname) if len(imgname) == 1 else None
+            if variants is not None:
+                # Act 3's y_kill: DDLC picks the portrait at runtime off a
+                # ConditionSwitch ladder (persistent.yuri_kill's corruption
+                # tier), not one fixed image -- see
+                # _emit_condswitch_dispatch().
+                if not self._emit_condswitch_dispatch(variants):
+                    self._skip(node, fname, f"unsupported condswitch condition in {imgname!r}")
+                    return
+                self.last_sprite.clear()
+                self.last_pos.clear()
+                self.last_flags.clear()
+                return
+
             scene_id = self.resolver.scene_id(imgname)
             if scene_id is None:
                 self._skip(node, fname, f"unknown character tag in {imgname!r}")
@@ -824,6 +838,16 @@ class Compiler:
             if special_var is not None:
                 self._emit_special_poem_dispatch(special_var)
                 return
+            prefixed = (_match_prefixed_int_call(node.label)
+                       if isinstance(node.label, str) else None)
+            if prefixed is not None:
+                prefix, prefixed_var = prefixed
+                if prefix == "ch30_" and prefixed_var == "persistent.current_monikatopic":
+                    self._emit_monikatopic_dispatch(prefixed_var)
+                    return
+                if prefix == "ch30_reload_" and prefixed_var == "persistent.monika_reload":
+                    self._emit_monika_reload_dispatch(prefixed_var)
+                    return
             var = self._dynamic_target_var(node.label)
             if var is None:
                 self._skip(node, fname, "dynamic call target unsupported")
@@ -1107,6 +1131,84 @@ class Compiler:
             self.asm.call(f"poem_special_{k}")
             self.asm.jump(end_label)
             self.asm.label(nxt)
+        self.asm.label(end_label)
+
+    # Act 3's day-topic loop (script-ch30.rpyc). Real DDLC picks
+    # persistent.current_monikatopic without replacement from a shrinking
+    # bag (persistent.monikatopics, refilled from range(1,57) minus
+    # {14,25,26} -- no ch30_14/25/26 label exists at all -- and minus 27
+    # while persistent.seen_colors_poem is unset) via a real Python list.
+    # This VM has no list/array structure and OP_IF can't compare two
+    # variables, so an exact reproduction (a used-bitmask plus bitwise ops)
+    # would need real new opcodes for what's ultimately a "no immediate
+    # repeat" polish detail. Simplified to a uniform pick *with*
+    # replacement every visit instead (_emit_monikatopic_init, the same
+    # reject-and-retry bytecode loop as _emit_special_poem_init) --
+    # excludes 27 unconditionally rather than tracking
+    # persistent.seen_colors_poem's own trigger, one topic out of 56 traded
+    # away for not needing a second gate. Every other real day-topic body
+    # is still reachable, just not guaranteed non-repeating.
+    MONIKATOPIC_VALUES = tuple(n for n in range(1, 57) if n not in (14, 25, 26, 27))
+    MONIKA_RELOAD_VALUES = (0, 1, 2, 3, 4)
+
+    def _emit_monikatopic_init(self) -> None:
+        slot = self._var_slot("persistent.current_monikatopic")
+        rand = self._var_slot(self.RAND_SCRATCH)
+        retry = self._gensym("monikatopic_retry")
+        done = self._gensym("monikatopic_done")
+        self.asm.label(retry)
+        self.asm.random(rand, 1, 56)
+        for k in self.MONIKATOPIC_VALUES:
+            match = self._gensym("monikatopic_match")
+            nxt = self._gensym("monikatopic_next")
+            self.asm.if_(rand, vnasm.CMP_EQ, k, match)
+            self.asm.jump(nxt)
+            self.asm.label(match)
+            self.asm.set(slot, k)
+            self.asm.jump(done)
+            self.asm.label(nxt)
+        self.asm.jump(retry)  # landed on an excluded value (14/25/26/27) -- draw again
+        self.asm.label(done)
+
+    def _emit_monikatopic_dispatch(self, varname: str) -> None:
+        """The real bytecode for `Call("ch30_" +
+        str(persistent.current_monikatopic))` -- draws a fresh topic (see
+        _emit_monikatopic_init) and dispatches straight to the real
+        ch30_<N> label, same enumerable-dispatch shape as
+        _emit_special_poem_dispatch."""
+        self._emit_monikatopic_init()
+        slot = self._var_slot(varname)
+        end_label = self._gensym("monikatopic_end")
+        for k in self.MONIKATOPIC_VALUES:
+            match = self._gensym("monikatopic_match")
+            nxt = self._gensym("monikatopic_next")
+            self.asm.if_(slot, vnasm.CMP_EQ, k, match)
+            self.asm.jump(nxt)
+            self.asm.label(match)
+            self.asm.call(f"ch30_{k}")
+            self.asm.jump(end_label)
+            self.asm.label(nxt)
+        self.asm.label(end_label)
+
+    def _emit_monika_reload_dispatch(self, varname: str) -> None:
+        """`Call("ch30_reload_" + str(persistent.monika_reload))` --
+        persistent.monika_reload counts reloads during Act 3's ending
+        sequence (already a real, working AugAssign, see #36) and only 5
+        real ch30_reload_N labels exist, so anything >= 4 lands on
+        ch30_reload_4 -- the same "cap rather than crash" choice
+        _emit_chapter_condition makes for chapter outside 1..3."""
+        slot = self._var_slot(varname)
+        end_label = self._gensym("monika_reload_end")
+        for k in self.MONIKA_RELOAD_VALUES[:-1]:
+            match = self._gensym("monika_reload_match")
+            nxt = self._gensym("monika_reload_next")
+            self.asm.if_(slot, vnasm.CMP_EQ, k, match)
+            self.asm.jump(nxt)
+            self.asm.label(match)
+            self.asm.call(f"ch30_reload_{k}")
+            self.asm.jump(end_label)
+            self.asm.label(nxt)
+        self.asm.call(f"ch30_reload_{self.MONIKA_RELOAD_VALUES[-1]}")
         self.asm.label(end_label)
 
     def _emit_call_args(self, node, params: list, fname: str) -> None:
@@ -1480,6 +1582,46 @@ class Compiler:
         # false rather than leaving the label chain dangling.
         self.asm.jump(false_label)
 
+    def _emit_condswitch_dispatch(self, variants: list) -> bool:
+        """Emits an if/elif/else chain over @p variants (from
+        ImageResolver.condswitch_variants(), declared order -- ConditionSwitch
+        itself picks the first true condition, so this must too), each
+        landing on its own OP_SCENE. Every condition seen in real data so far
+        is a single leaf comparison (`persistent.yuri_kill >= N`), handled
+        directly with the same _emit_condition() machinery `if` statements
+        use, rather than a hand-rolled var-vs-literal loop like
+        _emit_chapter_condition's -- unlike chapter dispatch this doesn't
+        need to pick a slot dynamically, just evaluate one already-fixed
+        comparison per branch. Returns False (nothing emitted) if a
+        condition turns out not to be one _condition_supported() approves,
+        so the caller can skip cleanly instead of emitting a partial chain.
+        """
+        parsed = []
+        for cond_src, scene_id in variants:
+            if cond_src is None:
+                parsed.append((None, scene_id))
+                continue
+            expr = _parse_condition_expr(cond_src)
+            if expr is None or not _condition_supported(expr):
+                return False
+            parsed.append((expr, scene_id))
+
+        end_label = self._gensym("condswitch_end")
+        for expr, scene_id in parsed:
+            if expr is None:  # the unconditional "True" fallback, always last
+                self.asm.scene(scene_id, vnasm.TRANS_CUT)
+                self.asm.jump(end_label)
+                continue
+            match_label = self._gensym("condswitch_match")
+            next_label = self._gensym("condswitch_next")
+            self._emit_condition(expr, match_label, next_label)
+            self.asm.label(match_label)
+            self.asm.scene(scene_id, vnasm.TRANS_CUT)
+            self.asm.jump(end_label)
+            self.asm.label(next_label)
+        self.asm.label(end_label)
+        return True
+
     def _emit_Menu(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)
         rows = []
@@ -1781,6 +1923,31 @@ def _match_special_poem_call(expr_src: str) -> str | None:
     if var is None or not var.startswith("persistent.special_poems["):
         return None
     return var
+
+
+def _match_prefixed_int_call(expr_src: str) -> tuple[str, str] | None:
+    """Recognizes `"PREFIX" + str(VAR)` -- DDLC's other dynamic-call idiom
+    besides special-poem's own (_match_special_poem_call): a literal string
+    prefix concatenated onto an integer variable's runtime value. Used by
+    Act 3's day-topic loop (script-ch30.rpyc: `"ch30_" +
+    str(persistent.current_monikatopic)`, `"ch30_reload_" +
+    str(persistent.monika_reload)`) -- the exact shape
+    _dynamic_target_var's own docstring already named as unattempted.
+    Returns (prefix, varname), or None if @p expr_src isn't this shape.
+    """
+    expr = _parse_condition_expr(expr_src)
+    if not (isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add)):
+        return None
+    if not (isinstance(expr.left, ast.Constant) and isinstance(expr.left.value, str)):
+        return None
+    call = expr.right
+    if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+            and call.func.id == "str" and len(call.args) == 1):
+        return None
+    var = _ident_name(call.args[0])
+    if var is None:
+        return None
+    return expr.left.value, var
 
 
 def _chapter_indexed_base(node) -> str | None:
