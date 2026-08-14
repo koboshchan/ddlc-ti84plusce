@@ -169,9 +169,8 @@ static void draw_background(void)
 {
     /* Full screen, unlike an ordinary dialogue scene -- the poem minigame
      * has no dialogue box reserving the bottom 60px, so its background is
-     * baked and stored at the full 320x240 at full resolution, rather than
-     * through assets_scene()'s half-resolution upscale path -- see
-     * image_resolve.py's poem_background()/BG_SIZE. */
+     * baked and stored at the full 320x240 rather than through
+     * assets_scene()'s 320x180 -- see image_resolve.py's poem_background(). */
     if (!assets_poem_bg((uint8_t *)gfx_vbuffer)) {
         render_backdrop(COL_WHITE);
     }

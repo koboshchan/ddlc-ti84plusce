@@ -926,30 +926,22 @@ bool assets_namebox(uint8_t *dest)
     return true;
 }
 
-/* Every background/CG bakes at HALF the real scene resolution now
- * (image_resolve.py's BG_SIZE/CG_SIZE, 160x90 not SCREEN_W x SCENE_H) --
- * 4x fewer raw pixels to store/compress, a deliberate quality tradeoff
- * chosen to close a real archive-budget overage rather than trim content
- * or split the bundle. assets_scene() below decompresses into this small
- * size, then 2x-nearest-neighbor-upscales into @p dest, so every caller
- * still gets an ordinary full SCREEN_W x SCENE_H scene -- only the
- * archived source resolution actually dropped. */
-#define SCENE_SRC_W 160u
-#define SCENE_SRC_H 90u
-#define SCENE_BYTES (SCENE_SRC_W * SCENE_SRC_H)
+/* Fixed size of every background/CG (image_resolve.py's BG_SIZE/CG_SIZE) --
+ * both are baked to exactly this many raw palette-index bytes, so no length
+ * needs reading out of the LUT entry. */
+#define SCENE_BYTES (320u * 180u)
 
-/* A same-sized decompressed-background cache was tried here to avoid
- * re-decompressing every frame render_scene() runs (every typewriter tick,
- * every idle-bob redraw -- not just an actual scene change), which is why
- * backgrounds shipped uncompressed in the first place. That cache
+/* A same-sized (57600-byte) decompressed-background cache was tried here to
+ * avoid re-decompressing every frame render_scene() runs (every typewriter
+ * tick, every idle-bob redraw -- not just an actual scene change), which is
+ * why backgrounds shipped uncompressed in the first place. That cache
  * overflowed real RAM on-device even as a lazy malloc() -- graphx's own
  * draw buffer is already ~77KB, a resident script chunk can be up to 65KB
  * (see docs/FORMAT.md's "Chunking"), and this project's own ~150KB usable
  * figure doesn't leave room for another 57.6KB on top of both. Decompressing
- * straight into a small buffer every call, like this, is the
- * correctness-first fallback: at the half-resolution size, that's only
- * 14.4KB now (it was a full 57.6KB before backgrounds/CGs shrank), plus
- * one 320-byte stack row for the upscale below. */
+ * straight into @p dest every call, like this, is the correctness-first
+ * fallback: no extra RAM, at the cost of the per-frame decode this module
+ * used to avoid. */
 bool assets_scene(uint8_t id, uint8_t *dest)
 {
     uint8_t appvar_idx;
@@ -966,23 +958,8 @@ bool assets_scene(uint8_t id, uint8_t *dest)
     }
 
     const uint8_t *data = ti_GetDataPtr(handle);
-    static uint8_t small[SCENE_BYTES];
-    zx0_Decompress(small, data + offset);
+    zx0_Decompress(dest, data + offset);
     ti_Close(handle);
-
-    /* Each source pixel becomes a 2x2 block in @p dest. dest's own row
-     * stride is SCREEN_W (the real framebuffer's), not SCENE_SRC_W*2 --
-     * every caller passes a pointer straight into gfx_vbuffer, matching
-     * this function's old direct-decompress contract exactly. */
-    for (uint32_t sy = 0; sy < SCENE_SRC_H; sy++) {
-        uint8_t row[SCENE_SRC_W * 2];
-        const uint8_t *srow = small + sy * SCENE_SRC_W;
-        for (uint32_t sx = 0; sx < SCENE_SRC_W; sx++) {
-            row[sx * 2] = row[sx * 2 + 1] = srow[sx];
-        }
-        memcpy(dest + (size_t)(sy * 2) * SCREEN_W, row, sizeof(row));
-        memcpy(dest + (size_t)(sy * 2 + 1) * SCREEN_W, row, sizeof(row));
-    }
     return true;
 }
 
