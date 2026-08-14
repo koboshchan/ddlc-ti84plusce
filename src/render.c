@@ -248,9 +248,23 @@ static int hop_offset(uint8_t character, uint8_t show_seq, unsigned t)
  * value and duration are both picked from `sinking` rather than being
  * fixed. Called unconditionally every frame, same reasoning as
  * zoom_fallback_offset(): the eased transition has to keep tracking
- * correctly even across frames where the value goes unused. */
+ * correctly even across frames where the value goes unused.
+ *
+ * SINK_DOWN_MS is 300, not DDLC's real 500 -- a deliberate departure from
+ * 1:1 timing fidelity, playtester-reported and diagnosed (not guessed):
+ * hop's own 200ms covers the identical 5px range and reads smooth, but
+ * sink's original 500ms (2.5x longer for the *same* pixel range) visibly
+ * juddered on real hardware. This engine's achievable redraw rate is fixed
+ * regardless of an animation's own duration, so stretching the same few
+ * discrete pixel steps over more real time just means each step lingers
+ * on screen longer before advancing -- slow motion needs a *higher*
+ * sample rate to look smooth than fast motion does, which this hardware
+ * doesn't have headroom for. 300ms keeps sink noticeably slower/more
+ * weighty than hop (preserving some of the real "droop" feel over an
+ * identical bounce) while cutting the per-step linger enough to read as
+ * smooth rather than stepped. */
 #define SINK_PX      5
-#define SINK_DOWN_MS 500
+#define SINK_DOWN_MS 300
 #define SINK_UP_MS   150
 
 static int sink_offset(uint8_t character, bool sinking, unsigned t)
