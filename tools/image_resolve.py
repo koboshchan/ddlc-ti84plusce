@@ -306,6 +306,53 @@ def build_image_table(raw_dir: Path) -> dict:
 _IMAGE_EXT = re.compile(r"\.(png|jpg|jpeg)$", re.IGNORECASE)
 
 
+_UNSAFE_FILENAME_CHARS = re.compile(r'[^A-Za-z0-9_.-]+')
+
+
+def _safe_filename_part(imgname: tuple) -> str:
+    """A filesystem- and convimg-yaml-safe fragment for @p imgname, used to
+    build a human-readable baked filename. Most imgnames are already plain
+    identifiers, but a direct `show "gui/x.png"` reference's own tag is the
+    literal quoted Python source text (quotes and all -- see
+    _quoted_literal_path) -- baking that in verbatim once produced a
+    filename like `cg_073_"gui-poem_dismiss.png".png`, which convimg's own
+    output naming doesn't preserve byte-for-byte the same way this code's
+    own `canvas.save()` does, so the two sides silently disagreed on what
+    the packaged .bin should be called. Stripping everything outside
+    `[A-Za-z0-9_.-]` avoids relying on convimg's specific quoting/escaping
+    rules matching this code's own -- the safest guarantee is not needing
+    either side to handle those characters at all.
+
+    Also strips a trailing image extension (.png/.jpg/.jpeg) from @p imgname
+    itself before the caller appends its own real one -- a direct file
+    reference's tag already ends in one (the path literal), so without this
+    the result was a double extension (`....png.png`), which convimg's own
+    output naming collapses differently than tools/import_game.py's
+    packaging step expects (confirmed: a second, different real crash after
+    the quoting one above was fixed, same root cause -- the two tools
+    computing the .bin's name two different ways from an ambiguous .png.png
+    input).
+    """
+    name = _UNSAFE_FILENAME_CHARS.sub("-", "_".join(imgname)).strip("-")
+    return _IMAGE_EXT.sub("", name)
+
+
+def _quoted_literal_path(s: str) -> Optional[str]:
+    """The unquoted path from Ren'Py's `show "gui/x.png"` idiom -- a direct
+    file reference with no `image` statement behind it at all (confirmed
+    real: splash.rpyc's ghost-menu easter egg does `show
+    "gui/menu_art_m_ghost.png"`). Ren'Py stores the imspec tag as the
+    literal Python source text for this case (quotes included), distinct
+    from a plain symbolic tag name like `sayori`. Returns the inner path,
+    or None if @p s isn't a quoted string literal.
+    """
+    try:
+        node = ast.parse(s, mode="eval").body
+    except SyntaxError:
+        return None
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
 def _is_file_path(s: str) -> bool:
     """Distinguish a real art file path from a symbolic image-name reference.
 
@@ -509,6 +556,15 @@ class ImageResolver:
     def scene_id(self, imgname: tuple) -> Optional[int]:
         if imgname in self._scene_ids:
             return self._scene_ids[imgname]
+
+        # `show "gui/x.png"` -- a direct file reference with no `image`
+        # statement to look up in self.table at all (see
+        # _quoted_literal_path). Synthesized once, then falls through the
+        # normal lookup below exactly like a real declared one.
+        if len(imgname) == 1 and imgname not in self.table:
+            literal_path = _quoted_literal_path(imgname[0])
+            if literal_path is not None:
+                self.table[imgname] = ImageDef(imgname=imgname, kind="path", path=literal_path)
 
         # DDLC's own script sometimes names a background by its bare tag
         # (`scene bedroom`) even where the only `image` statement defines it
@@ -814,7 +870,7 @@ class ImageResolver:
         scaled = cropped.resize(size, PILImage.LANCZOS)
         dx, dy = self._canvas_offsets(canvas.size, bbox, size)
 
-        name = "_".join(imgname).replace("/", "-") or "sprite"
+        name = _safe_filename_part(imgname) or "sprite"
         filename = f"sprite_{len(self.sprites):03d}_{name}.png"
         scaled.save(self.img_dir / filename)
 
@@ -844,7 +900,7 @@ class ImageResolver:
             else:
                 canvas = art.resize(size, PILImage.LANCZOS).convert("RGBA")
 
-        name = "_".join(imgname).replace("/", "-") or "scene"
+        name = _safe_filename_part(imgname) or "scene"
         filename = f"{'cg' if fit else 'bg'}_{len(self.scenes):03d}_{name}.png"
         canvas.save(self.img_dir / filename)
 

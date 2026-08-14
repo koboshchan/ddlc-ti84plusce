@@ -427,6 +427,23 @@ class Compiler:
         self._count(f"skip:{kind(node)}")
 
     def _var_slot(self, name: str) -> int:
+        # s_kill_early's own real setter is `if persistent.playthrough == 0:
+        # try: renpy.file("../characters/sayori.chr") except: s_kill_early =
+        # True` (splash.rpyc) -- a bare-file-existence check via try/except,
+        # which this compiler doesn't walk (no exception-handling support at
+        # all). Aliased to the SAME slot as persistent.deleted_sayori
+        # instead of left unset: this engine already tracks "has Sayori's
+        # character file been deleted" for real (see DELETED_VARS/#41's own
+        # delete_character() mechanic), which is exactly what the real
+        # try/except is checking for, just through a filesystem probe this
+        # platform has no equivalent of. Every real reference to
+        # s_kill_early -- both this dead setter (harmlessly skipped, not
+        # aliased away) and the live `if s_kill_early:` gate in
+        # splashscreen's own body -- reads/writes through this one slot, so
+        # the alternate CG sequence it gates correctly triggers exactly when
+        # Sayori's file is actually gone.
+        if name == "s_kill_early":
+            name = self.DELETED_VARS[TAG_TO_CHAR["sayori"]]
         if name in self.variables:
             return self.variables[name]
         if len(self.variables) >= VN_MAX_VARS:
@@ -551,102 +568,7 @@ class Compiler:
             self.asm.ret()
             return
 
-        if name == "splashscreen":
-            # The real body (game/splash.rpy) is almost entirely things this
-            # engine's C-side startup already handles its own way -- Windows
-            # process/anti-cheat probing (renpy.windows-gated subprocess
-            # calls, meaningless on-calc), .chr file existence checks (this
-            # engine already tracks character deletion its own way, see
-            # DELETED_VARS), first-run bookkeeping tied to a real
-            # filesystem, and a duplicate logo/content-warning screen
-            # main.c's own run_splash_screens() already shows (compiling
-            # both would show the warning twice on first launch). Rather
-            # than walk any of that, only the one self-contained, still-
-            # meaningful piece is extracted and re-emitted here: the ghost
-            # menu's trigger check. Kept under the label's real name rather
-            # than a made-up synthetic one, so tools/import_game.py can look
-            # up its address the same way it already does for `label start`
-            # -- see main.c's run_splashscreen_check(). Everything else in
-            # this label (autoload/anticheat/s_kill_early/the readonly-
-            # install check) is real content, deliberately deferred -- see
-            # this session's task list, not silently dropped.
-            self._emit_ghost_menu_check(node.block, fname)
-            return
-
         self.emit_block(node.block, fname)
-
-    def _emit_ghost_menu_check(self, block, fname: str) -> None:
-        """The one self-contained piece of splashscreen's real body worth
-        keeping -- see _emit_Label's "splashscreen" case above for why the
-        rest isn't compiled at all.
-
-        Hand-emitted rather than routed through emit_block()/_emit_If(): the
-        real body's `show black`/`show end` are bare non-character images
-        (Ren'Py's built-in Solid("#000") and DDLC's own `image end:` from
-        definitions.rpy), and OP_SHOW has no such thing -- its ch:u8 operand
-        is a character slot, always one of the 4 cast members (see
-        _emit_Show's TAG_TO_CHAR lookup, which would just skip these as an
-        "unknown character tag"). A full-screen standalone image is much
-        closer to what OP_SCENE already does (the background fills the
-        whole scene area) than to a character overlay, so this reframes
-        both Shows as scene changes instead -- confirmed sound: the real
-        body never re-shows a character over either of them, and hides
-        every character anyway (an implicit effect of any `scene`-equivalent
-        change, see _emit_Scene's self.last_sprite.clear()).
-
-        The condition itself is still pulled from the real decompiled
-        source, not hand-typed, via the same seen_ghost_menu marker search
-        _emit_Label used to use here -- the one part worth protecting
-        against a silent transcription slip.
-        """
-        ghost_if = next(
-            (stmt for stmt in block
-             if kind(stmt) == "If"
-             and any("seen_ghost_menu" in cond for cond, _ in stmt.entries)),
-            None)
-        if ghost_if is None:
-            self._skip(block[0] if block else None, fname,
-                      "splashscreen's ghost-menu If not found by its "
-                      "seen_ghost_menu marker -- source shape changed?")
-            self.asm.ret()
-            return
-
-        cond_str = ghost_if.entries[0][0]
-        expr = _parse_condition_expr(cond_str) if isinstance(cond_str, str) else None
-        if expr is not None:
-            expr = _fold_constants(expr)
-        if expr is None or not _condition_supported(expr):
-            self._skip(ghost_if, fname, f"unsupported ghost-menu condition {cond_str!r}")
-            self.asm.ret()
-            return
-
-        true_label = self._gensym("ghost_true")
-        end_label = self._gensym("ghost_end")
-        self._emit_condition(expr, true_label, end_label)
-        self.asm.label(true_label)
-
-        black = self.resolver.scene_id(("black",))
-        end_img = self.resolver.scene_id(("end",))
-        if black is not None:
-            self.asm.scene(black, vnasm.TRANS_CUT)
-        else:
-            self._skip(ghost_if, fname, "ghost menu: 'black' image unresolved")
-        # config.main_menu_music / renpy.music.play(): dropped, no CE audio
-        # (see vn.h's OP_SOUND doc comment -- an established, already-no-op
-        # convention, not a new gap).
-        self.asm.set(self._var_slot("persistent.seen_ghost_menu"), 1)
-        self.asm.set(self._var_slot("persistent.ghost_menu"), 1)
-        self.asm.pause(1000)
-        if end_img is not None:
-            self.asm.scene(end_img, vnasm.TRANS_CUT)
-        else:
-            self._skip(ghost_if, fname, "ghost menu: 'end' image unresolved")
-        self.asm.pause(3000)
-        # config.allow_skipping = True: dropped, this engine has no skip
-        # toggle to restore.
-
-        self.asm.label(end_label)
-        self.asm.ret()
 
     def _emit_Say(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)
@@ -703,11 +625,57 @@ class Compiler:
 
         self.asm.say(speaker, text)
 
+    # The real default warning DDLC's splash.rpyc shows over `splash_warning`
+    # (its own `splash_message_default` literal, confirmed by decompiling
+    # splash.rpyc's Init block) -- see _emit_Show's "splash_warning" case.
+    _SPLASH_MESSAGE_DEFAULT = ("This game is not suitable for children\n"
+                               "or those who are easily disturbed.")
+
     def _emit_Show(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)
         imgname = tuple(node.imspec[0]) if node.imspec and node.imspec[0] else None
         if not imgname:
             self._skip(node, fname, "Show with empty imspec")
+            return
+
+        if imgname[0] == "splash_warning":
+            # DDLC's own `show splash_warning "..."` idiom (splash.rpyc,
+            # script-poemresponses2.rpyc) -- a centered warning-style text
+            # overlay, not a real image at all (Ren'Py ParameterizedText,
+            # no art file behind it, which is why this needs its own case
+            # rather than falling into the generic scene_id() path below).
+            # A literal caption (e.g. "Just Monika.") compiles straight to
+            # narration like any other line. The one dynamic case
+            # (splash.rpyc's own "[splash_message]", a runtime pick across
+            # 11 corrupted variants + a default -- see splash.rpyc's own
+            # Init block) simplifies to always showing the real default
+            # warning text instead: every OP_SAY text operand is a
+            # compile-time-literal index, and this value is picked at
+            # runtime, so reproducing the random pick faithfully would need
+            # a new opcode for a rarely-seen (1-in-4, Act 2+ only) cosmetic
+            # line -- not worth it next to this project's existing
+            # precedent for simplifying comparably low-value cosmetic
+            # content (the tear effect, dropped title-screen zoom).
+            text_expr = (_parse_condition_expr(imgname[1]) if len(imgname) > 1
+                        and isinstance(imgname[1], str) else None)
+            if not (isinstance(text_expr, ast.Constant) and isinstance(text_expr.value, str)):
+                self._skip(node, fname, f"unsupported splash_warning text {imgname!r}")
+                return
+            text = (self._SPLASH_MESSAGE_DEFAULT if text_expr.value == "[splash_message]"
+                   else text_expr.value)
+            self.asm.narrate(_strip_text_tags(text))
+            return
+
+        text_literal = _text_call_literal(imgname[0]) if len(imgname) == 1 else None
+        if text_literal is not None:
+            # DDLC's own `show Text("...")` idiom -- an anonymous displayable
+            # used directly as a Show target (s_kill_early's own "Now
+            # everyone can be happy." closing line, splash.rpyc lines
+            # ~360-379), same reasoning as "splash_warning" above: no art
+            # file, so it can't go through scene_id() below. Always a
+            # literal string in the one real use found, unlike
+            # splash_warning's one dynamic case.
+            self.asm.narrate(_strip_text_tags(text_literal))
             return
 
         char = TAG_TO_CHAR.get(imgname[0])
@@ -895,6 +863,7 @@ class Compiler:
             # it's the same event, just not reached by walking the body it
             # lives in.
             self._emit_appeal_increment(winner_slot)
+            self._emit_eyes_check()
             return
         params = self.label_params.get(node.label)
         if params:
@@ -918,6 +887,63 @@ class Compiler:
             self.asm.add(self._var_slot(appeal_name), 1)
             self.asm.jump(end_label)
             self.asm.label(next_label)
+        self.asm.label(end_label)
+
+    # Monika's eyes: DDLC's own real gate, verbatim -- reused here as
+    # literal Python source rather than hand-rolled AST, so it goes through
+    # the exact same _condition_supported()/_emit_condition() machinery any
+    # ordinary compiled `if` does (persistent.playthrough == 2 is a plain
+    # var==literal leaf, persistent.seen_eyes == None folds to == 0 via
+    # _const_scalar's None handling, and the randint() call is the existing
+    # leaf case -- nothing new needed at the condition-compiler level).
+    _EYES_CONDITION = ("persistent.playthrough == 2 and persistent.seen_eyes == None"
+                       " and renpy.random.randint(0,5) == 0")
+
+    def _emit_eyes_check(self) -> None:
+        """Relocates the Monika's-eyes jump-scare out of `label poem:`'s own
+        body (script-poemgame.rpyc lines ~318-345) to every inlined `call
+        poem` site, the same relocation `_emit_appeal_increment` already
+        does for the win-count increment right above this call -- that body
+        is unreachable by construction once every real call site is inlined
+        (see _emit_Call's "poem" case), so its jump-scare and reaction logic
+        has to live at the call sites instead.
+
+        The condition is checked at runtime exactly like the real game
+        checks it (see _EYES_CONDITION) -- it's never true outside
+        `persistent.playthrough == 2` (Act 2+), so this is a correct no-op
+        at every other inlined call site rather than something that needs
+        gating on which chapter/context reached it.
+        """
+        expr = _fold_constants(_parse_condition_expr(self._EYES_CONDITION))
+        true_label = self._gensym("eyes_branch")
+        end_label = self._gensym("eyes_end")
+        self._emit_condition(expr, true_label, end_label)
+        self.asm.label(true_label)
+        self.asm.sound(0)
+        self.asm.set(self._var_slot("persistent.seen_eyes"), 1)
+        self._flush_pending_scene(vnasm.TRANS_CUT)
+        black = self.resolver.scene_id(("black",))
+        eyes = self.resolver.scene_id(("bg", "eyes"))
+        eyes_move = self.resolver.scene_id(("bg", "eyes_move"))
+        # Real sequence (script-poemgame.rpyc): scene black, show eyes_move
+        # (1.2s), show eyes (0.5s), show eyes_move (1.25s) -- each Show of a
+        # bare background tag is its own OP_SCENE here (see _emit_Show's
+        # same reasoning for a bare non-character Show), so the Hides in
+        # between need no bytecode of their own.
+        if black is not None:
+            self.asm.scene(black, vnasm.TRANS_CUT)
+        if eyes_move is not None:
+            self.asm.scene(eyes_move, vnasm.TRANS_CUT)
+        self.asm.pause(1200)
+        if eyes is not None:
+            self.asm.scene(eyes, vnasm.TRANS_CUT)
+        self.asm.pause(500)
+        if eyes_move is not None:
+            self.asm.scene(eyes_move, vnasm.TRANS_CUT)
+        self.asm.pause(1250)
+        self.last_sprite.clear()
+        self.last_pos.clear()
+        self.last_flags.clear()
         self.asm.label(end_label)
 
     def _emit_poemwinner_dispatch(self, dispatch: tuple, fname: str) -> None:
@@ -1159,6 +1185,14 @@ class Compiler:
             if confirm is not None:
                 self._emit_confirm_screen(*confirm)
                 return
+        if stripped == "pause":
+            # Ren'Py's own bare `pause` statement (distinct from DDLC's
+            # `pause(seconds)` helper in _emit_python_stmt) -- s_kill_early's
+            # own closing beat waits here for a click before renpy.quit().
+            # ms=0 is OP_PAUSE's own "wait for a click, no timeout" sentinel,
+            # same as a no-args `pause()` call.
+            self.asm.pause(0)
+            return
         self._skip(node, fname, f"unsupported statement: {line!r}")
         self.asm.nop()
 
@@ -1246,6 +1280,13 @@ class Compiler:
                 # own comment in vn.h); not a default this compiler takes on
                 # its own.
                 self.asm.delete_saves()
+                return True
+            if fn == "renpy.quit" and not stmt.value.args:
+                # s_kill_early's own closing beat -- OP_END is exactly
+                # "finish now, unconditionally", which is what real Ren'Py
+                # quitting to the OS means for a player who's just reached
+                # the true end of what this compiled build has to show them.
+                self.asm.end()
                 return True
         if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
             var = _ident_name(stmt.targets[0])
@@ -1953,6 +1994,21 @@ def _parse_confirm_call(stripped: str) -> tuple[str, bool, bool] | None:
     if yes_value is None or no_value is None:
         return None
     return (message.value, yes_value, no_value)
+
+
+def _text_call_literal(src: str) -> str | None:
+    """The literal message from DDLC's own `Text("...", style="...")` idiom,
+    used as a bare Show target (see _emit_Show). Returns None if @p src
+    isn't a `Text(...)` call with a literal string as its first argument."""
+    try:
+        node = ast.parse(src, mode="eval").body
+    except SyntaxError:
+        return None
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "Text" and node.args
+            and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)):
+        return None
+    return node.args[0].value
 
 
 def _parse_tear_call(stmt: str) -> tuple[int, int, int, int] | None:
