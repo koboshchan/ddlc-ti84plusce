@@ -131,13 +131,13 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
 
     if shared_files:
         converts.append({
-            # width-and-height off: convimg's dimension header is one byte
-            # per axis (max 255), but backgrounds/CGs are a fixed 320x180 --
-            # over the limit, and redundant anyway since BG_SIZE/CG_SIZE in
-            # image_resolve.py already fix the size at conversion time.
+            # width-and-height off: redundant, since BG_SIZE/CG_SIZE in
+            # image_resolve.py already fix the size (160x90, half the real
+            # 320x180 scene area -- see BG_SIZE's own comment) at conversion
+            # time.
             #
             # zx0: a background's decompressed size is always exactly
-            # SCENE_BYTES (320x180, fixed above), so src/assets.c can
+            # SCENE_BYTES (160x90, fixed above), so src/assets.c can
             # bounds-check a destination safely. assets_scene() decompresses
             # on every call (every typewriter tick, every idle-bob redraw --
             # not just an actual scene change), which is real per-frame cost;

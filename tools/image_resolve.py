@@ -63,7 +63,15 @@ _HEX_COLOR = re.compile(r"^#([0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3})$")
 # screen. It also had to guess an anchor, and put every character ~5px too
 # high and up to ~10px off horizontally (see _bake_layer_atom).
 SPRITE_SCALE = 0.80 * 0.25
-BG_SIZE = (320, 180)
+# Half the real scene area (320x180) on each axis -- 4x fewer raw pixels to
+# store/compress. src/assets.c's assets_scene() decompresses into this same
+# small size, then 2x nearest-neighbor upscales into the real 320x180 draw
+# buffer at read time, so render.c and everything above it still sees an
+# ordinary full-size scene; only the archived source resolution actually
+# drops. A real, deliberate quality tradeoff (chosen over trimming credits
+# content or splitting the bundle) to close the archive-budget overage
+# credits.rpyc's own new art pushed the full-game build over.
+BG_SIZE = (160, 90)
 POEM_BG_SIZE = (320, 240)   # full screen -- the poem minigame has no dialogue
                             # box reserving the bottom 60px, unlike an
                             # ordinary VN scene (see poem_background())
@@ -79,7 +87,7 @@ TEXTBOX_SIZE = (320, 60)
 # (not derived from TEXTBOX_SIZE's own scale factor) to a close aspect
 # match that fits comfortably in the box's top-left corner alongside it.
 NAMEBOX_SIZE = (72, 17)
-CG_SIZE = (320, 180)
+CG_SIZE = BG_SIZE  # same half-resolution treatment -- see BG_SIZE's own comment
 
 # --- title screen ------------------------------------------------------------
 #
