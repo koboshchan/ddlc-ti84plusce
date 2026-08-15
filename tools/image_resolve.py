@@ -410,6 +410,21 @@ def _parse_composite(call: ast.Call) -> Optional[tuple]:
     return (w, h), layers
 
 
+def _parse_hex_color(value: str) -> Optional[tuple]:
+    """RGB triple from a "#RRGGBB"/"#RGB"/"#RRGGBBAA" string (alpha dropped
+    -- see the caller's own comment on why), or None if @p value isn't a hex
+    color at all. Tolerates a missing leading "#" (Ren'Py's Solid() accepts
+    both "ff0000" and "#ff0000"; a bare `image X = "..."` string never omits
+    it in practice, but there's no reason to require it here specifically)."""
+    hex_str = value if value.startswith("#") else "#" + value
+    if not _HEX_COLOR.match(hex_str):
+        return None
+    hex_digits = hex_str[1:]
+    if len(hex_digits) == 3:
+        hex_digits = "".join(c * 2 for c in hex_digits)
+    return tuple(int(hex_digits[i:i + 2], 16) for i in (0, 2, 4))
+
+
 def _resolve_source(imgname: tuple, src: str) -> ImageDef:
     try:
         node = ast.parse(src, mode="eval").body
@@ -418,10 +433,8 @@ def _resolve_source(imgname: tuple, src: str) -> ImageDef:
 
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         value = node.value
-        if _HEX_COLOR.match(value):
-            hex_digits = value[1:]
-            if len(hex_digits) == 3:
-                hex_digits = "".join(c * 2 for c in hex_digits)
+        rgb = _parse_hex_color(value)
+        if rgb is not None:
             # An 8-digit form (#RRGGBBAA, e.g. Act 3's "dark"/"darkred"
             # dimming overlays) carries an alpha byte this engine's blits
             # can't use -- render.c has no per-pixel alpha compositing (see
@@ -429,7 +442,6 @@ def _resolve_source(imgname: tuple, src: str) -> ImageDef:
             # opaque rather than reject the whole definition: a documented
             # fidelity loss (a translucent tint becomes a solid one), not a
             # missing image.
-            rgb = tuple(int(hex_digits[i:i + 2], 16) for i in (0, 2, 4))
             return ImageDef(imgname, "solid", color=rgb)
         return ImageDef(imgname, "path", path=value)
 
@@ -438,6 +450,18 @@ def _resolve_source(imgname: tuple, src: str) -> ImageDef:
         if parsed is not None:
             canvas, layers = parsed
             return ImageDef(imgname, "composite", canvas=canvas, layers=layers)
+
+        # `Solid("ff0000")`/`Solid("#440000")` used directly as a Show
+        # target (script-ch22's red-flash beats, no `image` statement
+        # behind either) -- Ren'Py's flat-color displayable, same result as
+        # a bare hex-color string one step up, just spelled as a call.
+        fname_solid = node.func.id if isinstance(node.func, ast.Name) else None
+        if (fname_solid == "Solid" and len(node.args) == 1
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)):
+            rgb = _parse_hex_color(node.args[0].value)
+            if rgb is not None:
+                return ImageDef(imgname, "solid", color=rgb)
 
         # `Image("path.png")` -- Ren'Py's explicit constructor for a plain
         # image, functionally identical to just writing the path string
@@ -837,6 +861,21 @@ class ImageResolver:
             literal_path = _quoted_literal_path(imgname[0])
             if literal_path is not None:
                 self.table[imgname] = ImageDef(imgname=imgname, kind="path", path=literal_path)
+            else:
+                # Same idea, generalized: `show Solid("ff0000")`
+                # (script-ch22's red-flash beats) is Ren'Py storing the
+                # whole call source as the imspec tag, same as the quoted
+                # path above -- just not a bare string this time. Try
+                # resolving it as a real expression via the same machinery
+                # a named `image` definition's code goes through
+                # (_resolve_source), and only keep the result if it
+                # actually resolved to something -- an "unsupported" result
+                # here would just overwrite scene_id()'s own more specific
+                # "no Image definition found" diagnostic with a vaguer one
+                # for no benefit.
+                literal_defn = _resolve_source(imgname, imgname[0])
+                if literal_defn.kind != "unsupported":
+                    self.table[imgname] = literal_defn
 
         # DDLC's own script sometimes names a background by its bare tag
         # (`scene bedroom`) even where the only `image` statement defines it
