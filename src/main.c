@@ -62,7 +62,6 @@ typedef struct {
     bool down;
     bool left;
     bool right;
-    bool alpha;     /* Alpha -- stands in for "B" in the debug-menu code below */
     bool pause;     /* mode -- opens the pause menu, or cancels a submenu */
     bool quit;      /* clear       */
 } input_t;
@@ -74,19 +73,17 @@ typedef struct {
  * functions entirely. */
 bool debug_menu_requested;
 
-/* up up down down left right left right alpha(B) 2nd(A) alpha(B) 2nd(A) --
- * the classic Konami code, mapped onto this keypad's real buttons: 2nd is
- * already this engine's primary action key (confirm/advance), so it stands
- * in for "A"; Alpha is a real, otherwise-unused physical key here, standing
- * in for "B". A rolling match against a fixed sequence, restarting from
- * scratch on any wrong key -- except a wrong key that happens to be a valid
- * *first* key restarts the match at position 1 instead of 0, so mashing Up
- * before starting doesn't eat a real attempt. */
+/* up up down down left left right right -- a short D-pad-only code (no
+ * confirm-key presses needed), simpler to enter than the classic Konami
+ * code this used to be. A rolling match against a fixed sequence,
+ * restarting from scratch on any wrong key -- except a wrong key that
+ * happens to be a valid *first* key restarts the match at position 1
+ * instead of 0, so mashing Up before starting doesn't eat a real attempt. */
 static void konami_check(const input_t *in)
 {
-    enum { K_UP, K_DOWN, K_LEFT, K_RIGHT, K_B, K_A, K_COUNT };
+    enum { K_UP, K_DOWN, K_LEFT, K_RIGHT, K_COUNT };
     static const uint8_t sequence[] = {
-        K_UP, K_UP, K_DOWN, K_DOWN, K_LEFT, K_RIGHT, K_LEFT, K_RIGHT, K_B, K_A, K_B, K_A,
+        K_UP, K_UP, K_DOWN, K_DOWN, K_LEFT, K_LEFT, K_RIGHT, K_RIGHT,
     };
     static uint8_t match = 0;
 
@@ -95,8 +92,6 @@ static void konami_check(const input_t *in)
     else if (in->down)  pressed = K_DOWN;
     else if (in->left)  pressed = K_LEFT;
     else if (in->right) pressed = K_RIGHT;
-    else if (in->alpha) pressed = K_B;
-    else if (in->advance) pressed = K_A;
 
     if (pressed == K_COUNT) {
         return;
@@ -115,7 +110,7 @@ static void konami_check(const input_t *in)
 
 static void input_poll(input_t *in)
 {
-    static bool held_advance, held_up, held_down, held_left, held_right, held_alpha, held_pause;
+    static bool held_advance, held_up, held_down, held_left, held_right, held_pause;
 
     cgpack_poll();
     kb_Scan();
@@ -125,7 +120,6 @@ static void input_poll(input_t *in)
     bool down    = kb_IsDown(kb_KeyDown);
     bool left    = kb_IsDown(kb_KeyLeft);
     bool right   = kb_IsDown(kb_KeyRight);
-    bool alpha   = kb_IsDown(kb_KeyAlpha);
     bool pause   = kb_IsDown(kb_KeyMode);
 
     in->advance = advance && !held_advance;
@@ -133,7 +127,6 @@ static void input_poll(input_t *in)
     in->down    = down    && !held_down;
     in->left    = left    && !held_left;
     in->right   = right   && !held_right;
-    in->alpha   = alpha   && !held_alpha;
     in->pause   = pause   && !held_pause;
     in->quit    = kb_IsDown(kb_KeyClear);
 
@@ -142,7 +135,6 @@ static void input_poll(input_t *in)
     held_down    = down;
     held_left    = left;
     held_right   = right;
-    held_alpha   = alpha;
     held_pause   = pause;
 
     if (in->quit) {
@@ -795,14 +787,20 @@ static void host_say(void *ctx, const vn_scene_t *scene)
 static uint8_t host_menu(void *ctx, const vn_scene_t *scene,
                          const char *const *choices, uint8_t count)
 {
-    (void)ctx;
-
     uint8_t selected = 0;
 
     for (;;) {
         render_scene(scene);
         render_menu(choices, count, selected);
-        render_box(scene, NULL, "", SIZE_MAX);
+        /* Whatever was last narrated/said stays up behind the menu, same as
+         * host_update()'s own render_box() call -- matches real Ren'Py,
+         * where a Menu's preceding Say line (or, for a menu with its own
+         * caption text, that caption -- see compile_script.py's
+         * _emit_Menu()) keeps showing while the choice is offered, rather
+         * than the box going blank. Hardcoding an empty string here used to
+         * lose that context for every menu in the game, not just ones with
+         * an explicit caption. */
+        render_box(scene, speaker_display_name(ctx, scene->speaker), scene->text, SIZE_MAX);
         render_present(TRANS_CUT);
         gfx_Wait();
 

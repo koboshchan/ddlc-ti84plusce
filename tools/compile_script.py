@@ -1724,8 +1724,20 @@ class Compiler:
                 caption, block = item
             else:
                 continue
-            if isinstance(caption, str) and block:
+            if not isinstance(caption, str):
+                continue
+            if block:
                 rows.append((_strip_text_tags(caption), block))
+            else:
+                # A caption-only entry (no block at all) -- Ren'Py's own way
+                # of attaching narration text to a Menu, e.g. splash.rpyc's
+                # age/content-consent screen: a long consent paragraph
+                # followed by one real choice, "I agree.". Not a selectable
+                # option -- narrate it so it stays on screen instead of
+                # silently vanishing (host_menu() shows scene->text behind
+                # the choice list, same as any other narration -- see its
+                # own comment in main.c).
+                self.asm.narrate(_strip_text_tags(caption))
 
         if not rows:
             self._skip(node, fname, "Menu with no selectable items")
