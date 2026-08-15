@@ -150,7 +150,7 @@ class Layer:
 @dataclass
 class ImageDef:
     imgname: tuple
-    kind: str                      # 'solid' | 'path' | 'composite' | 'condswitch' | 'text' | 'unsupported'
+    kind: str                      # 'solid' | 'path' | 'composite' | 'condswitch' | 'choice' | 'text' | 'unsupported'
     color: Optional[tuple] = None  # (r,g,b) for 'solid'
     path: Optional[str] = None     # for 'path'
     canvas: Optional[tuple] = None # (w,h) for 'composite'
@@ -161,6 +161,12 @@ class ImageDef:
                                                     # declared order (first true wins, matching
                                                     # ConditionSwitch's own semantics) -- see
                                                     # compile_script.py's _emit_condswitch_dispatch
+    choice_paths: list = field(default_factory=list)  # [path, ...] for 'choice' -- a single
+                                                    # top-level ATL RawChoice (e.g. bg club_day2's
+                                                    # 1-in-6 poster-swap variant), every real case
+                                                    # found equally weighted -- see
+                                                    # _top_level_choice_frames() and
+                                                    # compile_script.py's _emit_choice_dispatch
 
 
 # --- procedural approximations -----------------------------------------------
@@ -389,6 +395,34 @@ def _first_atl_string(atl_node) -> Optional[str]:
     return None
 
 
+def _top_level_choice_frames(atl_node) -> Optional[list]:
+    """If @p atl_node's statements are a single top-level RawChoice (e.g.
+    `bg club_day2`'s 1-in-6 poster-swap variant, definitions.rpyc) with 2+
+    branches, returns each branch's own resolved frame (via
+    _first_atl_string() on that branch's block alone, so a branch that's
+    itself a nested animation still collapses to its own first frame same
+    as always) in declared order. None for every other ATL shape -- a
+    RawChoice nested deeper than the top level, mixed in among other
+    top-level statements, or with only one real branch -- which leaves
+    _first_atl_string()'s existing deterministic-first-branch behavior
+    untouched for those (most of them: this is deliberately narrow, not a
+    general "find any RawChoice anywhere" search).
+
+    Weights are dropped: every real RawChoice found in DDLC's own content
+    so far is equally weighted (confirmed for club_day2's own 6 branches,
+    1.0 each), so a uniform pick among the returned frames is exact, not
+    an approximation -- see compile_script.py's _emit_choice_dispatch.
+    """
+    statements = getattr(atl_node, "statements", None)
+    if not isinstance(statements, list) or len(statements) != 1:
+        return None
+    stmt = statements[0]
+    if kind(stmt) != "RawChoice" or not stmt.choices or len(stmt.choices) < 2:
+        return None
+    frames = [_first_atl_string(block) for _weight, block in stmt.choices]
+    return frames if all(f is not None for f in frames) else None
+
+
 def _parse_composite(call: ast.Call) -> Optional[tuple]:
     """Match im.Composite((w,h), (x,y), "path", ...). Returns (canvas, layers) or None."""
     func = call.func
@@ -562,6 +596,10 @@ def build_image_table(raw_dir: Path) -> dict:
                 table[imgname] = (_resolve_source(imgname, src) if src
                                    else ImageDef(imgname, "unsupported", reason="no source captured"))
             elif atl is not None:
+                choice_frames = _top_level_choice_frames(atl)
+                if choice_frames is not None:
+                    table[imgname] = ImageDef(imgname, "choice", choice_paths=choice_frames)
+                    continue
                 frame = _first_atl_string(atl)
                 table[imgname] = (ImageDef(imgname, "path", path=frame) if frame
                                    else ImageDef(imgname, "unsupported", reason="no static frame in ATL block"))
@@ -964,6 +1002,35 @@ class ImageResolver:
             if sid is None:
                 continue
             out.append((None if cond_src.strip() == "True" else cond_src, sid))
+        return out or None
+
+    def choice_variants(self, imgname: tuple) -> Optional[list]:
+        """For a top-level-ATL-RawChoice-backed image (e.g. `bg club_day2`'s
+        1-in-6 poster-swap variant -- see _top_level_choice_frames()), bakes
+        each branch's frame as its own scene and returns [scene_id, ...] in
+        declared order. None if @p imgname isn't one. Same dedup-by-path
+        reasoning as condswitch_variants() above.
+        """
+        defn = self.table.get(imgname)
+        if defn is None or defn.kind != "choice":
+            return None
+
+        out = []
+        for path in defn.choice_paths:
+            # imgname[0] kept as its own tuple element, not folded into the
+            # synthetic suffix string -- scene_id()'s own is_bg check is
+            # `imgname[0] == "bg"` exactly, and every real RawChoice found
+            # so far is a background (`bg club_day2`); losing that would
+            # silently bake it "own"-palette (a CG) instead of "shared"
+            # (confirmed real: caught this via a real compile, not review --
+            # the first version here used one combined string and every
+            # branch came out as a CG).
+            synth = (imgname[0], f"$choice${path}")
+            self.table.setdefault(synth, ImageDef(imgname=synth, kind="path", path=path))
+            sid = self.scene_id(synth)
+            if sid is None:
+                continue
+            out.append(sid)
         return out or None
 
     # -- title screen ---------------------------------------------------------

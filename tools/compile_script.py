@@ -832,6 +832,28 @@ class Compiler:
         if not imgname:
             self._skip(node, fname, "Scene with empty imspec")
             return
+
+        # A top-level-ATL-RawChoice-backed background (e.g. `bg club_day2`'s
+        # real 1-in-6 poster-swap variant, definitions.rpyc -- see
+        # ImageResolver.choice_variants()) needs a runtime random pick, not
+        # scene_id()'s single compile-time-known id -- emitted immediately
+        # (always TRANS_CUT, same simplification _emit_condswitch_dispatch()
+        # already makes for its own multi-branch case) rather than going
+        # through the deferred _pending_scene/_flush_pending_scene combo
+        # every other Scene uses.
+        defn = self.resolver.table.get(imgname)
+        if defn is not None and defn.kind == "choice":
+            scene_ids = self.resolver.choice_variants(imgname)
+            if scene_ids is not None:
+                self._emit_choice_dispatch(scene_ids)
+                self.last_sprite.clear()
+                self.last_pos.clear()
+                self.last_flags.clear()
+                return
+            # Baking a branch failed -- fall through to the normal path
+            # below, which hits the same ImageDef and produces an accurate
+            # "unresolved" skip instead of silently dropping the statement.
+
         scene_id = self.resolver.scene_id(imgname)
         if scene_id is None:
             self._skip(node, fname, f"unresolved scene image {imgname!r}")
@@ -1742,6 +1764,30 @@ class Compiler:
             self.asm.label(next_label)
         self.asm.label(end_label)
         return True
+
+    def _emit_choice_dispatch(self, scene_ids: list) -> None:
+        """Emits a uniform-random pick among @p scene_ids (from
+        ImageResolver.choice_variants(), declared order) -- an ATL
+        RawChoice's own real semantics, exact rather than approximated
+        whenever every branch is equally weighted (every real case found
+        so far -- see _top_level_choice_frames()). Same self.asm.random()
+        -plus-enumerable-dispatch shape as _emit_special_poem_init()'s
+        draw, just without that one's reject-and-retry distinctness loop:
+        each visit here is independent, nothing to avoid repeating.
+        """
+        rand = self._var_slot(self.RAND_SCRATCH)
+        end_label = self._gensym("choice_end")
+        self.asm.random(rand, 0, len(scene_ids) - 1)
+        for k, scene_id in enumerate(scene_ids):
+            match_label = self._gensym("choice_match")
+            next_label = self._gensym("choice_next")
+            self.asm.if_(rand, vnasm.CMP_EQ, k, match_label)
+            self.asm.jump(next_label)
+            self.asm.label(match_label)
+            self.asm.scene(scene_id, vnasm.TRANS_CUT)
+            self.asm.jump(end_label)
+            self.asm.label(next_label)
+        self.asm.label(end_label)
 
     def _emit_Menu(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)
