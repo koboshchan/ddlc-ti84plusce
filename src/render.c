@@ -999,6 +999,32 @@ void render_list_menu(const char *const *items, uint8_t count, uint8_t selected,
     }
 }
 
+void render_list_menu_bar(const char *const *items, uint8_t count, uint8_t selected,
+                          int x, int y, int w, uint8_t text_color,
+                          uint8_t bar_color, uint8_t sel_text_color)
+{
+    const int line_h = 18;
+    const int pad    = 6;
+
+    for (uint8_t i = 0; i < count; i++) {
+        bool is_selected = i == selected;
+        int line_y = y + i * line_h;
+
+        if (is_selected) {
+            render_fill_rect(x - pad, line_y - 3, w, line_h - 3, bar_color);
+        }
+        gfx_SetTextFGColor(is_selected ? sel_text_color : text_color);
+        gfx_PrintStringXY(items[i], x, line_y);
+    }
+}
+
+void render_fill_rect(int x, int y, int w, int h, uint8_t color)
+{
+    scene_obscured();
+    gfx_SetColor(color);
+    gfx_FillRectangle_NoClip(x, y, w, h);
+}
+
 /* ---------------------------------------------------------------------------
  * Title screen
  *
@@ -1181,11 +1207,11 @@ void render_fade_retarget(const uint16_t *palette)
     fade_apply(0); /* re-hold at full black under the new palette's values */
 }
 
-void render_pause_box(int x, int y, int w, int h)
+void render_pause_box(int x, int y, int w, int h, uint8_t fill_color, uint8_t edge_color)
 {
     scene_obscured();
-    gfx_SetColor(COL_BOX_FILL);
+    gfx_SetColor(fill_color);
     gfx_FillRectangle_NoClip(x, y, w, h);
-    gfx_SetColor(COL_BOX_EDGE);
+    gfx_SetColor(edge_color);
     gfx_Rectangle_NoClip(x, y, w, h);
 }

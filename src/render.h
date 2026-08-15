@@ -193,6 +193,21 @@ void render_text_centered(const char *s, int y, uint8_t color);
 void render_list_menu(const char *const *items, uint8_t count, uint8_t selected,
                       int x, int y, uint8_t normal_color, uint8_t selected_color);
 
+/**
+ * Like render_list_menu(), but marks @p selected with a filled bar spanning
+ * @p w behind the text instead of a ">" prefix -- DDLC's own nav-panel style
+ * (see render_title_screen()'s doc comment), for screens meant to read as
+ * one of DDLC's real menu cards (pause overlay, save/load) rather than an
+ * in-scene choice prompt.
+ */
+void render_list_menu_bar(const char *const *items, uint8_t count, uint8_t selected,
+                          int x, int y, int w, uint8_t text_color,
+                          uint8_t bar_color, uint8_t sel_text_color);
+
+/** Flat-fills a rectangle in a reserved palette color -- highlight bars,
+ * divider rules, drop shadows behind a panel. */
+void render_fill_rect(int x, int y, int w, int h, uint8_t color);
+
 /** Milliseconds the title intro runs for; past this everything is at rest. */
 #define TITLE_INTRO_MS 3500
 
@@ -215,8 +230,9 @@ void render_list_menu(const char *const *items, uint8_t count, uint8_t selected,
  */
 void render_title_screen(uint8_t selected, unsigned t);
 
-/** A bordered box for the pause overlay, drawn over an already-rendered
- * game scene. Content (header text, list menu) is the caller's job. */
-void render_pause_box(int x, int y, int w, int h);
+/** A bordered, filled box -- the pause overlay card, save/load slot cards,
+ * drawn over an already-rendered game scene. Content (header text, list
+ * menu) is the caller's job. */
+void render_pause_box(int x, int y, int w, int h, uint8_t fill_color, uint8_t edge_color);
 
 #endif /* RENDER_H */

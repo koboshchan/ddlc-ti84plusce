@@ -148,10 +148,10 @@ static void input_poll(input_t *in)
  * Pause menu, save/load slots, title screen, help
  * ------------------------------------------------------------------------ */
 
-#define PAUSE_BOX_X 80
-#define PAUSE_BOX_Y 60
-#define PAUSE_BOX_W 160
-#define PAUSE_BOX_H 100
+#define PAUSE_BOX_X 60
+#define PAUSE_BOX_Y 40
+#define PAUSE_BOX_W 200
+#define PAUSE_BOX_H 160
 
 static const char *const pause_items[] = { "Resume", "Save", "Load", "Title Screen" };
 #define PAUSE_RESUME 0
@@ -160,26 +160,45 @@ static const char *const pause_items[] = { "Resume", "Save", "Load", "Title Scre
 #define PAUSE_TITLE  3
 #define PAUSE_COUNT  4
 
-/** Runs the save-slot picker over a plain backdrop. Returns the chosen slot
- * (1..SAVE_SLOTS), or 0 if the player cancelled (Mode) or quit. When
- * @p require_existing is set (Load), empty slots are shown but can't be
+/* Save/load slots laid out as a row of DDLC-style "page" cards rather than a
+ * text list -- SAVE_SLOTS is small enough (3) that a single row fits. */
+#define SLOT_CARD_W   84
+#define SLOT_CARD_H  120
+#define SLOT_CARD_GAP 12
+#define SLOT_GRID_Y    66
+
+/** Runs the save-slot picker over a full-screen card grid. Returns the
+ * chosen slot (1..SAVE_SLOTS), or 0 if the player cancelled (Mode) or quit.
+ * When @p require_existing is set (Load), empty slots are shown but can't be
  * confirmed -- there's nothing to load. */
 static uint8_t run_slot_picker(const char *title, bool require_existing)
 {
-    char labels[SAVE_SLOTS][20];
-    const char *items[SAVE_SLOTS];
+    const char *const status[2] = { "Empty", "Saved" };
     uint8_t selected = 0;
 
-    for (uint8_t i = 0; i < SAVE_SLOTS; i++) {
-        sprintf(labels[i], "Slot %u - %s", i + 1, save_exists(i + 1) ? "Saved" : "Empty");
-        items[i] = labels[i];
-    }
+    const int total_w = SAVE_SLOTS * SLOT_CARD_W + (SAVE_SLOTS - 1) * SLOT_CARD_GAP;
+    const int grid_x  = (SCREEN_W - total_w) / 2;
 
     for (;;) {
         render_backdrop(COL_BOX_FILL);
-        render_text(title, 14, 12, COL_NAME);
-        render_list_menu(items, SAVE_SLOTS, selected, 20, 50, COL_WHITE, COL_HIGHLIGHT);
-        render_text("2nd: choose   Mode: cancel", 14, SCREEN_H - 18, COL_BOX_EDGE);
+        render_text_centered(title, 16, COL_NAME);
+        render_fill_rect(grid_x, 40, total_w, 1, COL_BOX_EDGE);
+
+        for (uint8_t i = 0; i < SAVE_SLOTS; i++) {
+            int cx = grid_x + i * (SLOT_CARD_W + SLOT_CARD_GAP);
+            bool is_selected = i == selected;
+            bool has_save = save_exists(i + 1);
+            uint8_t text_color = is_selected ? COL_BOX_FILL : COL_WHITE;
+            char label[8];
+
+            render_pause_box(cx, SLOT_GRID_Y, SLOT_CARD_W, SLOT_CARD_H,
+                             is_selected ? COL_HIGHLIGHT : COL_BOX_FILL, COL_BOX_EDGE);
+            sprintf(label, "Slot %u", i + 1);
+            render_text(label, cx + 10, SLOT_GRID_Y + 44, text_color);
+            render_text(status[has_save], cx + 10, SLOT_GRID_Y + 62, text_color);
+        }
+
+        render_text_centered("2nd: choose   Mode: cancel", SCREEN_H - 18, COL_BOX_EDGE);
         render_present(TRANS_CUT);
         gfx_Wait();
 
@@ -188,10 +207,10 @@ static uint8_t run_slot_picker(const char *title, bool require_existing)
         if (quit_requested || in.pause) {
             return 0;
         }
-        if (in.up) {
+        if (in.up || in.left) {
             selected = selected == 0 ? SAVE_SLOTS - 1 : (uint8_t)(selected - 1);
         }
-        if (in.down) {
+        if (in.down || in.right) {
             selected = (uint8_t)((selected + 1) % SAVE_SLOTS);
         }
         if (in.advance) {
@@ -218,10 +237,15 @@ static bool run_pause_menu(vn_vm_t *vm)
         render_scene(&vm->scene);
         render_box(&vm->scene, speaker_display_name(vm, vm->scene.speaker),
                    vm->scene.text, SIZE_MAX);
-        render_pause_box(PAUSE_BOX_X, PAUSE_BOX_Y, PAUSE_BOX_W, PAUSE_BOX_H);
-        render_text("Paused", PAUSE_BOX_X + 12, PAUSE_BOX_Y + 8, COL_NAME);
-        render_list_menu(pause_items, PAUSE_COUNT, selected,
-                         PAUSE_BOX_X + 14, PAUSE_BOX_Y + 26, COL_WHITE, COL_HIGHLIGHT);
+        render_fill_rect(PAUSE_BOX_X + 5, PAUSE_BOX_Y + 5, PAUSE_BOX_W, PAUSE_BOX_H, COL_SHADOW);
+        render_pause_box(PAUSE_BOX_X, PAUSE_BOX_Y, PAUSE_BOX_W, PAUSE_BOX_H, COL_BOX_FILL, COL_BOX_EDGE);
+        render_text("Paused", PAUSE_BOX_X + 16, PAUSE_BOX_Y + 14, COL_NAME);
+        render_fill_rect(PAUSE_BOX_X + 16, PAUSE_BOX_Y + 30, PAUSE_BOX_W - 32, 1, COL_BOX_EDGE);
+        render_list_menu_bar(pause_items, PAUSE_COUNT, selected,
+                             PAUSE_BOX_X + 22, PAUSE_BOX_Y + 46, PAUSE_BOX_W - 32,
+                             COL_WHITE, COL_HIGHLIGHT, COL_BOX_FILL);
+        render_text("2nd: select   Mode: close", PAUSE_BOX_X + 16, PAUSE_BOX_Y + PAUSE_BOX_H - 16,
+                    COL_BOX_EDGE);
         render_present(TRANS_CUT);
         gfx_Wait();
 
