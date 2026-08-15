@@ -160,12 +160,16 @@ static const char *const pause_items[] = { "Resume", "Save", "Load", "Title Scre
 #define PAUSE_TITLE  3
 #define PAUSE_COUNT  4
 
-/* Save/load slots laid out as a row of DDLC-style "page" cards rather than a
- * text list -- SAVE_SLOTS is small enough (3) that a single row fits. */
-#define SLOT_CARD_W   84
-#define SLOT_CARD_H  120
-#define SLOT_CARD_GAP 12
-#define SLOT_GRID_Y    66
+/* Save/load slots laid out as a grid of DDLC-style "page" cards rather than
+ * a text list, wrapping to a new row every SLOT_GRID_COLS -- SAVE_SLOTS=6
+ * makes a 3x2 grid, echoing DDLC's own multi-page save grid at a size that
+ * still fits the screen without scrolling or paging. */
+#define SLOT_GRID_COLS  3
+#define SLOT_CARD_W    84
+#define SLOT_CARD_H    75
+#define SLOT_CARD_GAP  12
+#define SLOT_ROW_GAP   10
+#define SLOT_GRID_Y    50
 
 /** Runs the save-slot picker over a full-screen card grid. Returns the
  * chosen slot (1..SAVE_SLOTS), or 0 if the player cancelled (Mode) or quit.
@@ -174,9 +178,10 @@ static const char *const pause_items[] = { "Resume", "Save", "Load", "Title Scre
 static uint8_t run_slot_picker(const char *title, bool require_existing)
 {
     const char *const status[2] = { "Empty", "Saved" };
+    const uint8_t rows = (SAVE_SLOTS + SLOT_GRID_COLS - 1) / SLOT_GRID_COLS;
     uint8_t selected = 0;
 
-    const int total_w = SAVE_SLOTS * SLOT_CARD_W + (SAVE_SLOTS - 1) * SLOT_CARD_GAP;
+    const int total_w = SLOT_GRID_COLS * SLOT_CARD_W + (SLOT_GRID_COLS - 1) * SLOT_CARD_GAP;
     const int grid_x  = (SCREEN_W - total_w) / 2;
 
     for (;;) {
@@ -185,17 +190,20 @@ static uint8_t run_slot_picker(const char *title, bool require_existing)
         render_fill_rect(grid_x, 40, total_w, 1, COL_BOX_EDGE);
 
         for (uint8_t i = 0; i < SAVE_SLOTS; i++) {
-            int cx = grid_x + i * (SLOT_CARD_W + SLOT_CARD_GAP);
+            uint8_t col = i % SLOT_GRID_COLS;
+            uint8_t row = i / SLOT_GRID_COLS;
+            int cx = grid_x + col * (SLOT_CARD_W + SLOT_CARD_GAP);
+            int cy = SLOT_GRID_Y + row * (SLOT_CARD_H + SLOT_ROW_GAP);
             bool is_selected = i == selected;
             bool has_save = save_exists(i + 1);
             uint8_t text_color = is_selected ? COL_BOX_FILL : COL_WHITE;
             char label[8];
 
-            render_pause_box(cx, SLOT_GRID_Y, SLOT_CARD_W, SLOT_CARD_H,
+            render_pause_box(cx, cy, SLOT_CARD_W, SLOT_CARD_H,
                              is_selected ? COL_HIGHLIGHT : COL_BOX_FILL, COL_BOX_EDGE);
             sprintf(label, "Slot %u", i + 1);
-            render_text(label, cx + 10, SLOT_GRID_Y + 44, text_color);
-            render_text(status[has_save], cx + 10, SLOT_GRID_Y + 62, text_color);
+            render_text(label, cx + 10, cy + 28, text_color);
+            render_text(status[has_save], cx + 10, cy + 46, text_color);
         }
 
         render_text_centered("2nd: choose   Mode: cancel", SCREEN_H - 18, COL_BOX_EDGE);
@@ -207,12 +215,29 @@ static uint8_t run_slot_picker(const char *title, bool require_existing)
         if (quit_requested || in.pause) {
             return 0;
         }
-        if (in.up || in.left) {
-            selected = selected == 0 ? SAVE_SLOTS - 1 : (uint8_t)(selected - 1);
+
+        uint8_t col = selected % SLOT_GRID_COLS;
+        uint8_t row = selected / SLOT_GRID_COLS;
+        if (in.left) {
+            col = col == 0 ? SLOT_GRID_COLS - 1 : (uint8_t)(col - 1);
         }
-        if (in.down || in.right) {
-            selected = (uint8_t)((selected + 1) % SAVE_SLOTS);
+        if (in.right) {
+            col = (uint8_t)((col + 1) % SLOT_GRID_COLS);
         }
+        if (in.up) {
+            row = row == 0 ? (uint8_t)(rows - 1) : (uint8_t)(row - 1);
+        }
+        if (in.down) {
+            row = (uint8_t)((row + 1) % rows);
+        }
+        /* A short last row (SAVE_SLOTS not a multiple of SLOT_GRID_COLS)
+         * can put col/row past the real slot count -- only move onto a
+         * card that actually exists. */
+        uint8_t candidate = (uint8_t)(row * SLOT_GRID_COLS + col);
+        if (candidate < SAVE_SLOTS) {
+            selected = candidate;
+        }
+
         if (in.advance) {
             if (require_existing && !save_exists(selected + 1)) {
                 continue; /* nothing there to load */

@@ -24,7 +24,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define SAVE_SLOTS 3  /* slots are numbered 1..SAVE_SLOTS */
+#define SAVE_SLOTS 6  /* slots are numbered 1..SAVE_SLOTS */
 
 /** True if @p slot has a save written. */
 bool save_exists(uint8_t slot);
