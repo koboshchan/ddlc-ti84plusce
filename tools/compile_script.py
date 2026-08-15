@@ -700,6 +700,20 @@ class Compiler:
             self.asm.narrate(_strip_text_tags(text_literal))
             return
 
+        if len(imgname) == 1:
+            defn = self.resolver.table.get(imgname)
+            if defn is not None and defn.kind == "text":
+                # The named-image form of the same idiom just above --
+                # `image fake_exception = Text("...")` then `show
+                # fake_exception` (s_kill_early's fake crash-screen scare,
+                # script-ch5.rpyc's fake_exception/fake_exception2). Reached
+                # through resolver.table instead of _text_call_literal()
+                # since imgname[0] here is the symbolic tag, not the literal
+                # Text(...) call source -- see image_resolve.py's
+                # _resolve_source() for where this ImageDef comes from.
+                self.asm.narrate(_strip_text_tags(defn.text))
+                return
+
         char = TAG_TO_CHAR.get(imgname[0])
         if char is None:
             # Not one of the 4 cast members -- OP_SHOW's ch:u8 operand only

@@ -150,12 +150,13 @@ class Layer:
 @dataclass
 class ImageDef:
     imgname: tuple
-    kind: str                      # 'solid' | 'path' | 'composite' | 'condswitch' | 'unsupported'
+    kind: str                      # 'solid' | 'path' | 'composite' | 'condswitch' | 'text' | 'unsupported'
     color: Optional[tuple] = None  # (r,g,b) for 'solid'
     path: Optional[str] = None     # for 'path'
     canvas: Optional[tuple] = None # (w,h) for 'composite'
     layers: list = field(default_factory=list)  # [Layer, ...] for 'composite'
     reason: Optional[str] = None   # for 'unsupported'
+    text: Optional[str] = None     # the literal message, for 'text' -- see _resolve_source's Text(...) case
     variants: list = field(default_factory=list)  # [(cond_src, path), ...] for 'condswitch',
                                                     # declared order (first true wins, matching
                                                     # ConditionSwitch's own semantics) -- see
@@ -463,6 +464,20 @@ def _resolve_source(imgname: tuple, src: str) -> ImageDef:
             # background on its own -- same "drop the transform, keep the
             # real picture" reasoning as _find_path_in_call's ATL cases.
             return ImageDef(imgname, "path", path=node.args[0].value)
+
+        if (fname == "Text" and node.args and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)):
+            # A named `image` definition that's itself a Text(...)
+            # displayable -- s_kill_early's fake_exception/fake_exception2
+            # scare screen (script-ch5.rpyc), shown via a plain `show
+            # fake_exception`. No art file, so it can't go through
+            # scene_id()/_bake_flat() below -- same "no art, narrate
+            # instead" reasoning as compile_script.py's own
+            # _text_call_literal() already applies to the anonymous `show
+            # Text("...")` idiom; this is that same idiom's named-image
+            # form, so compile_script.py's _emit_Show() short-circuits on
+            # this kind the same way, before ever reaching scene_id().
+            return ImageDef(imgname, "text", text=node.args[0].value)
 
         if (fname == "ConditionSwitch" and not node.keywords and len(node.args) >= 2
                 and len(node.args) % 2 == 0
