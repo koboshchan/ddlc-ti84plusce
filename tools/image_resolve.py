@@ -268,18 +268,33 @@ def _find_path_in_call(node: ast.Call, depth: int = 0) -> Optional[str]:
     -- see _first_atl_string's own comment on why this is worth doing
     (Monika's face-pixelation effect nests a real path two Call levels
     deep). depth guards against unreasonable recursion; real ATL call
-    trees are never more than 2-3 levels deep."""
+    trees are never more than 2-3 levels deep.
+
+    Falls back to a nested Solid(...) call's own flat color (a normalized
+    "#rrggbb" string, which _render_ref() recognizes directly) when no real
+    path exists anywhere in the tree -- confirmed real: m_rectstatic's
+    plain `RectStatic(Solid("#000"), 32, 32, 32)` pixelation variant has no
+    picture underneath to fall back to at all, unlike its two siblings
+    (m_rectstatic2/3), which crop a real screenshot-like image instead."""
     if depth > 6:
         return None
+    solid_color = None
     for arg in node.args:
         if (isinstance(arg, ast.Constant) and isinstance(arg.value, str)
                 and _IMAGE_EXT.search(arg.value)):
             return arg.value
         if isinstance(arg, ast.Call):
+            fname = arg.func.id if isinstance(arg.func, ast.Name) else None
+            if (solid_color is None and fname == "Solid" and len(arg.args) == 1
+                    and isinstance(arg.args[0], ast.Constant)
+                    and isinstance(arg.args[0].value, str)):
+                rgb = _parse_hex_color(arg.args[0].value)
+                if rgb is not None:
+                    solid_color = "#%02x%02x%02x" % rgb
             found = _find_path_in_call(arg, depth + 1)
             if found is not None:
                 return found
-    return None
+    return solid_color
 
 
 def _first_atl_string(atl_node) -> Optional[str]:
@@ -1188,11 +1203,17 @@ class ImageResolver:
         self.unsupported.append((imgname, reason))
 
     def _render_ref(self, ref: str, depth: int = 0) -> Optional[PILImage.Image]:
-        """Render a layer/frame reference: a real file path, or (confirmed in
-        real data -- e.g. Composite layer "n_rects_mouth", ATL frame "bg
-        club_day") a symbolic reference to another declared `image`."""
+        """Render a layer/frame reference: a real file path, a flat "#rrggbb"
+        color (confirmed real -- _find_path_in_call()'s Solid(...) fallback,
+        see its own comment), or (confirmed in real data -- e.g. Composite
+        layer "n_rects_mouth", ATL frame "bg club_day") a symbolic reference
+        to another declared `image`."""
         if depth > 8:  # guards against a reference cycle between Image defs
             return None
+
+        rgb = _parse_hex_color(ref)
+        if rgb is not None:
+            return PILImage.new("RGBA", (64, 64), rgb + (255,))
 
         if _is_file_path(ref):
             art = _find_art_file(self.raw_dir, ref)
