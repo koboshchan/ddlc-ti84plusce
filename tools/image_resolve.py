@@ -82,7 +82,16 @@ TEXTBOX_SIZE = (320, 60)
 # (not derived from TEXTBOX_SIZE's own scale factor) to a close aspect
 # match that fits comfortably in the box's top-left corner alongside it.
 NAMEBOX_SIZE = (72, 17)
-CG_SIZE = (320, 180)
+# CGs are composited/fit at CG_FULL_SIZE (matching BG_SIZE's own 1280x720 ->
+# 320x180 scale) and then downscaled to CG_SIZE for the on-calc bake -- this
+# halves stored/decompressed CG pixel count (a real, previously-shipped-then-
+# reverted archive-size fix, see commit cc4d424) while keeping the full-res
+# composite available: it's saved separately, before the downscale, as the
+# source for tools/export_cgpack.py's external FAT32 CG pack (see that file
+# and src/cgpack.c). Backgrounds are untouched -- they're not what blows the
+# archive budget, and downscaling them wasn't asked for.
+CG_FULL_SIZE = (320, 180)
+CG_SIZE = (160, 90)
 
 # --- title screen ------------------------------------------------------------
 #
@@ -594,12 +603,32 @@ def _find_art_file(raw_dir: Path, rel_path: str) -> Optional[Path]:
     return None
 
 
+def _fit_and_center(img: "PILImage.Image", size: tuple,
+                    backdrop: tuple) -> "PILImage.Image":
+    """Letterboxes @p img (aspect preserved, LANCZOS-scaled) onto a new
+    @p size canvas filled with @p backdrop (RGBA), centered. The shared
+    shape behind every full-frame bake in this file (backgrounds, the poem
+    notebook, UI box art, a CG's full-res composite) -- each just picks its
+    own target size and backdrop color."""
+    canvas = PILImage.new("RGBA", size, backdrop)
+    ratio = min(size[0] / img.width, size[1] / img.height)
+    scaled_size = (max(1, round(img.width * ratio)), max(1, round(img.height * ratio)))
+    scaled = img.resize(scaled_size, PILImage.LANCZOS)
+    canvas.alpha_composite(scaled, ((size[0] - scaled_size[0]) // 2,
+                                    (size[1] - scaled_size[1]) // 2))
+    return canvas
+
+
 class ImageResolver:
     def __init__(self, raw_dir: Path, build_dir: Path):
         self.raw_dir = raw_dir
         self.build_dir = build_dir
         self.img_dir = build_dir / "img"
         self.img_dir.mkdir(parents=True, exist_ok=True)
+        # Full-res CG composites, saved alongside the half-res on-calc bake --
+        # see CG_FULL_SIZE's comment and tools/export_cgpack.py.
+        self.cgpack_src_dir = build_dir / "cgpack_src"
+        self.cgpack_src_dir.mkdir(parents=True, exist_ok=True)
 
         self.table = build_image_table(raw_dir)
 
@@ -981,12 +1010,7 @@ class ImageResolver:
             return None
 
         img = PILImage.open(art).convert("RGBA")
-        canvas = PILImage.new("RGBA", BG_SIZE, (255, 255, 255, 255))
-        ratio = min(BG_SIZE[0] / img.width, BG_SIZE[1] / img.height)
-        size = (max(1, round(img.width * ratio)), max(1, round(img.height * ratio)))
-        scaled = img.resize(size, PILImage.LANCZOS)
-        canvas.alpha_composite(scaled, ((BG_SIZE[0] - size[0]) // 2,
-                                        (BG_SIZE[1] - size[1]) // 2))
+        canvas = _fit_and_center(img, BG_SIZE, (255, 255, 255, 255))
 
         idx = len(self.scenes)
         filename = f"bg_{idx:03d}_explicit_{Path(rel_path).stem}.png"
@@ -1018,12 +1042,7 @@ class ImageResolver:
             return None
 
         img = PILImage.open(art).convert("RGBA")
-        canvas = PILImage.new("RGBA", POEM_BG_SIZE, (255, 255, 255, 255))
-        ratio = min(POEM_BG_SIZE[0] / img.width, POEM_BG_SIZE[1] / img.height)
-        size = (max(1, round(img.width * ratio)), max(1, round(img.height * ratio)))
-        scaled = img.resize(size, PILImage.LANCZOS)
-        canvas.alpha_composite(scaled, ((POEM_BG_SIZE[0] - size[0]) // 2,
-                                        (POEM_BG_SIZE[1] - size[1]) // 2))
+        canvas = _fit_and_center(img, POEM_BG_SIZE, (255, 255, 255, 255))
 
         filename = f"poem_bg_{Path(rel_path).stem}.png"
         canvas.save(self.img_dir / filename)
@@ -1066,12 +1085,7 @@ class ImageResolver:
             return None
 
         img = PILImage.open(art).convert("RGBA")
-        canvas = PILImage.new("RGBA", size, (0x5A, 0x10, 0x30, 255))
-        ratio = min(size[0] / img.width, size[1] / img.height)
-        scaled_size = (max(1, round(img.width * ratio)), max(1, round(img.height * ratio)))
-        scaled = img.resize(scaled_size, PILImage.LANCZOS)
-        canvas.alpha_composite(scaled, ((size[0] - scaled_size[0]) // 2,
-                                        (size[1] - scaled_size[1]) // 2))
+        canvas = _fit_and_center(img, size, (0x5A, 0x10, 0x30, 255))
 
         filename = f"ui_{Path(rel_path).stem}.png"
         canvas.save(self.img_dir / filename)
@@ -1217,6 +1231,7 @@ class ImageResolver:
             self._log_unsupported(imgname, "no Image definition found")
             return None
 
+        full_cg = None
         if defn.kind == "solid":
             canvas = PILImage.new("RGBA", size, defn.color + (255,))
         else:
@@ -1225,12 +1240,11 @@ class ImageResolver:
                 self._log_unsupported(imgname, defn.reason or "could not render (missing or unresolvable referenced art)")
                 return None
             if fit:
-                canvas = PILImage.new("RGBA", size, (0, 0, 0, 255))
-                ratio = min(size[0] / art.width, size[1] / art.height)
-                scaled_size = (max(1, round(art.width * ratio)), max(1, round(art.height * ratio)))
-                art = art.resize(scaled_size, PILImage.LANCZOS)
-                canvas.alpha_composite(art, ((size[0] - scaled_size[0]) // 2,
-                                             (size[1] - scaled_size[1]) // 2))
+                # Compose at full CG resolution first (see CG_FULL_SIZE's
+                # comment), then downscale for the on-calc bake -- so the
+                # cgpack export is a real fit, not a re-derivation of one.
+                full_cg = _fit_and_center(art, CG_FULL_SIZE, (0, 0, 0, 255))
+                canvas = full_cg if size == CG_FULL_SIZE else full_cg.resize(size, PILImage.LANCZOS)
             else:
                 canvas = art.resize(size, PILImage.LANCZOS).convert("RGBA")
 
@@ -1256,6 +1270,8 @@ class ImageResolver:
         name = _safe_filename_part(imgname) or "scene"
         filename = f"{'cg' if fit else 'bg'}_{len(self.scenes):03d}_{name}.png"
         canvas.save(self.img_dir / filename)
+        if full_cg is not None:
+            full_cg.save(self.cgpack_src_dir / filename)
 
         return {"imgname": list(imgname), "file": filename, "w": size[0], "h": size[1],
                 "_content_hash": content_hash}

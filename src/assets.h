@@ -199,6 +199,15 @@ bool assets_scene(uint8_t id, uint8_t *dest);
  */
 const uint16_t *assets_scene_palette(uint8_t id);
 
+/**
+ * This build's expected full-res CG pack fingerprint (DCGVER, matching
+ * tools/export_cgpack.py's build_fingerprint()) into @p out[4]. False if
+ * this build shipped no DCGVER (a bundle with no CGs baked, or built before
+ * src/cgpack.c existed) -- src/cgpack.c then treats no external pack as
+ * ever matching, so it stays unused rather than risking a scene id mismatch.
+ */
+bool assets_cgpack_fingerprint(uint8_t out[4]);
+
 /* ---------------------------------------------------------------------------
  * Title screen
  *

@@ -775,6 +775,16 @@ static void scene_obscured(void)
     plate_free();
 }
 
+void render_invalidate_scene(void)
+{
+    /* Same mechanism as scene_obscured() above, minus plate_free(): nothing
+     * about actor animation changed, so there's no plate to release -- just
+     * force the next render_scene_lazy() call past its "already correct,
+     * skip" shortcut. See its own doc comment in render.h for why this
+     * exists (src/cgpack.c's availability changing mid-scene). */
+    have_drawn_once = false;
+}
+
 void render_scene_lazy(const vn_scene_t *scene)
 {
     if (!have_drawn_once || !scene_settled) {
@@ -808,6 +818,19 @@ void render_scene_lazy(const vn_scene_t *scene)
      * where nothing was easing at all and the very first frame was already
      * final. Asking the offset helpers directly costs nothing and settles
      * on the next frame in that case. */
+}
+
+/* Copies a @p w x @p h raw palette-index image (row-major, no stride gaps)
+ * into the draw buffer with its top-left at (@p x, @p y). Used for both the
+ * textbox and namebox art below -- neither needs graphx's own sprite/rlet
+ * machinery, since both are always drawn axis-aligned with no transparency
+ * to skip. */
+static void blit_raw(int x, int y, const uint8_t *src, int w, int h)
+{
+    for (int r = 0; r < h; r++) {
+        uint8_t *fb = (uint8_t *)gfx_vbuffer + (size_t)(y + r) * SCREEN_W + x;
+        memcpy(fb, src + (size_t)r * w, w);
+    }
 }
 
 void render_box(const vn_scene_t *scene, const char *speaker,
@@ -847,10 +870,7 @@ void render_box(const vn_scene_t *scene, const char *speaker,
     }
 
     if (have_textbox) {
-        for (int r = 0; r < TEXTBOX_H; r++) {
-            uint8_t *fb = (uint8_t *)gfx_vbuffer + (size_t)(BOX_Y + r) * SCREEN_W;
-            memcpy(fb, textbox_px + (size_t)r * TEXTBOX_W, TEXTBOX_W);
-        }
+        blit_raw(0, BOX_Y, textbox_px, TEXTBOX_W, TEXTBOX_H);
     } else {
         gfx_SetColor(COL_BOX_FILL);
         gfx_FillRectangle_NoClip(0, BOX_Y, SCREEN_W, BOX_H);
@@ -869,10 +889,7 @@ void render_box(const vn_scene_t *scene, const char *speaker,
          * participate in that same bookkeeping to avoid flicker. */
         if (have_namebox) {
             const int nb_x = pad, nb_y = BOX_Y + 2;
-            for (int r = 0; r < NAMEBOX_H; r++) {
-                uint8_t *fb = (uint8_t *)gfx_vbuffer + (size_t)(nb_y + r) * SCREEN_W + nb_x;
-                memcpy(fb, namebox_px + (size_t)r * NAMEBOX_W, NAMEBOX_W);
-            }
+            blit_raw(nb_x, nb_y, namebox_px, NAMEBOX_W, NAMEBOX_H);
             gfx_SetTextFGColor(COL_NAME);
             gfx_PrintStringXY(speaker, nb_x + 8, nb_y + 4);
             y = nb_y + NAMEBOX_H + 2;

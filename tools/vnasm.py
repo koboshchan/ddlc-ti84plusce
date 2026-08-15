@@ -53,7 +53,6 @@ POS_RIGHT = 880 // 8
 
 SPEAKER_NONE = 0xFF
 SPEAKER_PLAYER = 0xFE  # must match src/vn.h's VN_SPEAKER_PLAYER
-NO_SPRITE = 0xFF
 NO_OVERLAY = 0xFFFF  # OP_SHOW's overlay:u16 sentinel -- see docs/FORMAT.md's "Layered sprites"
 
 # OP_SHOW's flags:u8 bitmask -- must match src/vn.h's VN_FLAG_ZOOM/VN_FLAG_HOP

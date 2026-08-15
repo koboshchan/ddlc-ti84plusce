@@ -327,6 +327,7 @@ matched by `src/assets.c`:
 | `DPOEMBG0`, `DPOEMBG1` | The poem minigame's notebook background, full-screen (320x240 = 76800 bytes) raw indices under the shared game palette, split in two at a fixed 65000-byte boundary (over the single-AppVar ceiling; no LUT, just the one resource) — see "Poem minigame" |
 | `DCGPAL0`, `DCGPAL1`, … + `DCGPLUT` | One 256-entry palette per CG, packed like sprites -- see "Image assets" |
 | `DCGIDX` | Scene id -> `DCGPLUT` index (`0xFF` for a scene with no own palette), one byte per scene in `DSCNLUT` order |
+| `DCGVER` | 4-byte build fingerprint, matched against an external full-res CG pack's `/DDLC/BUILD.ID` -- see "External full-res CG pack" |
 | `DSAVE1`, `DSAVE2`, `DSAVE3` | One player save slot each -- see "Save data" |
 | `DNAME` | The saved player name, raw bytes, no NUL -- see "Startup sequence" |
 
@@ -418,12 +419,18 @@ reader never has to stitch bytes across two AppVars for one image — one
   work sprite compression would have (measured ZX0 on RLE-encoded sprite
   data separately: only ~18% smaller, since RLE already removes most of
   the redundancy compression would otherwise find).
-- **CGs** (`palette: "own"`) — rendered full-screen and alone, scaled to fit
-  320x180 preserving aspect (letterboxed), so each is meant to carry its own
-  palette rather than share the game's. `convert_images.py` quantizes it
-  against its own 256-entry palette (fixed-entries 0-7 pinned, same as
-  `pal_game`/`pal_title`, so the dialogue box drawn over a CG still reads the
-  right colors) and packs it into the `DCGPAL*`/`DCGPLUT` group.
+- **CGs** (`palette: "own"`) — rendered full-screen and alone, so each is
+  meant to carry its own palette rather than share the game's.
+  `convert_images.py` quantizes it against its own 256-entry palette
+  (fixed-entries 0-7 pinned, same as `pal_game`/`pal_title`, so the dialogue
+  box drawn over a CG still reads the right colors) and packs it into the
+  `DCGPAL*`/`DCGPLUT` group. Unlike a background, a CG's *on-calc* bake is
+  scaled to fit `CG_SIZE` (160x90, half a background's 320x180) rather than
+  full resolution — a deliberate quality tradeoff to close a real
+  archive-budget overage without touching backgrounds, which aren't what
+  drives it. The full-resolution composite (`CG_FULL_SIZE`, 320x180,
+  letterboxed) is saved too, to `build/cgpack_src/`, before that downscale —
+  see "External full-res CG pack" below for what uses it.
 
 ## The speaking pop
 
@@ -631,6 +638,67 @@ via `assets_scene_palette()` and applies it differently depending on `trans`:
   doesn't correspond to them, for exactly one frame, before drawing catches
   up. Sandwiching the retarget inside the black hold instead means the
   palette and the pixel data change together, both hidden.
+
+### External full-res CG pack
+
+CGs ship on-calc at half resolution (`CG_SIZE`, see "Image assets" above).
+`src/assets.c`'s `assets_scene()` decompresses a CG into a small
+160x90 scratch buffer and 2x-nearest-neighbor-upscales it into the caller's
+destination — softer than a background, a real and deliberate tradeoff, not
+a bug.
+
+An optional full-resolution pack recovers the lost detail without touching
+the archive budget at all: `tools/export_cgpack.py` (run automatically by
+`import_game.py`, right after AppVar packaging) quantizes each CG's saved
+full-res composite (`build/cgpack_src/`) onto the *exact same* 256-color
+palette `convert_images.py` already baked for its on-calc version — so only
+detail changes between the two, never color — and writes one file per CG to
+`build/cgpack/`:
+
+```
+CG{scene_id:03d}.BIN   320x180 = 57,600 raw palette-index pixel bytes,
+                       padded to a 512-byte block boundary (57,856 bytes /
+                       113 blocks — fatdrvce reads whole blocks only). No
+                       embedded palette: it would always be byte-identical
+                       to DCGPAL's copy, so shipping it a second time in
+                       every file would be pure redundant USB traffic.
+BUILD.ID               512 bytes: 4-byte magic "DCGP" + a 4-byte build
+                       fingerprint (hash of every scene's (id, source file),
+                       see export_cgpack.py's build_fingerprint()).
+```
+
+The user copies `build/cgpack/`'s contents onto a FAT32-formatted USB drive
+as `/DDLC/`, connected to the calculator via a USB-OTG-to-flash-drive
+adapter. `src/cgpack.c` is the runtime side: `usb_Init()`/`usb_HandleEvents()`
+(`usbdrvce`) detect the drive, `msd_Open()`/`msd_FindPartitions()`
+(`msddrvce`) find a partition, `fat_Open()` (`fatdrvce`) mounts it. Before
+using it for anything, `cgpack.c` reads `/DDLC/BUILD.ID` and compares its
+fingerprint against `DCGVER` — a 4-byte AppVar `import_game.py` packages
+alongside `DCGPAL`/`DCGIDX`, holding the exact same fingerprint
+`export_cgpack.py` computed for that build. **This check matters, not just
+belt-and-suspenders**: CG scene ids are positional, assigned in the order
+`image_resolve.py`'s `scene_id()` first encounters each image during
+compilation (see "Image assets" above) — a pack built from a different
+`--files` selection, or even the same selection recompiled after an
+unrelated script edit, can very plausibly assign a *different* CG to the
+same id. Without the fingerprint check, a stale pack wouldn't fail to load —
+it would silently show the wrong picture. A mismatch (or no drive, or no
+`/DDLC/BUILD.ID`, or a non-FAT filesystem) leaves `cgpack_available()` false
+and every CG falls straight back to the built-in half-res path, exactly as
+if no drive were plugged in at all.
+
+`assets_scene()` tries `cgpack_read_pixels()` first for any CG id (skipping
+straight to the built-in half-res decompress+upscale on `false`) — see its
+own comment for why the *palette* deliberately never comes from the pack.
+`main.c`'s `input_poll()` calls `cgpack_poll()` (a non-blocking
+`usb_HandleEvents()`) on every one of its call sites, so a drive plugged in
+or pulled out mid-session is picked up within a frame or two without a
+dedicated polling loop. Because `render_scene_lazy()` (`src/render.c`)
+deliberately skips redrawing an already-settled scene (see its own
+comment), `cgpack.c` calls the new `render_invalidate_scene()` whenever
+pack availability changes, so a CG already on screen when a drive is
+plugged in or removed gets redrawn on the very next idle/typewriter frame
+rather than only at the next real scene change.
 
 ## The tear glitch effect
 

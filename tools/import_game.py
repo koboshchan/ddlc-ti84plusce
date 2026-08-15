@@ -41,6 +41,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import convert_images
+import export_cgpack
 import extract
 import vnasm
 from compile_script import (VN_STR_BASE, CompileError, Compiler, link_chunks,
@@ -78,8 +79,6 @@ ALL_FILES = [
     "script-poemgame", "script-poemresponses", "script-poemresponses2", "poems",
     "poems_special", "script", "splash", "credits",
 ]
-
-DEFAULT_FILES = ["script", "script-ch0", "splash"]
 
 ARCHIVE_BUDGET = 2_900_000  # ~2.9MB real hardware archive capacity, confirmed
                              # on-device (see docs/FORMAT.md's "Design
@@ -731,6 +730,16 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
         cg_index = bytes(s["cg_palette_index"] if s["cg_palette_index"] is not None else 0xFF
                          for s in manifest["scenes"])
         appvars.append(write_appvar(cg_index, "DCGIDX", appvar_dir))
+
+        # Full-res CG pack export (external FAT32 drive) + its matching
+        # fingerprint, resident on-calc so src/cgpack.c can refuse a pack
+        # built against a different --files selection/order rather than
+        # showing the wrong image for some scene id -- see export_cgpack.py.
+        pack_count, pack_bytes = export_cgpack.export_cgpack(build_dir)
+        print(f"  cgpack: {pack_count} full-res CGs, {pack_bytes} bytes "
+              f"-> {build_dir / 'cgpack'} (copy onto a FAT32 drive as /DDLC/)")
+        appvars.append(write_appvar(export_cgpack.build_fingerprint(manifest),
+                                    "DCGVER", appvar_dir))
 
     total = sum(p.stat().st_size for p in appvars)
     print(f"{len(appvars)} AppVars, {total} bytes total "

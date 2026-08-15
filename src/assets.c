@@ -24,6 +24,7 @@
  */
 
 #include "assets.h"
+#include "cgpack.h"
 #include "render.h"
 
 #include <compression.h>
@@ -109,6 +110,13 @@ static uint8_t   *cgpal_lut_buf;
 static const uint8_t *cgpal_lut;
 static uint16_t   cgpal_lut_count;
 static uint16_t   cg_palette_scratch[256]; /* assets_scene_palette()'s return buffer */
+
+/* DCGVER: this build's full-res CG pack fingerprint (tools/export_cgpack.py's
+ * build_fingerprint(), matched against a pack's own /DDLC/BUILD.ID by
+ * src/cgpack.c). Optional, same reasoning as the CG palette tables above --
+ * a bundle with no CGs baked ships neither. */
+static uint8_t    cgpack_fingerprint[4];
+static bool       cgpack_fingerprint_ok;
 
 static uint16_t read_u16le(const uint8_t *p)
 {
@@ -323,7 +331,27 @@ assets_status_t assets_init(void)
     cg_index_buf = read_whole("DCGIDX", &cg_index_count);
     load_lut("DCGPLUT", &cgpal_lut_buf, &cgpal_lut, &cgpal_lut_count);
 
+    /* Optional, same reasoning: a bundle with no CGs baked ships no DCGVER
+     * either, and src/cgpack.c's fingerprint check simply never matches --
+     * an external pack, if one happens to be plugged in, just goes unused. */
+    uint16_t ver_size;
+    uint8_t *ver = read_whole("DCGVER", &ver_size);
+    if (ver && ver_size >= sizeof(cgpack_fingerprint)) {
+        memcpy(cgpack_fingerprint, ver, sizeof(cgpack_fingerprint));
+        cgpack_fingerprint_ok = true;
+    }
+    free(ver);
+
     return ASSETS_OK;
+}
+
+bool assets_cgpack_fingerprint(uint8_t out[4])
+{
+    if (!cgpack_fingerprint_ok) {
+        return false;
+    }
+    memcpy(out, cgpack_fingerprint, sizeof(cgpack_fingerprint));
+    return true;
 }
 
 void assets_use_title_palette(bool on)
@@ -904,32 +932,43 @@ bool assets_poem_bg(uint8_t *dest)
  * and caching there (render_box()'s own job) is cheap regardless -- see
  * SCENE_BYTES's neighboring comment for why a same-sized copy every
  * render_scene() call already isn't a real cost on this hardware. */
-bool assets_textbox(uint8_t *dest)
+static bool load_fixed_art(const char *name, uint8_t *dest, size_t size)
 {
-    uint8_t handle = ti_Open("DTXTBOX", "r");
+    uint8_t handle = ti_Open(name, "r");
     if (!handle) {
         return false;
     }
-    memcpy(dest, ti_GetDataPtr(handle), TEXTBOX_W * TEXTBOX_H);
+    memcpy(dest, ti_GetDataPtr(handle), size);
     ti_Close(handle);
     return true;
+}
+
+bool assets_textbox(uint8_t *dest)
+{
+    return load_fixed_art("DTXTBOX", dest, TEXTBOX_W * TEXTBOX_H);
 }
 
 bool assets_namebox(uint8_t *dest)
 {
-    uint8_t handle = ti_Open("DNAMEBOX", "r");
-    if (!handle) {
-        return false;
-    }
-    memcpy(dest, ti_GetDataPtr(handle), NAMEBOX_W * NAMEBOX_H);
-    ti_Close(handle);
-    return true;
+    return load_fixed_art("DNAMEBOX", dest, NAMEBOX_W * NAMEBOX_H);
 }
 
-/* Fixed size of every background/CG (image_resolve.py's BG_SIZE/CG_SIZE) --
- * both are baked to exactly this many raw palette-index bytes, so no length
- * needs reading out of the LUT entry. */
+/* Fixed size of every background (image_resolve.py's BG_SIZE) -- baked to
+ * exactly this many raw palette-index bytes, so no length needs reading out
+ * of the LUT entry. CGs are baked smaller (CG_SIZE below) -- see
+ * assets_scene()'s own comment on why. */
 #define SCENE_BYTES (320u * 180u)
+
+/* CGs bake at half the real scene resolution (image_resolve.py's CG_SIZE,
+ * 160x90 not SCREEN_W x SCENE_H) -- 4x fewer raw pixels to store/compress, a
+ * deliberate quality tradeoff to close a real archive-budget overage without
+ * touching backgrounds (which aren't what blows the budget). An external
+ * full-res pack (src/cgpack.h) is tried first for any CG id and, when one is
+ * plugged in and matches this build, skips this downscaled path entirely --
+ * see assets_scene() below. */
+#define SCENE_CG_SRC_W 160u
+#define SCENE_CG_SRC_H 90u
+#define SCENE_CG_BYTES (SCENE_CG_SRC_W * SCENE_CG_SRC_H)
 
 /* A same-sized (57600-byte) decompressed-background cache was tried here to
  * avoid re-decompressing every frame render_scene() runs (every typewriter
@@ -941,9 +980,19 @@ bool assets_namebox(uint8_t *dest)
  * figure doesn't leave room for another 57.6KB on top of both. Decompressing
  * straight into @p dest every call, like this, is the correctness-first
  * fallback: no extra RAM, at the cost of the per-frame decode this module
- * used to avoid. */
+ * used to avoid. A CG's own scratch buffer below is a much smaller 14.4KB,
+ * so it doesn't reopen that problem. */
+static bool is_cg(uint8_t id)
+{
+    return cg_index_buf && id < cg_index_count && cg_index_buf[id] != 0xFF;
+}
+
 bool assets_scene(uint8_t id, uint8_t *dest)
 {
+    if (is_cg(id) && cgpack_read_pixels(id, dest)) {
+        return true;
+    }
+
     uint8_t appvar_idx;
     uint16_t offset;
     if (!lut_lookup(scene_lut, scene_lut_count, id, &appvar_idx, &offset)) {
@@ -956,16 +1005,42 @@ bool assets_scene(uint8_t id, uint8_t *dest)
     if (!handle) {
         return false;
     }
-
     const uint8_t *data = ti_GetDataPtr(handle);
-    zx0_Decompress(dest, data + offset);
+
+    if (!is_cg(id)) {
+        zx0_Decompress(dest, data + offset);
+        ti_Close(handle);
+        return true;
+    }
+
+    /* Each source pixel becomes a 2x2 block in @p dest. dest's own row
+     * stride is SCREEN_W (the real framebuffer's), not SCENE_CG_SRC_W*2 --
+     * every caller passes a pointer straight into gfx_vbuffer, matching a
+     * background's own direct-decompress contract exactly. */
+    static uint8_t cg_scratch[SCENE_CG_BYTES];
+    zx0_Decompress(cg_scratch, data + offset);
     ti_Close(handle);
+
+    for (uint32_t sy = 0; sy < SCENE_CG_SRC_H; sy++) {
+        uint8_t row[SCENE_CG_SRC_W * 2];
+        const uint8_t *srow = cg_scratch + sy * SCENE_CG_SRC_W;
+        for (uint32_t sx = 0; sx < SCENE_CG_SRC_W; sx++) {
+            row[sx * 2] = row[sx * 2 + 1] = srow[sx];
+        }
+        memcpy(dest + (size_t)(sy * 2) * SCREEN_W, row, sizeof(row));
+        memcpy(dest + (size_t)(sy * 2 + 1) * SCREEN_W, row, sizeof(row));
+    }
     return true;
 }
 
 const uint16_t *assets_scene_palette(uint8_t id)
 {
-    if (cg_index_buf && id < cg_index_count && cg_index_buf[id] != 0xFF) {
+    /* Deliberately not consulting cgpack here, unlike assets_scene() above:
+     * tools/export_cgpack.py quantizes the full-res pack onto this exact
+     * same DCGPAL palette (see its own comment), so the bytes are always
+     * identical -- reading them a second time over USB on every scene
+     * change would just be a slower, redundant path with no upside. */
+    if (is_cg(id)) {
         uint8_t appvar_idx;
         uint16_t offset;
         if (lut_lookup(cgpal_lut, cgpal_lut_count, cg_index_buf[id], &appvar_idx, &offset)) {

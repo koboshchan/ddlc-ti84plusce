@@ -105,6 +105,19 @@ void render_scene(const vn_scene_t *scene);
 void render_scene_lazy(const vn_scene_t *scene);
 
 /**
+ * Forces the next render_scene_lazy() call to do a real redraw, even if the
+ * scene has settled and nothing is animating. render_scene_lazy()'s whole
+ * point is skipping redundant redraws when the draw buffer is already known
+ * correct (see its own comment) -- that assumption breaks if the *source* a
+ * settled scene's background comes from changes out from under it, which is
+ * exactly what happens when src/cgpack.c's external CG pack becomes
+ * available or unavailable mid-scene (a USB drive plugged in or pulled out
+ * while a CG is already on screen). Cheap and rare enough to not need a
+ * finer-grained "just this one CG" invalidation.
+ */
+void render_invalidate_scene(void);
+
+/**
  * Draw the dialogue box with @p text revealed up to @p visible characters.
  * Pass SIZE_MAX to reveal the whole line.
  *

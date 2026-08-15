@@ -5,6 +5,7 @@
  */
 
 #include "assets.h"
+#include "cgpack.h"
 #include "persist.h"
 #include "chars.h"
 #include "name.h"
@@ -116,6 +117,7 @@ static void input_poll(input_t *in)
 {
     static bool held_advance, held_up, held_down, held_left, held_right, held_alpha, held_pause;
 
+    cgpack_poll();
     kb_Scan();
 
     bool advance = kb_IsDown(kb_Key2nd) || kb_IsDown(kb_KeyEnter);
@@ -1172,17 +1174,24 @@ int main(void)
         return 1;
     }
 
+    /* Never blocks, and failure here (no USB hardware/driver trouble) just
+     * means the optional full-res CG pack stays unavailable for the whole
+     * run -- same as a bundle shipping no CGs at all, see cgpack.h. */
+    cgpack_init();
+
     entry_pc = assets_entry_pc();
     host.ctx = &vm;
 
     run_splash_screens();
     if (quit_requested) {
+        cgpack_end();
         render_end();
         return 0;
     }
 
     run_splashscreen_check(&vm);
     if (quit_requested) {
+        cgpack_end();
         render_end();
         return 0;
     }
@@ -1297,6 +1306,7 @@ int main(void)
         }
     }
 
+    cgpack_end();
     render_end();
     return 0;
 }
