@@ -906,9 +906,20 @@ static vn_host_t host = {
 };
 
 /* ---------------------------------------------------------------------------
- * Startup splash: Team Salvato's logo, then DDLC's content warning.
- * Plays once before the title screen ever shows. Any key skips ahead to the
- * next screen (not straight past both); Clear quits like everywhere else.
+ * Startup splash: Team Salvato's logo. Plays once before the title screen
+ * ever shows. Any key skips ahead; Clear quits like everywhere else.
+ *
+ * DDLC's own content-warning/age-consent screens (the real "tos"/"tos2" art,
+ * with the real narrated warning text and the real "I agree." Menu) are NOT
+ * hand-built here -- they're real script.rpyc/splash.rpyc content, compiled
+ * and run normally via run_splashscreen_check()'s label splashscreen, right
+ * after this. A hand-built approximation of them used to live here too
+ * (plain white backgrounds with hand-typed text) from before that content
+ * compiled correctly; removed once it did, since showing both back to back
+ * meant every warning appeared twice. See tools/compile_script.py's
+ * _emit_Label "splashscreen" case for what that label does and doesn't
+ * compile (it stops before the part that would *also* duplicate the title
+ * screen).
  * ------------------------------------------------------------------------ */
 
 /* tools/import_game.py's do_compile() bakes this scene first and
@@ -963,36 +974,9 @@ static void draw_splash_logo(void)
     }
 }
 
-static void draw_splash_warning(void)
-{
-    render_backdrop(COL_WHITE);
-    render_text_centered("This game is not suitable for children", 108, COL_BLACK);
-    render_text_centered("or those who are easily disturbed.", 124, COL_BLACK);
-}
-
-/* DDLC's real content warning is two separate lines (splash.rpyc); this one
- * was missing entirely until now -- draw_splash_warning() above only ever
- * carried the first. Wrapped by hand across 4 short centered lines rather
- * than run through text.c's dialogue word-wrapper: that wrapper targets the
- * dialogue box's fixed width/font, not a plain full-screen splash. */
-static void draw_splash_warning2(void)
-{
-    render_backdrop(COL_WHITE);
-    render_text_centered("Individuals suffering from anxiety", 92, COL_BLACK);
-    render_text_centered("or depression may not have a safe", 108, COL_BLACK);
-    render_text_centered("experience playing this game.", 124, COL_BLACK);
-    render_text_centered("Content warnings: ddlc.moe/warning.html", 148, COL_BOX_FILL);
-}
-
 static void run_splash_screens(void)
 {
-    if (!splash_screen(draw_splash_logo)) {
-        return;
-    }
-    if (!splash_screen(draw_splash_warning)) {
-        return;
-    }
-    splash_screen(draw_splash_warning2);
+    splash_screen(draw_splash_logo);
 }
 
 /* ---------------------------------------------------------------------------

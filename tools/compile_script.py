@@ -572,6 +572,35 @@ class Compiler:
             self.asm.ret()
             return
 
+        if name == "splashscreen":
+            # DDLC's real `label splashscreen` (splash.rpyc) runs all the
+            # way through the title screen's own entrance (`Show intro`)
+            # and a disclaimer variant (`Show splash_warning "[...]"`) --
+            # both already implemented separately, and better, by
+            # src/main.c: render_title_screen() (its own dedicated
+            # pal_title palette, DDLC's real entrance timing) and
+            # run_splash_screens() respectively. Compiling those here too
+            # would draw the same content a second time under the *wrong*
+            # palette (the shared game one, since assets_use_title_palette()
+            # hasn't run yet at this point) -- confirmed via a real
+            # playtest report as the cause of a garbled-looking screen
+            # appearing right before the title screen actually loads.
+            #
+            # Everything *before* `Show intro` is real, non-duplicated
+            # content this compiler already handles correctly (the
+            # tos/tos2 content-warning screens with their real narrated
+            # text, the age/consent Menu, the ghost-menu and s_kill_early
+            # checks) -- stop emitting as soon as the walk reaches it
+            # rather than skipping the label's body wholesale.
+            prefix = []
+            for stmt in node.block or []:
+                if (kind(stmt) == "Show" and stmt.imspec and stmt.imspec[0] == ("intro",)):
+                    break
+                prefix.append(stmt)
+            self.emit_block(prefix, fname)
+            self.asm.ret()
+            return
+
         self.emit_block(node.block, fname)
 
     def _emit_Say(self, node, fname: str) -> None:
