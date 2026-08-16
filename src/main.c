@@ -1253,8 +1253,15 @@ int main(void)
          * chunk, and assets_load_chunk() frees the old buffer on every
          * swap, so code/code_size from before this loop (or from a prior
          * iteration) would be a stale, already-freed pointer by now -- see
-         * docs/FORMAT.md's "Chunking". assets_init() already proved the
-         * entry chunk loads, so this can't newly fail here. */
+         * docs/FORMAT.md's "Chunking". Unchecked: a chunk swap failing here
+         * degrades the same way any other one does (vn_step()'s own bounds
+         * check turns it into VN_ERR_BOUNDS on the first step), which is
+         * the existing, accepted failure mode for every other
+         * host_load_chunk() call site too -- see the Makefile's
+         * BSSHEAP_HIGH and tools/compile_script.py's CHUNK_SIZE_BUDGET for
+         * why this doesn't actually happen: together they keep every
+         * compiled chunk's malloc() comfortably under the real heap
+         * ceiling, entry chunk included. */
         assets_load_chunk(VN_CHUNK_ID(entry_pc));
         code = assets_script(&code_size);
         /* clock() varies with how long the player spent on the title screen

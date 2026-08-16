@@ -11,6 +11,7 @@
 #include <sys/timers.h>
 
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -73,6 +74,36 @@ static void print_slice(const char *str, size_t len, int x, int y)
     for (size_t i = 0; i < len; i++) {
         gfx_PrintChar(str[i]);
     }
+}
+
+/* Real DDLC's dialogue font is a solid fill over a distinct outline, not a
+ * flat single color -- this font has no such glyph, so the outline is
+ * faked the same way most sprite-font-less engines do it: the same slice
+ * drawn at a 1px offset in @p outline along each of the 4 cardinal
+ * directions, then once more dead center in @p fill on top.
+ * gfx_SetTextTransparentColor() (render_init()) keeps every pass from
+ * clobbering non-glyph pixels, so the offset passes only ever widen each
+ * glyph's own silhouette by a ring -- never touch what's already there
+ * outside it -- and the final centered pass repaints every pixel the true
+ * glyph covers, leaving just that ring showing through as the outline.
+ * Cardinal-only (not the full 8-direction ring, which also hits the
+ * diagonals) -- the diagonal passes double up at every corner of a glyph's
+ * strokes, reading as a noticeably heavier/blockier outline than real
+ * DDLC's thin one. */
+static void print_slice_outlined(const char *str, size_t len, int x, int y,
+                                 uint8_t fill, uint8_t outline)
+{
+    static const int8_t off[4][2] = {
+                 {0, -1},
+        {-1, 0},         {1, 0},
+                 {0,  1},
+    };
+    gfx_SetTextFGColor(outline);
+    for (int i = 0; i < 4; i++) {
+        print_slice(str, len, x + off[i][0], y + off[i][1]);
+    }
+    gfx_SetTextFGColor(fill);
+    print_slice(str, len, x, y);
 }
 
 /* ---------------------------------------------------------------------------
@@ -296,6 +327,17 @@ static void draw_background(uint8_t bg)
     if (bg == VN_NO_SPRITE || !assets_scene(bg, (uint8_t *)gfx_vbuffer)) {
         gfx_SetColor(COL_BLACK);
         gfx_FillRectangle_NoClip(0, 0, SCREEN_W, SCENE_H);
+
+        /* TEMP diagnostic for the still-open "New Game shows a black
+         * screen" bug -- draw_background() has no other way to surface
+         * *why* the real background didn't render (VN_NO_SPRITE, meaning
+         * scene->background was never set to a real id, vs. a specific id
+         * that assets_scene() itself couldn't resolve/open). Remove once
+         * that bug is root-caused. */
+        char diag[24];
+        sprintf(diag, bg == VN_NO_SPRITE ? "bg=NONE (0xFF)" : "bg=%u (load failed)", bg);
+        gfx_SetTextFGColor(COL_WHITE);
+        gfx_PrintStringXY(diag, 4, 4);
     }
 }
 
@@ -363,16 +405,29 @@ static void draw_actor(const vn_actor_t *actor, unsigned t)
      * the bitmap alongside a large resident script chunk -- see assets.c),
      * which is why this doesn't just branch on zoom_wanted: fall back to the
      * plain draw, nudged by fallback_off, whenever the real scale didn't
-     * actually happen, not only when it wasn't wanted. */
-    if (!(zoom && assets_draw_sprite_zoomed(actor->sprite, center_x, feet_y))) {
-        assets_draw_sprite(actor->sprite, center_x, feet_y + fallback_off);
+     * actually happen, not only when it wasn't wanted.
+     *
+     * The plain (non-zoomed) draw can independently fail the exact same way
+     * the zoom prepare above already accounts for -- the body atom is by
+     * far the bigger allocation, so under memory pressure it's the one
+     * that can lose the malloc() race while the small expression atom
+     * right after it still succeeds. Unlike the zoom path (which commits
+     * both layers to the same fate *before* drawing either, since it can
+     * cheaply check affordability with assets_zoom_prepare()), there's no
+     * equivalent cheap check for a plain draw -- so this reacts instead:
+     * only attempt the overlay once the body has actually landed a pixel,
+     * so a failed body always means a fully-skipped character for that
+     * frame, never a floating head with no body under it. */
+    bool body_drawn = zoom && assets_draw_sprite_zoomed(actor->sprite, center_x, feet_y);
+    if (!body_drawn) {
+        body_drawn = assets_draw_sprite(actor->sprite, center_x, feet_y + fallback_off);
     }
 
     /* Most actors are one flattened sprite (overlay == VN_NO_OVERLAY); a
      * layered one draws its expression atom second, at the same anchor --
      * its own (dx, dy) from DSPROFF is what places it correctly relative to
      * the body atom just drawn, at either scale. */
-    if (actor->overlay != VN_NO_OVERLAY &&
+    if (body_drawn && actor->overlay != VN_NO_OVERLAY &&
         !(zoom && assets_draw_sprite_zoomed(actor->overlay, center_x, feet_y))) {
         assets_draw_sprite(actor->overlay, center_x, feet_y + fallback_off);
     }
@@ -881,21 +936,25 @@ void render_box(const vn_scene_t *scene, const char *speaker,
     int y = BOX_Y + 4;
 
     if (speaker != NULL) {
-        /* Kept fully inside the box's own y >= BOX_Y territory (a few px
-         * short of the real game's namebox, which overlaps up into the
-         * scene area) -- see render_scene_lazy()'s "plate" redraw-avoidance
-         * machinery just above, which assumes only actors touch y <
-         * SCENE_H; a namebox poking up into that space would need to
-         * participate in that same bookkeeping to avoid flicker. */
+        /* Pokes up above BOX_Y into the scene area, matching the real
+         * game's namebox -- safe despite render_scene_lazy()'s "plate"
+         * redraw-avoidance machinery assuming only actors touch y <
+         * SCENE_H: render_box() (this function) still runs unconditionally
+         * every single frame, right after render_scene()/render_scene_lazy()
+         * in every call site, and repaints this exact rectangle every time
+         * regardless of which path the scene took -- so whatever stale
+         * pixels the plate mechanism captured or restored underneath it
+         * are always immediately painted over again before the frame is
+         * presented. */
         if (have_namebox) {
-            const int nb_x = pad, nb_y = BOX_Y + 2;
+            const int nb_x = pad, nb_y = BOX_Y - NAMEBOX_H + 4;
             blit_raw(nb_x, nb_y, namebox_px, NAMEBOX_W, NAMEBOX_H);
-            gfx_SetTextFGColor(COL_NAME);
-            gfx_PrintStringXY(speaker, nb_x + 8, nb_y + 4);
+            print_slice_outlined(speaker, strlen(speaker), nb_x + 8, nb_y + 4,
+                                 COL_WHITE, COL_NAME);
             y = nb_y + NAMEBOX_H + 2;
         } else {
-            gfx_SetTextFGColor(COL_NAME);
-            gfx_PrintStringXY(speaker, pad, y);
+            print_slice_outlined(speaker, strlen(speaker), pad, y,
+                                 COL_WHITE, COL_NAME);
             y += 11;
         }
     }
@@ -923,9 +982,9 @@ void render_box(const vn_scene_t *scene, const char *speaker,
         text_clamp(&shown, &cached_full, visible);
     }
 
-    gfx_SetTextFGColor(COL_WHITE);
     for (uint8_t i = 0; i < shown.count; i++) {
-        print_slice(shown.lines[i].start, shown.lines[i].len, pad, y);
+        print_slice_outlined(shown.lines[i].start, shown.lines[i].len, pad, y,
+                             COL_WHITE, COL_BLACK);
         y += 10;
     }
 }

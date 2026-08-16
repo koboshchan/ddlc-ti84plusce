@@ -248,21 +248,36 @@ _AUDIO_PREFIXES = ("play ", "stop ", "queue ", "voice ")
 VN_MAX_VARS = 256  # mirrors src/vn.h -- the u8 variable operand's ceiling
 
 # Threshold for compile_file_chunked()'s mid-file split. The hard ceiling is
-# import_game.py's MAXVARSIZE (65000), and this used to sit just under it at
-# 58000 -- but the binding constraint is runtime RAM, not AppVar size. The
-# resident chunk shares the calculator's ~150KB of usable RAM with graphx's
-# ~77KB draw buffer, so a 58000-budget chunk (they reached 62.8KB, since a
-# split is only allowed at a top-level Label boundary and the budget is
-# checked before crossing one) left barely 10KB free -- too little for
-# render-time scratch, which is why src/assets.c's scaled-sprite cache and
-# the moving-actor backdrop plate in src/render.c would simply fail to
-# allocate and silently fall back on exactly the busiest chapters.
+# import_game.py's MAXVARSIZE (65000), but the real binding constraint is
+# runtime RAM, not AppVar size -- and the actual number is much smaller than
+# it looks.
 #
-# At 24000 the same Act 1 script becomes 19 chunks instead of 14, the
-# largest 29KB, leaving ~44KB free. The cost is more AppVars and slightly
-# more frequent chunk loads, each of which is itself proportionally cheaper
-# to read.
-CHUNK_SIZE_BUDGET = 24000
+# assets_load_chunk() mallocs one contiguous buffer sized to hold the whole
+# chunk (code + string pool) at once. The heap it mallocs from is bounded by
+# the Makefile's BSSHEAP_HIGH -- NOT the calculator's whole ~150KB of usable
+# RAM (that figure includes graphx's own separately-mapped draw buffer,
+# which never touches this heap at all). Confirmed empirically: with the
+# stock CEdev BSSHEAP_HIGH, this program's own .bss (string-pool tables,
+# static scratch buffers, the vn VM struct -- see src/vn.h) already eats
+# ~52KB of a ~59KB combined bss+heap region, leaving only ~7KB of real free
+# heap -- nowhere near enough for a chunk anywhere near the size this budget
+# used to allow (measured up to 30KB per chunk at a 24000-byte budget, since
+# a split is only allowed at a top-level Label boundary and the budget is
+# checked before crossing one, so real chunk sizes routinely overshoot it).
+# See the Makefile's own BSSHEAP_HIGH comment for the other half of this fix
+# (reclaiming spare stack space into the heap) -- the two have to be tuned
+# together. Even with that heap enlarged to ~29.5KB, a single chunk still
+# has to share it with whatever's concurrently allocated (sprite/scene
+# decompression scratch, persistent-save buffers, ...), so the real per-
+# chunk budget needs to sit well under the heap ceiling, not right at it.
+#
+# 12000 still wasn't low enough in practice: a scene with a real 12.6KB
+# resident chunk plus one further sprite decompress (a body atom well under
+# half the ~31.5KB heap on its own) still failed to malloc(), confirmed
+# live and reproduced deterministically -- so whatever headroom "well under
+# half the heap" bought wasn't the whole story; treat the true per-chunk
+# budget as needing to leave *most* of the heap free, not just half.
+CHUNK_SIZE_BUDGET = 8000
 
 
 class CompileError(Exception):
@@ -313,6 +328,27 @@ class Compiler:
     # enumerable dispatch, only buildable once the matching dynamic Call is
     # reached. See _match_poemwinner_dispatch()/_emit_poemwinner_dispatch().
     _pending_dispatch: dict = field(default_factory=dict, init=False)
+
+    # Global counter behind new_chunk_id() -- see that method's own comment.
+    _next_chunk_id: int = field(default=0, init=False)
+    # Chunks created by a mid-label split (_emit_Label's own budget check,
+    # not compile_file_chunked()'s top-level one) -- compile_file_chunked()
+    # collects these into its own return value after each file. See
+    # _split_label_block()'s comment for why label bodies need their own
+    # split point separate from the file-level one.
+    _extra_chunks: list = field(default_factory=list, init=False)
+
+    def new_chunk_id(self) -> int:
+        """The next globally-unique chunk_id, shared by every place a new
+        Assembler gets created (do_compile()'s one per file, and any
+        mid-file/mid-label budget split) -- a single counter instead of
+        each call site computing its own from a local list length, so a
+        split inside a label's body (see _split_label_block()) can't
+        collide with one between top-level labels or between files.
+        """
+        cid = self._next_chunk_id
+        self._next_chunk_id += 1
+        return cid
 
     # -- driver ---------------------------------------------------------------
 
@@ -385,22 +421,22 @@ class Compiler:
     def compile_file_chunked(self, path: Path, chunk_id_start: int,
                              budget: int = CHUNK_SIZE_BUDGET) -> list[vnasm.Assembler]:
         """Like compile_file(), but splits @path across multiple chunks if it
-        grows past @budget bytes (code + string pool) -- only one file has
-        needed this so far (script-ch30, 67954 bytes combined, just over the
-        65535 single-AppVar ceiling every other file measured comfortably
-        under). Assumes self.asm is already the first chunk to write into
-        (matching compile_file()'s calling convention in do_compile()) and
-        that @chunk_id_start is that assembler's own chunk_id.
+        grows past @budget bytes (code + string pool). Assumes self.asm is
+        already the first chunk to write into (matching compile_file()'s
+        calling convention in do_compile()); @chunk_id_start is unused now
+        (kept for call-site compatibility) -- every new chunk, here and in
+        _split_label_block() below, gets its id from the shared
+        new_chunk_id() counter instead, so the two splitters can't collide.
 
-        Only ever splits right before a top-level Label -- the one place
-        DDLC's own file structure treats as a safe jump target: sequential
-        top-level labels already fall through into each other with no
-        explicit Jump between them, so inserting one at a chosen split point
-        is behaviorally identical to the fall-through it replaces, not a
-        semantic change. Splitting inside a label's own block (a nested
-        If/Menu/etc.) isn't attempted -- those aren't valid cross-chunk jump
-        targets on their own and no single label has come close to the
-        budget by itself yet.
+        Splits right before a top-level Label -- the one place DDLC's own
+        file structure treats as a safe jump target: sequential top-level
+        labels already fall through into each other with no explicit Jump
+        between them, so inserting one at a chosen split point is
+        behaviorally identical to the fall-through it replaces, not a
+        semantic change. A label whose own body alone exceeds the budget
+        (common enough in practice to matter, not just a theoretical case)
+        needs a second, finer-grained split *inside* that body -- see
+        _emit_Label's call to _split_label_block().
         """
         _, top = load_rpyc(path)
         assemblers = [self.asm]
@@ -411,9 +447,12 @@ class Compiler:
             if is_label and size > budget:
                 self._flush_pending_scene(vnasm.TRANS_CUT)
                 self.asm.jump(node.name)
-                self.asm = vnasm.Assembler(chunk_id=chunk_id_start + len(assemblers))
+                self.asm = vnasm.Assembler(chunk_id=self.new_chunk_id())
                 assemblers.append(self.asm)
             self.emit_node(node, path.name)
+            if self._extra_chunks:
+                assemblers.extend(self._extra_chunks)
+                self._extra_chunks = []
 
         self._flush_pending_scene(vnasm.TRANS_CUT)
         return assemblers
@@ -601,7 +640,41 @@ class Compiler:
             self.asm.ret()
             return
 
-        self.emit_block(node.block, fname)
+        self._split_label_block(node.block, fname)
+
+    def _split_label_block(self, nodes, fname: str,
+                           budget: int = CHUNK_SIZE_BUDGET) -> None:
+        """Like emit_block(), but for a label's own direct body -- splits
+        into a new chunk if the body alone grows past @budget bytes, same
+        reasoning as compile_file_chunked()'s top-level split (see its own
+        comment): two sequential sibling statements at the same block level
+        already execute in order with no explicit Jump between them, so
+        replacing that implicit fall-through with an explicit one plus a
+        synthetic label is behaviorally identical, not a semantic change.
+
+        Needed because compile_file_chunked() alone only splits *between*
+        top-level Labels -- a single label whose own body exceeds the
+        budget (DDLC has several long unbroken narration/dialogue runs
+        that do) would otherwise still produce one oversized chunk no
+        matter how low that budget is set.
+
+        Only ever splits between two of the label's own direct top-level
+        statements -- never inside a nested If/Menu/etc., which isn't a
+        valid split point (its own control flow assumes falling straight
+        back out to this block, not into an unrelated Jump target). New
+        chunks land in self._extra_chunks for compile_file_chunked() to
+        collect after this label returns.
+        """
+        for node in nodes or []:
+            size = len(self.asm.code) + sum(len(s.encode("utf-8")) for s in self.asm.strings)
+            if size > budget:
+                self._flush_pending_scene(vnasm.TRANS_CUT)
+                split_label = self._gensym("chunksplit")
+                self.asm.jump(split_label)
+                self.asm = vnasm.Assembler(chunk_id=self.new_chunk_id())
+                self.asm.label(split_label)
+                self._extra_chunks.append(self.asm)
+            self.emit_node(node, fname)
 
     def _emit_Say(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)

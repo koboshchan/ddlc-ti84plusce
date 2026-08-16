@@ -191,8 +191,8 @@ def do_compile(raw_dir: Path, build_dir: Path,
         if not path.is_file():
             print(f"  ! {name}.rpyc not found in {raw_dir}, skipping")
             continue
-        compiler.asm = vnasm.Assembler(chunk_id=len(assemblers))
-        assemblers.extend(compiler.compile_file_chunked(path, len(assemblers)))
+        compiler.asm = vnasm.Assembler(chunk_id=compiler.new_chunk_id())
+        assemblers.extend(compiler.compile_file_chunked(path, compiler.asm.chunk_id))
 
     # The title screen's own art set (see TITLE_ART). These are plain `gui/`
     # files, not Ren'Py image names -- no dialogue references them, so the
@@ -641,25 +641,20 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
     if poem_words is not None:
         appvars.append(write_appvar(poem_words, "DPOEM", appvar_dir))
 
-    # zx0-compressed too now, same as DSCR chunks -- convimg's own "rlet"
-    # style (see convert_images.py's own comment on why it skips zx0) never
-    # compresses these itself. Each sprite's raw .bin gets the same 2-byte
-    # uncompressed-size header + zx0 stream as a script chunk before
-    # package_group() concatenates them; src/assets.c's sprite draw calls
-    # decompress into a fresh buffer instead of pointing gfx_rletsprite_t
-    # straight at flash. Compressed in a scratch subdirectory rather than
-    # overwriting gfx_dir's own .bin files, which convimg's cache keys off
-    # the content of (see _convimg_cache_key) -- corrupting those would
-    # poison the cache for the next build.
+    # Uncompressed, unlike DSCR chunks/DSCN scenes -- tried zx0 here once
+    # (to help close an archive-budget overage that turned out to really be
+    # the full-res CG art, since fixed by baking CGs at half resolution
+    # instead -- see SCENE_CG_SRC_W/H in src/assets.c), but that forced every
+    # sprite draw through a malloc()+decompress+free() cycle, and the
+    # per-draw allocate/free of a *different* size every time (a few hundred
+    # sprite draws per session, no two necessarily the same size) fragmented
+    # the small on-device heap badly enough to occasionally fail outright --
+    # confirmed via live memory inspection on a real failure. Reverted:
+    # src/assets.c's sprite draw calls point straight at the raw AppVar
+    # bytes again (ti_GetDataPtr(), zero-copy, zero heap use), same as
+    # DTXTBOX/DNAMEBOX/DTILBG already do.
     sprite_files = [bin_for(s["file"]) for s in manifest["sprites"]]
-    compressed_dir = build_dir / "dspr_compressed"
-    compressed_dir.mkdir(parents=True, exist_ok=True)
-    compressed_sprite_files = []
-    for i, f in enumerate(sprite_files):
-        out = compressed_dir / f"{i:04d}.bin"
-        out.write_bytes(zx0_compress(f.read_bytes(), appvar_dir))
-        compressed_sprite_files.append(out)
-    appvars += package_group(compressed_sprite_files, "DSPR", "DSPRLUT", build_dir, appvar_dir)
+    appvars += package_group(sprite_files, "DSPR", "DSPRLUT", build_dir, appvar_dir)
 
     # Per-sprite (dx, dy) draw-offset table, matching DSPRLUT's order --
     # nonzero only for a layered "expression" atom (image_resolve.py's
