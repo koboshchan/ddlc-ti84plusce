@@ -115,6 +115,29 @@ void assets_apply_var_defaults(vn_vm_t *vm);
 bool assets_resolve_label(void *ctx, int16_t str_id, uint32_t *addr_out);
 
 /**
+ * The debug menu's "Jump to chapter" list (DCHJMP, optional -- a bundle
+ * built before this existed, or one whose --files selection produced no
+ * entries, just leaves the count at 0 and the menu item empty). One entry
+ * per top-level file this build actually compiled (tools/import_game.py's
+ * --files selection), pointing at that file's very first instruction --
+ * lets testing skip the hours of linear dialogue leading up to a chapter
+ * instead of replaying it every time. A raw `jump` there, same as the
+ * story's own OP_JUMP: earlier chapters' variables/persistent state won't
+ * be set up the way normally reaching that point would leave them, so
+ * expect a scene/actor state that self-corrects within the target
+ * chapter's own first few lines, same as any mid-story `jump` would.
+ */
+uint8_t assets_debug_chapter_count(void);
+
+/** Copies chapter @p idx's display name (see assets_debug_chapter_count())
+ * into @p out, truncated to fit @p out_size (always NUL-terminated). */
+void assets_debug_chapter_name(uint8_t idx, char *out, size_t out_size);
+
+/** Chapter @p idx's packed jump target (vn.h's VN_PACK_ADDR) -- assign
+ * straight to vn_vm_t.pc. */
+uint32_t assets_debug_chapter_pc(uint8_t idx);
+
+/**
  * Draws sprite @p id with its center-bottom anchored at
  * (@p center_x, @p feet_y). Returns false if @p id is out of range or its
  * AppVar is missing.

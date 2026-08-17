@@ -67,6 +67,15 @@ static uint16_t           var_defaults_size;
 static uint8_t           *var_labels_buf;
 static uint16_t           var_labels_size;
 
+/* Debug menu's "jump to chapter" table (DCHJMP): u16 count, then per entry
+ * u8 name_len + name bytes (no NUL) + u32 packed (chunk_id<<16 | offset) --
+ * see tools/import_game.py's packaging and assets_debug_chapter_pc() below.
+ * Raw bytes, linear-scanned by index rather than unpacked into a table,
+ * same reasoning as var_labels_buf: this is a handful of entries, walked
+ * only while the debug menu's chapter submenu is actually open. */
+static uint8_t           *chapter_jump_buf;
+static uint16_t           chapter_jump_size;
+
 static uint32_t          entry_pc; /* packed (chunk_id<<16)|offset, from DENTRY */
 
 /* Sprite/scene lookup tables: tools/import_game.py's build_lut() format --
@@ -289,6 +298,11 @@ assets_status_t assets_init(void)
      * scanning a few hundred bytes. */
     var_labels_buf = read_whole("DVLBL", &var_labels_size);
 
+    /* Optional, same reasoning: a bundle built before the debug menu's
+     * chapter-jump feature existed just ships no DCHJMP, and the submenu
+     * has nothing to list. */
+    chapter_jump_buf = read_whole("DCHJMP", &chapter_jump_size);
+
     /* Optional: a bundle built before layered sprites existed ships no
      * DSPROFF, and every sprite just draws with (0, 0) offset -- see
      * assets_draw_sprite(). */
@@ -470,6 +484,66 @@ bool assets_resolve_label(void *ctx, int16_t str_id, uint32_t *addr_out)
         p += 6;
     }
     return false;
+}
+
+/* Walks past entry @p idx's name to its 4-byte packed pc, or NULL if @p idx
+ * is out of range. Shared by all three accessors below so the "u8 len, name
+ * bytes, u32 packed" layout is only spelled out once. */
+static const uint8_t *chapter_entry_pc_ptr(uint8_t idx)
+{
+    if (!chapter_jump_buf || chapter_jump_size < 2) {
+        return NULL;
+    }
+    uint16_t count = read_u16le(chapter_jump_buf);
+    if (idx >= count) {
+        return NULL;
+    }
+    const uint8_t *p = chapter_jump_buf + 2;
+    for (uint8_t i = 0; i < idx; i++) {
+        p += 1 + *p + 4;   /* len byte + name bytes + packed pc */
+    }
+    return p + 1 + *p;    /* past this entry's own len byte + name bytes */
+}
+
+uint8_t assets_debug_chapter_count(void)
+{
+    if (!chapter_jump_buf || chapter_jump_size < 2) {
+        return 0;
+    }
+    uint16_t count = read_u16le(chapter_jump_buf);
+    return count > 0xFF ? 0xFF : (uint8_t)count;
+}
+
+void assets_debug_chapter_name(uint8_t idx, char *out, size_t out_size)
+{
+    out[0] = '\0';
+    if (!chapter_jump_buf || chapter_jump_size < 2 || out_size == 0) {
+        return;
+    }
+    uint16_t count = read_u16le(chapter_jump_buf);
+    if (idx >= count) {
+        return;
+    }
+    const uint8_t *p = chapter_jump_buf + 2;
+    for (uint8_t i = 0; i < idx; i++) {
+        p += 1 + *p + 4;
+    }
+    uint8_t len = *p++;
+    if (len >= out_size) {
+        len = (uint8_t)(out_size - 1);
+    }
+    memcpy(out, p, len);
+    out[len] = '\0';
+}
+
+uint32_t assets_debug_chapter_pc(uint8_t idx)
+{
+    const uint8_t *p = chapter_entry_pc_ptr(idx);
+    if (!p) {
+        return 0;
+    }
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+          ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
 /* LUT entry layout: u8 appvar_index, u16 offset, u16 length (5 bytes). @p id

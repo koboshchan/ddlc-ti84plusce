@@ -185,6 +185,14 @@ def do_compile(raw_dir: Path, build_dir: Path,
     # stay on the shared Compiler instance across all of them (see
     # compile_script.py's Compiler docstring), only compiler.asm gets
     # swapped out before each new chunk.
+    # One (chunk_id, 0) entry per compiled file, pointing at its very first
+    # instruction -- built here rather than derived from global_labels below
+    # since it doesn't need that file's first statement to actually be a
+    # named label, just to be wherever compile_file_chunked() starts writing
+    # this fresh Assembler's code. Feeds the debug menu's "jump to chapter"
+    # list (do_package()'s DCHJMP) -- see assets.h's assets_debug_chapter_*.
+    compiler.file_entry_points: dict[str, tuple[int, int]] = {}
+
     assemblers: list[vnasm.Assembler] = []
     for name in files:
         path = raw_dir / f"{name}.rpyc"
@@ -192,6 +200,7 @@ def do_compile(raw_dir: Path, build_dir: Path,
             print(f"  ! {name}.rpyc not found in {raw_dir}, skipping")
             continue
         compiler.asm = vnasm.Assembler(chunk_id=compiler.new_chunk_id())
+        compiler.file_entry_points[name] = (compiler.asm.chunk_id, 0)
         assemblers.extend(compiler.compile_file_chunked(path, compiler.asm.chunk_id))
 
     # The title screen's own art set (see TITLE_ART). These are plain `gui/`
@@ -618,6 +627,21 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
     for str_id, (chunk_id, offset) in sorted(compiler.var_labels.items()):
         labels += struct.pack("<HI", str_id - VN_STR_BASE, (chunk_id << 16) | offset)
     appvars.append(write_appvar(bytes(labels), "DVLBL", appvar_dir))
+
+    # The debug menu's "jump to chapter" table (compiler.file_entry_points,
+    # built in do_compile()'s file loop) -- u16 count, then per entry u8
+    # name_len + name bytes (no NUL, length-prefixed like DVSTR's own
+    # strings) + u32 packed (chunk_id<<16 | offset). One entry per this
+    # build's actual --files selection, in that same order, so a smaller
+    # build (e.g. --files=act1) naturally ships a shorter list. Display
+    # names strip the "script-" prefix -- purely cosmetic, compile_script.py
+    # never sees this list. See src/assets.h's assets_debug_chapter_*.
+    chjmp = bytearray(struct.pack("<H", len(compiler.file_entry_points)))
+    for name, (chunk_id, offset) in compiler.file_entry_points.items():
+        label = name.removeprefix("script-").encode("ascii")[:32]
+        chjmp += struct.pack("<B", len(label)) + label
+        chjmp += struct.pack("<I", (chunk_id << 16) | offset)
+    appvars.append(write_appvar(bytes(chjmp), "DCHJMP", appvar_dir))
 
     # Which slots are `persistent.*` (compiler.persistent_slots, built above)
     # -- u16 count, then one u8 slot per entry. Read-only, compiler-generated,

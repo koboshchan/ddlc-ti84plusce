@@ -405,16 +405,86 @@ static void run_debug_erase_confirm(void)
     }
 }
 
+#define CHAPTER_MENU_ROWS 10
+
+/** Debug menu's "Jump to chapter" submenu (src/assets.h's
+ * assets_debug_chapter_*) -- scrolls a window of CHAPTER_MENU_ROWS over
+ * however many DCHJMP shipped. 2nd/Enter warps @p vm straight to the picked
+ * chapter's first line and returns true, so run_debug_menu() knows to close
+ * out entirely rather than redisplay itself; Mode/Clear backs out with no
+ * effect and returns false.
+ *
+ * The jump itself is a raw `vm->pc` assignment, no different from the
+ * story's own OP_JUMP (see vn.c) -- it does not reset scene/actor state or
+ * any variable, so whatever was on screen stays there until the target
+ * chapter's own first Scene/Show statement corrects it, and any variable
+ * (persistent.*, deleted-character flags, poem winner, ...) this chapter
+ * would normally rely on keeps whatever value it already had. Resetting the
+ * call stack (vm->sp = 0) is the one piece of cleanup this does do: without
+ * it, a later OP_RETURN inside the target chapter could pop back to
+ * whatever unrelated call site was on the stack before the jump. */
+static bool run_debug_chapter_menu(vn_vm_t *vm)
+{
+    uint8_t count = assets_debug_chapter_count();
+    if (count == 0) {
+        return false;
+    }
+
+    char names[CHAPTER_MENU_ROWS][24];
+    const char *items[CHAPTER_MENU_ROWS];
+    uint8_t selected = 0, top = 0;
+    input_t in;
+
+    for (;;) {
+        if (selected < top) {
+            top = selected;
+        } else if (selected >= (uint8_t)(top + CHAPTER_MENU_ROWS)) {
+            top = (uint8_t)(selected - CHAPTER_MENU_ROWS + 1);
+        }
+        uint8_t visible = (uint8_t)(count - top);
+        if (visible > CHAPTER_MENU_ROWS) {
+            visible = CHAPTER_MENU_ROWS;
+        }
+        for (uint8_t i = 0; i < visible; i++) {
+            assets_debug_chapter_name((uint8_t)(top + i), names[i], sizeof(names[i]));
+            items[i] = names[i];
+        }
+
+        render_backdrop(COL_BOX_FILL);
+        render_text("Jump to chapter", 14, 12, COL_NAME);
+        render_list_menu(items, visible, (uint8_t)(selected - top), 14, 30, COL_WHITE, COL_HIGHLIGHT);
+        render_text("2nd: jump   Mode: cancel", 14, SCREEN_H - 18, COL_BOX_EDGE);
+        render_present(TRANS_CUT);
+        gfx_Wait();
+
+        input_poll(&in);
+        if (quit_requested || in.pause) {
+            return false;
+        }
+        if (in.up) {
+            selected = selected == 0 ? (uint8_t)(count - 1) : (uint8_t)(selected - 1);
+        }
+        if (in.down) {
+            selected = (uint8_t)((selected + 1) % count);
+        }
+        if (in.advance) {
+            vm->pc = assets_debug_chapter_pc(selected);
+            vm->sp = 0;
+            return true;
+        }
+    }
+}
+
 /** @p vm may be NULL: the Konami code is recognized from the title screen
  * too (see konami_check()), before vn_init() has run for this session, so
  * there's no live scene/vars[] yet to toggle. Items that need one (the tear/
- * window/deleted-character toggles) are simply omitted from the list in that
- * case rather than touching uninitialized state; everything else (the poem
- * test, save erasure) works either way. */
+ * window/deleted-character toggles, and the chapter jump below) are simply
+ * omitted from the list in that case rather than touching uninitialized
+ * state; everything else (the poem test, save erasure) works either way. */
 static void run_debug_menu(vn_vm_t *vm)
 {
     enum {
-        DBG_POEM, DBG_TEXT, DBG_TEAR, DBG_WINDOW,
+        DBG_POEM, DBG_TEXT, DBG_TEAR, DBG_WINDOW, DBG_CHAPTERS,
         DBG_DEL_SAYORI, DBG_DEL_NATSUKI, DBG_DEL_YURI, DBG_DEL_MONIKA,
         DBG_ERASE, DBG_CLOSE, DBG_ACTION_MAX,
     };
@@ -444,6 +514,12 @@ static void run_debug_menu(vn_vm_t *vm)
             actions[count] = DBG_WINDOW;
             sprintf(labels[count], "Window hidden: %s", vm->scene.window_hidden ? "ON" : "OFF");
             count++;
+
+            if (assets_debug_chapter_count() > 0) {
+                actions[count] = DBG_CHAPTERS;
+                strcpy(labels[count], "Jump to chapter...");
+                count++;
+            }
 
             for (uint8_t ch = 0; ch < 4; ch++) {
                 actions[count] = (uint8_t)(DBG_DEL_SAYORI + ch);
@@ -514,6 +590,12 @@ static void run_debug_menu(vn_vm_t *vm)
 
             case DBG_WINDOW:
                 vm->scene.window_hidden = !vm->scene.window_hidden;
+                break;
+
+            case DBG_CHAPTERS:
+                if (run_debug_chapter_menu(vm)) {
+                    return;   /* jumped -- close the whole debug menu, not just this submenu */
+                }
                 break;
 
             case DBG_DEL_SAYORI:

@@ -61,7 +61,7 @@ static uint32_t opt_seed = 1;
 /* One entry per --vnb=FILE, in the order given (chunk 0, chunk 1, ...). Set
  * when at least one --vnb is passed, so host_load_chunk()/host_string() read
  * from these instead of the compiled-in demo_code/demo_strings[]. */
-#define MAX_CHUNKS 64
+#define MAX_CHUNKS 128
 typedef struct {
     const uint8_t *code;
     size_t         code_size;
