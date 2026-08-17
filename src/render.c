@@ -1020,6 +1020,39 @@ void render_box(const vn_scene_t *scene, const char *speaker,
     }
 }
 
+/* Debug menu's dialogue text-render test -- runs the real text_wrap() +
+ * print_slice_outlined() pipeline render_box() itself uses (rather than a
+ * plain gfx_PrintStringXY() call) against a couple of known-tricky
+ * sentences, so a future rendering regression in that pipeline (glyph
+ * spacing, wrapping, outline offsets) shows up here directly instead of
+ * needing a live dialogue box reached mid-story to notice. */
+void render_debug_text_test(void)
+{
+    render_backdrop(COL_BOX_FILL);
+
+    static const char *const s1 = "Then that makes it official!";
+    static const char *const s2 =
+        "I think with that, we can officially end today's meeting on a good note.";
+    const int pad = 6;
+    int y = 12;
+
+    text_layout_t layout;
+    text_wrap(&layout, s1, SCREEN_W - 2 * pad, measure, NULL);
+    for (uint8_t i = 0; i < layout.count; i++) {
+        print_slice_outlined(layout.lines[i].start, layout.lines[i].len, pad, y,
+                             COL_WHITE, COL_BLACK);
+        y += 10;
+    }
+    y += 6;
+
+    text_wrap(&layout, s2, SCREEN_W - 2 * pad, measure, NULL);
+    for (uint8_t i = 0; i < layout.count; i++) {
+        print_slice_outlined(layout.lines[i].start, layout.lines[i].len, pad, y,
+                             COL_WHITE, COL_BLACK);
+        y += 10;
+    }
+}
+
 void render_menu(const char *const *choices, uint8_t count, uint8_t selected)
 {
     scene_obscured();

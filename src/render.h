@@ -132,6 +132,11 @@ void render_invalidate_scene(void);
 void render_box(const vn_scene_t *scene, const char *speaker,
                 const char *text, size_t visible);
 
+/** Debug menu's dialogue text-render test -- see its own doc comment in
+ * render.c. Draws only; caller handles input/present, same as render_text
+ * and friends. */
+void render_debug_text_test(void);
+
 /** Draw the choice menu over the current scene, highlighting @p selected. */
 void render_menu(const char *const *choices, uint8_t count, uint8_t selected);
 

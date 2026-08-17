@@ -355,6 +355,22 @@ static void run_debug_poem_test(void)
     } while (!in.advance && !quit_requested);
 }
 
+/* Debug menu's dialogue text-render test -- see render_debug_text_test()'s
+ * own doc comment in render.c for what it actually checks. */
+static void run_debug_text_test(void)
+{
+    input_t in;
+
+    render_debug_text_test();
+    render_text("2nd / Enter to return", 14, SCREEN_H - 20, COL_BOX_EDGE);
+    render_present(TRANS_CUT);
+    gfx_Wait();
+
+    do {
+        input_poll(&in);
+    } while (!in.advance && !quit_requested);
+}
+
 /** Confirms before calling save_delete_all() -- real, permanent save erasure
  * (see save.h), not a toy. Defaults the cursor to "No" so accidentally
  * confirming past this screen can't happen with a single stray press. */
@@ -398,7 +414,7 @@ static void run_debug_erase_confirm(void)
 static void run_debug_menu(vn_vm_t *vm)
 {
     enum {
-        DBG_POEM, DBG_TEAR, DBG_WINDOW,
+        DBG_POEM, DBG_TEXT, DBG_TEAR, DBG_WINDOW,
         DBG_DEL_SAYORI, DBG_DEL_NATSUKI, DBG_DEL_YURI, DBG_DEL_MONIKA,
         DBG_ERASE, DBG_CLOSE, DBG_ACTION_MAX,
     };
@@ -414,6 +430,10 @@ static void run_debug_menu(vn_vm_t *vm)
 
         actions[count] = DBG_POEM;
         strcpy(labels[count], "Poem minigame (test)");
+        count++;
+
+        actions[count] = DBG_TEXT;
+        strcpy(labels[count], "Dialogue text render test");
         count++;
 
         if (vm) {
@@ -472,6 +492,10 @@ static void run_debug_menu(vn_vm_t *vm)
         switch (actions[selected]) {
             case DBG_POEM:
                 run_debug_poem_test();
+                break;
+
+            case DBG_TEXT:
+                run_debug_text_test();
                 break;
 
             case DBG_TEAR:
