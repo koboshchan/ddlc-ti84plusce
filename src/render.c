@@ -68,12 +68,26 @@ static unsigned measure(void *ctx, const char *str, size_t len)
     return w;
 }
 
+/* Root cause of the "official" -> "of ficial" bug: a bare loop of
+ * gfx_PrintChar() calls -- each one individually valid, cursor-advanced by
+ * its own gfx_GetCharWidth() same as everywhere else here -- visibly opened
+ * an extra gap at some letter pairs (confirmed live: reproducible and
+ * specific to this per-character path, since the exact same text through a
+ * single gfx_PrintStringXY() call, and gfx_GetCharWidth()'s own per-letter
+ * numbers, both came back clean). Copying the slice into a NUL-terminated
+ * buffer and handing the whole thing to gfx_PrintStringXY() in one call
+ * sidesteps whatever that per-character quirk is. 96 bytes comfortably
+ * covers a full dialogue line: max_width=308px / the narrowest glyph here
+ * (5px, see the char-width probe) is at most 61 characters. */
 static void print_slice(const char *str, size_t len, int x, int y)
 {
-    gfx_SetTextXY(x, y);
-    for (size_t i = 0; i < len; i++) {
-        gfx_PrintChar(str[i]);
+    char buf[96];
+    if (len >= sizeof(buf)) {
+        len = sizeof(buf) - 1;
     }
+    memcpy(buf, str, len);
+    buf[len] = '\0';
+    gfx_PrintStringXY(buf, x, y);
 }
 
 /* Real DDLC's dialogue font is a solid fill over a distinct outline, not a
