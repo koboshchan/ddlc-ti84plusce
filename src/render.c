@@ -949,6 +949,15 @@ void render_box(const vn_scene_t *scene, const char *speaker,
 
     int y = BOX_Y + 4;
 
+    /* Whether the *previous* render_box() call drew a namebox -- narration
+     * (speaker == NULL) draws nothing in the block below, so a line right
+     * after a real speaker's line would otherwise leave that speaker's
+     * namebox art (and name) stuck on screen: it pokes into the scene
+     * area above BOX_Y, and render_scene_lazy()'s "already correct, skip"
+     * fast path has no reason to know that rectangle needs fixing, since
+     * nothing about the actors/background actually changed. */
+    static bool had_namebox;
+
     if (speaker != NULL) {
         /* Pokes up above BOX_Y into the scene area, matching the real
          * game's namebox -- safe despite render_scene_lazy()'s "plate"
@@ -971,6 +980,14 @@ void render_box(const vn_scene_t *scene, const char *speaker,
                                  COL_WHITE, COL_NAME);
             y += 11;
         }
+        had_namebox = true;
+    } else if (had_namebox) {
+        /* Just transitioned from a shown namebox to narration -- redraw the
+         * scene for real (not the lazy/plate path) so whatever legitimately
+         * belongs under that rectangle (background art, an actor) replaces
+         * the stale namebox immediately, in this same frame. */
+        render_scene(scene);
+        had_namebox = false;
     }
 
     /* text_wrap() re-measures every character-width prefix of every line it
