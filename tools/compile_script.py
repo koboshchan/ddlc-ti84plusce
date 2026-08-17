@@ -320,6 +320,23 @@ class Compiler:
     skipped: list = field(default_factory=list)            # [SkipEntry]
     stats: dict = field(default_factory=dict)               # kind -> count
     _pending_scene: int | None = field(default=None, init=False)
+    # The background id actually in effect on screen, tracked alongside
+    # _pending_scene/last_sprite so a `hide white`/`hide black` (see
+    # _emit_Hide) knows what to restore -- real Ren'Py's `show white` /
+    # `hide white` is a full-screen flash *overlay* on a layer above the
+    # scene, not a real background change, but this engine has no overlay
+    # concept, so _emit_Show's bare-tag fallback (below) has to fake it by
+    # actually swapping the background out and back.
+    _current_bg: int | None = field(default=None, init=False)
+    _flash_tag: str | None = field(default=None, init=False)   # 'white'/'black' currently "up", or None
+    _pre_flash_bg: int | None = field(default=None, init=False)  # _current_bg from just before it went up
+    # Characters actually on screen right now (a Show adds, a real Hide
+    # removes, any real background change clears it) -- separate from
+    # last_sprite/last_pos/last_flags, which remember a character's *last*
+    # pose even after they've been hidden, so a flash restore (_emit_Hide)
+    # knows who to actually redraw instead of resurrecting someone the
+    # script hid earlier in the same scene.
+    visible_chars: set = field(default_factory=set, init=False)
     _gensym_counter: itertools.count = field(default_factory=itertools.count, init=False)
     # variable name -> (prefix, chapter, separator) for a Python Assign
     # this compiler recognized as DDLC's own poem-winner dispatch idiom
@@ -525,6 +542,7 @@ class Compiler:
     def _flush_pending_scene(self, trans: int) -> None:
         if self._pending_scene is not None:
             self.asm.scene(self._pending_scene, trans)
+            self._current_bg = self._pending_scene
             self._pending_scene = None
 
     # -- position/animation tracking -----------------------------------------
@@ -728,6 +746,7 @@ class Compiler:
                 pos, flags = self._resolve_anim(char, None)
                 self.asm.show(char, base, overlay, pos, flags=flags)
                 self.last_sprite[char] = (base, overlay)
+                self.visible_chars.add(char)
 
         self.asm.say(speaker, text)
 
@@ -850,16 +869,37 @@ class Compiler:
                 self.last_sprite.clear()
                 self.last_pos.clear()
                 self.last_flags.clear()
+                self.visible_chars.clear()
+                self._current_bg = None  # runtime-picked; no single compile-time id to remember
+                self._flash_tag = None
+                self._pre_flash_bg = None
                 return
 
             scene_id = self.resolver.scene_id(imgname)
             if scene_id is None:
                 self._skip(node, fname, f"unknown character tag in {imgname!r}")
                 return
+            # 'white'/'black' are DDLC's own full-screen flash idiom (real
+            # Ren'Py shows them on a layer above the scene, then a later
+            # `hide white`/`hide black` removes just the overlay) -- since
+            # this engine has no overlay layer, faking the flash means
+            # actually swapping the background out here and remembering
+            # what it was, so _emit_Hide can swap it back. Any other bare
+            # tag (`black` used alone, `end`, poem_specialN, ...) is a real
+            # terminal full-screen image with no matching Hide expected, so
+            # it just clears any stale flash bookkeeping instead.
+            if imgname[0] in ("white", "black"):
+                self._flash_tag = imgname[0]
+                self._pre_flash_bg = self._current_bg
+            else:
+                self._flash_tag = None
+                self._pre_flash_bg = None
             self.asm.scene(scene_id, vnasm.TRANS_CUT)
+            self._current_bg = scene_id
             self.last_sprite.clear()
             self.last_pos.clear()
             self.last_flags.clear()
+            self.visible_chars.clear()
             return
 
         if len(imgname) == 1:
@@ -889,15 +929,39 @@ class Compiler:
         at_list = node.imspec[3] if len(node.imspec) > 3 else None
         pos, flags = self._resolve_anim(char, at_list)
         self.asm.show(char, base, overlay, pos, flags=flags)
+        self.visible_chars.add(char)
 
     def _emit_Hide(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)
         imgname = node.imspec[0] if node.imspec else None
         char = TAG_TO_CHAR.get(imgname[0]) if imgname else None
         if char is None:
+            tag = imgname[0] if imgname else None
+            # The other half of _emit_Show's white/black flash fake: this
+            # Hide is the real Ren'Py signal that the overlay comes back
+            # down, so undo the background swap now, then replay a Show for
+            # every character still on screen -- OP_SCENE (which restoring
+            # the background needs) clears the VM's whole actor list, so
+            # without this they'd vanish even though they were never really
+            # hidden (real Ren'Py never touched the scene layer they're on).
+            if tag is not None and tag == self._flash_tag and self._pre_flash_bg is not None:
+                self.asm.scene(self._pre_flash_bg, vnasm.TRANS_CUT)
+                self._current_bg = self._pre_flash_bg
+                for c in sorted(self.visible_chars):
+                    # .get(), not [] -- a bare `show natsuki` with no prior
+                    # sprite tracked (see the "defaulted to 0" skip above)
+                    # marks a character visible without ever populating
+                    # last_sprite for them.
+                    base, overlay = self.last_sprite.get(c, (0, None))
+                    self.asm.show(c, base, overlay, self.last_pos.get(c, vnasm.POS_CENTER),
+                                  flags=self.last_flags.get(c, 0))
+                self._flash_tag = None
+                self._pre_flash_bg = None
+                return
             self._skip(node, fname, f"unknown character tag in Hide {imgname!r}")
             return
         self.asm.hide(char)
+        self.visible_chars.discard(char)
 
     def _emit_Scene(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)
@@ -922,6 +986,10 @@ class Compiler:
                 self.last_sprite.clear()
                 self.last_pos.clear()
                 self.last_flags.clear()
+                self.visible_chars.clear()
+                self._current_bg = None  # runtime-picked; no single compile-time id to remember
+                self._flash_tag = None
+                self._pre_flash_bg = None
                 return
             # Baking a branch failed -- fall through to the normal path
             # below, which hits the same ImageDef and produces an accurate
@@ -931,10 +999,17 @@ class Compiler:
         if scene_id is None:
             self._skip(node, fname, f"unresolved scene image {imgname!r}")
             return
+        # A real `scene` statement is an unambiguous "here's the new
+        # background", so it supersedes any white/black flash bookkeeping
+        # still pending -- a `hide white` reached after this should not try
+        # to restore a background that a real Scene already replaced.
+        self._flash_tag = None
+        self._pre_flash_bg = None
         self._pending_scene = scene_id
         self.last_sprite.clear()  # OP_SCENE clears all actors in the VM too
         self.last_pos.clear()
         self.last_flags.clear()
+        self.visible_chars.clear()
 
     def _emit_With(self, node, fname: str) -> None:
         # DDLC's scene-level transitions (transforms.rpy) are all named
@@ -1128,6 +1203,10 @@ class Compiler:
         self.last_sprite.clear()
         self.last_pos.clear()
         self.last_flags.clear()
+        self.visible_chars.clear()
+        self._current_bg = eyes_move if eyes_move is not None else self._current_bg
+        self._flash_tag = None
+        self._pre_flash_bg = None
         self.asm.label(end_label)
 
     def _emit_poemwinner_dispatch(self, dispatch: tuple, fname: str) -> None:
