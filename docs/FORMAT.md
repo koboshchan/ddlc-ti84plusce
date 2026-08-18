@@ -54,20 +54,31 @@ out, lining all four heads up along the top of the screen.
 ## Reserved palette indices
 
 Pinned via convimg `fixed-entries` so UI colors never shift when the palette
-is regenerated. The quantizer fills 8..255 in the game palette (`DPALGAME`).
-The title palette (`DPALTTL`) additionally pins 8-9 for its own use -- see
-"Title screen" -- so its quantizer fills 10..255 instead.
+is regenerated. The game palette (`DPALGAME`) reserves 0-7 and 10-49, leaving
+8-9 and 50..255 for its own quantizer. The title palette (`DPALTTL`) instead
+pins 0-7 plus 8-9 for its own use (see "Title screen"), leaving 10..255 free
+-- the dialogue box never shows over the title screen, so it doesn't need
+10-49 reserved there. Every CG's own private palette pins 0-7 and 10-49 too,
+same as `DPALGAME` -- the dialogue box still draws over a CG, so its colors
+have to mean the same thing under either palette. The textbox/namebox art's
+own raw index bytes are baked once against a private `pal_uibox` palette
+(quantized only from those two images, not any other art) rather than
+`DPALGAME` directly, so that quantization can't stray onto one of
+`DPALGAME`'s free indices for a pixel that happens to be a nearer match --
+`pal_uibox` pins 8-9 to a throwaway sentinel color for exactly this reason,
+even though neither `DPALGAME` nor a CG palette reserves them for anything.
 
 | Index | Name | Use |
 |---|---|---|
 | 0 | `COL_TRANSPARENT` | sprite transparency (`rlet` key) |
 | 1 | `COL_BLACK` | outlines, letterbox |
 | 2 | `COL_WHITE` | dialogue text |
-| 3 | `COL_BOX_FILL` | dialogue box interior |
-| 4 | `COL_BOX_EDGE` | dialogue box border |
+| 3 | `COL_BOX_FILL` | dialogue box interior (flat-rectangle fallback only) |
+| 4 | `COL_BOX_EDGE` | dialogue box border (flat-rectangle fallback only) |
 | 5 | `COL_NAME` | speaker name plate |
 | 6 | `COL_HIGHLIGHT` | selected menu entry |
 | 7 | `COL_SHADOW` | drop shadow |
+| 10-49 | *(no `COL_*` constant)* | the real textbox.png/namebox.png art's own ~40 colors (`UI_BOX_FIXED_ENTRIES`, tools/convert_images.py) -- reserved by content, not by a single semantic meaning, since that art needs far more than one flat color per element to render its gradient/dot-pattern shading without banding |
 
 ## Bytecode
 
@@ -422,8 +433,9 @@ reader never has to stitch bytes across two AppVars for one image — one
 - **CGs** (`palette: "own"`) — rendered full-screen and alone, so each is
   meant to carry its own palette rather than share the game's.
   `convert_images.py` quantizes it against its own 256-entry palette
-  (fixed-entries 0-7 pinned, same as `pal_game`/`pal_title`, so the dialogue
-  box drawn over a CG still reads the right colors) and packs it into the
+  (fixed-entries 0-7 *and* 10-49 pinned, same as `pal_game`, so the dialogue
+  box drawn over a CG -- including its real textbox/namebox art, not just
+  the flat `COL_*` colors -- still reads the right colors) and packs it into the
   `DCGPAL*`/`DCGPLUT` group. Unlike a background, a CG's *on-calc* bake is
   scaled to fit `CG_SIZE` (160x90, half a background's 320x180) rather than
   full resolution — a deliberate quality tradeoff to close a real

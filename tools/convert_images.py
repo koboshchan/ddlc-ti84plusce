@@ -5,9 +5,12 @@ Two palette groups, per docs/FORMAT.md:
   - pal_game: one shared palette across every sprite and every "shared"
     (background/solid-color) scene, since any character can appear on any
     background. Indices 0-7 are pinned via fixed-entries for the engine's
-    reserved UI colors.
+    reserved UI colors; indices 10-49 for the real textbox/namebox art's
+    own colors (see UI_BOX_FIXED_ENTRIES).
   - one small palette per "own" (CG) scene, since CGs render full-screen and
-    alone and don't need to share a palette with anything else.
+    alone and don't need to share a palette with anything else -- except the
+    dialogue box, which still draws over a CG too, so the same indices
+    0-7/10-49 are pinned here as well.
 
 Output is `type: bin` (raw quantized+compressed bytes plus a listing) into
 build/gfx/ -- packaging those bytes into TI AppVars is import_game.py's job,
@@ -51,6 +54,67 @@ TITLE_FIXED_ENTRIES = [
     (8, "#FFE6F4"),  # nav panel fill  -- main_menu.png x 0..279
     (9, "#FFBDE1"),  # nav panel edge  -- main_menu.png x 280..309
 ]
+
+# Pinned in pal_game *and* every CG's own palette (not pal_title -- the
+# dialogue box never overlaps the title screen), on top of FIXED_ENTRIES.
+# The real textbox.png/namebox.png art (image_resolve.py's ui_box_art())
+# uses ~2000/~27 distinct colors respectively -- far more than the 8 flat
+# semantic colors above cover -- to render its gradient/dot-pattern shading.
+# render_box() draws that art over *every* scene including a CG's own, but
+# a CG's own palette is quantized purely from that one image's own pixels,
+# with zero awareness of what colors the textbox/namebox art actually
+# needs -- so without reserving them here too, only the 8 flat colors above
+# survived the swap and the other ~200+ got reassigned to whatever best
+# fit the CG instead, rendering the dialogue box in essentially arbitrary
+# colors over any CG (confirmed live: a namebox that should be pink came
+# out solid red over one). Every CG gets its own independently-quantized
+# palette (128 of them) rather than one shared CG palette, and the
+# textbox/namebox art itself is baked to raw palette-index bytes exactly
+# once (against pal_game) and blitted unchanged under whatever palette is
+# active (src/render.c's render_box(), via blit_raw()) -- so these 40
+# colors have to land on the same 40 indices with the same RGB under every
+# one of those 128 palettes too, which rules out letting each CG quantize
+# them freely for a per-CG-optimal fit.
+#
+# This list is convimg's own quantizer's output (max-entries: 40,
+# quality: 10), not a hand-rolled approximation: stitch ui_textbox.png and
+# ui_namebox.png into one composite image, quantize *that* on its own down
+# to 40 colors, and read the resulting palette back out. An earlier version
+# of this list came from PIL's Image.quantize(colors=40, MEDIANCUT)
+# instead, which is a cruder/non-dithering-aware quantizer than convimg's
+# own and visibly mis-colored some of the box's dot-pattern shading as a
+# result -- convimg's quantizer is what actually decides the real palettes
+# below, so asking it for this reference palette too, rather than a
+# different algorithm, is what makes it representative.
+UI_BOX_FIXED_ENTRIES = [
+    (10, "#000000"), (11, "#5A1031"), (12, "#8C516B"), (13, "#CE6D9C"),
+    (14, "#CE759C"), (15, "#CE79A5"), (16, "#CE7DA5"), (17, "#CE82A5"),
+    (18, "#CEB6BD"), (19, "#D675A5"), (20, "#D682A5"), (21, "#D68AAD"),
+    (22, "#D68EAD"), (23, "#D692B5"), (24, "#D696B5"), (25, "#D69AB5"),
+    (26, "#DE7DAD"), (27, "#DE86AD"), (28, "#DE8AB5"), (29, "#DEA2BD"),
+    (30, "#DECAD6"), (31, "#E682AD"), (32, "#E68EB5"), (33, "#E692B5"),
+    (34, "#E692BD"), (35, "#E696BD"), (36, "#EF8AB5"), (37, "#EF96BD"),
+    (38, "#EF9AC5"), (39, "#EFAAC5"), (40, "#EFD7E6"), (41, "#F792BD"),
+    (42, "#F79AC5"), (43, "#F79EC5"), (44, "#F7A2C5"), (45, "#F7A2CE"),
+    (46, "#FFA2CE"), (47, "#FFA6CE"), (48, "#FFB2D6"), (49, "#FFE3EF"),
+]
+
+# A private palette used *only* to quantize the textbox/namebox art itself
+# (see the "textbox" convert below for why). max-entries equals exactly the
+# number of fixed-entries here (0-7, 8-9 as unreachable placeholders, 10-49),
+# so there isn't a single free slot left for convimg's quantizer to assign
+# -- every pixel is forced to land on one of the real 48 reserved colors.
+# Indices 8-9 aren't reserved by pal_game/any CG palette (only pal_title
+# reserves them), so they're pinned here to a duplicate of index 0's
+# implausible sentinel magenta -- a color that will never be the nearest
+# match for any real box pixel -- rather than left free, which would let
+# a stray pixel land on an index whose color is unrelated (whatever
+# pal_game/that CG happened to quantize there) everywhere else.
+UI_BOX_PALETTE_ENTRIES = (
+    FIXED_ENTRIES
+    + [(8, "#FF00FF"), (9, "#FF00FF")]
+    + UI_BOX_FIXED_ENTRIES
+)
 
 
 def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -> dict:
@@ -101,15 +165,30 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
         # still good for DDLC's fairly flat anime shading. Override with
         # --quality for a final release build.
         "quality": quality,
-        "fixed-entries": [{"color": {"index": i, "hex": h}} for i, h in FIXED_ENTRIES],
+        "fixed-entries": [{"color": {"index": i, "hex": h}}
+                          for i, h in FIXED_ENTRIES + UI_BOX_FIXED_ENTRIES],
+        # textbox_file/namebox_file deliberately aren't fed in here: their
+        # colors are already guaranteed present via the fixed-entries above,
+        # and their actual raw index bytes are quantized separately against
+        # pal_uibox below (not pal_game), so pal_game's free (non-fixed)
+        # slots are better spent entirely on sprites/backgrounds.
         "images": sprite_files + shared_files
-                 + ([poem_bg_file] if poem_bg_file else [])
-                 + ([textbox_file] if textbox_file else [])
-                 + ([namebox_file] if namebox_file else []),
+                 + ([poem_bg_file] if poem_bg_file else []),
     }]
+    if textbox_file or namebox_file:
+        palettes.append({
+            "name": "pal_uibox",
+            "max-entries": len(UI_BOX_PALETTE_ENTRIES),
+            "quality": 10,
+            "fixed-entries": [{"color": {"index": i, "hex": h}}
+                              for i, h in UI_BOX_PALETTE_ENTRIES],
+            "images": [f for f in (textbox_file, namebox_file) if f],
+        })
     converts = []
     outputs_converts = []
     outputs_palettes = ["pal_game"]
+    if textbox_file or namebox_file:
+        outputs_palettes.append("pal_uibox")
 
     if sprite_files:
         converts.append({
@@ -172,7 +251,23 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
             # Same reasoning as poem_bg above: flat raw indices, no
             # compression -- src/render.c's render_box() draws this every
             # typewriter tick (see assets_textbox()'s own comment).
-            "name": "textbox", "palette": "pal_game", "style": "palette",
+            #
+            # Quantized against pal_uibox, not pal_game: pal_uibox has zero
+            # free slots (max-entries equals its own fixed-entries count),
+            # so every pixel is forced onto one of the 48 real reserved
+            # colors at the same indices pal_game/every CG palette pins them
+            # to. Quantizing against pal_game instead (as this used to)
+            # lets a pixel land on one of pal_game's *free* indices when
+            # that happens to be a nearer match than any of the 48 reserved
+            # ones -- fine under pal_game itself, but wrong under a CG's
+            # palette, where that same index means a completely different,
+            # CG-specific color. (An earlier attempt used convimg's
+            # `omit-indices` to try to rule those indices out instead --
+            # don't reintroduce that: omit-indices *deletes* every pixel
+            # byte matching an omitted index from the output stream
+            # entirely (see convimg's image_remove_omits()), which corrupts
+            # the raster rather than remapping it.)
+            "name": "textbox", "palette": "pal_uibox", "style": "palette",
             "dither": 0.4, "width-and-height": False,
             "images": [textbox_file],
         })
@@ -180,7 +275,8 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
 
     if namebox_file:
         converts.append({
-            "name": "namebox", "palette": "pal_game", "style": "palette",
+            # See the "textbox" convert above for why this uses pal_uibox.
+            "name": "namebox", "palette": "pal_uibox", "style": "palette",
             "dither": 0.4, "width-and-height": False,
             "images": [namebox_file],
         })
@@ -232,11 +328,14 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
         name = f"cg_{i:03d}"
         path = rel(img_dir / scene["file"])
         palettes.append({
-            # FIXED_ENTRIES pinned here too (like pal_title): the dialogue box
-            # stays on screen over a CG, so its COL_* indices need to mean the
-            # same thing under this palette as they do under pal_game.
+            # FIXED_ENTRIES and UI_BOX_FIXED_ENTRIES pinned here too (like
+            # pal_title): the dialogue box stays on screen over a CG, so its
+            # COL_* indices *and* its real textbox/namebox art both need to
+            # mean the same thing under this palette as they do under
+            # pal_game -- see UI_BOX_FIXED_ENTRIES's own comment.
             "name": f"pal_{name}", "max-entries": 256, "quality": 10,
-            "fixed-entries": [{"color": {"index": i, "hex": h}} for i, h in FIXED_ENTRIES],
+            "fixed-entries": [{"color": {"index": i, "hex": h}}
+                              for i, h in FIXED_ENTRIES + UI_BOX_FIXED_ENTRIES],
             "images": [path],
         })
         converts.append({
