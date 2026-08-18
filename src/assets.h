@@ -231,6 +231,11 @@ const uint16_t *assets_scene_palette(uint8_t id);
  */
 bool assets_cgpack_fingerprint(uint8_t out[4]);
 
+/** Debug menu diagnostic: whether @p id is baked with its own CG palette
+ * (DCGIDX says so), independent of whether a real assets_scene()/
+ * assets_scene_palette() call for it has happened yet. */
+bool assets_debug_is_cg(uint8_t id);
+
 /* ---------------------------------------------------------------------------
  * Title screen
  *

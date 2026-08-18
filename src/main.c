@@ -371,6 +371,43 @@ static void run_debug_text_test(void)
     } while (!in.advance && !quit_requested);
 }
 
+/** Debug menu diagnostic: dumps the current scene's background id, whether
+ * assets_debug_is_cg() thinks it's a CG (baked with its own private
+ * palette, per DCGIDX), and the first few RGB565 entries of whatever
+ * palette assets_scene_palette() actually hands back for it -- lets a
+ * wrong-colors report be triaged on the spot (mislabeled CG id vs. a bad
+ * bake vs. something else) instead of guessing from a screenshot alone. */
+static void run_debug_scene_info(vn_vm_t *vm)
+{
+    input_t in;
+    char line[40];
+
+    render_backdrop(COL_BOX_FILL);
+    render_text("Scene diagnostic", 14, 8, COL_NAME);
+
+    uint8_t bg = vm->scene.background;
+    sprintf(line, "background id = %u", bg);
+    render_text(line, 14, 24, COL_WHITE);
+    sprintf(line, "is_cg = %s", assets_debug_is_cg(bg) ? "TRUE" : "false");
+    render_text(line, 14, 38, COL_WHITE);
+
+    const uint16_t *pal = assets_scene_palette(bg);
+    int y = 52;
+    for (int i = 0; i < 8; i++) {
+        sprintf(line, "pal[%d] = 0x%04X", i, pal[i]);
+        render_text(line, 14, y, COL_WHITE);
+        y += 10;
+    }
+
+    render_text("2nd / Enter to return", 14, SCREEN_H - 20, COL_BOX_EDGE);
+    render_present(TRANS_CUT);
+    gfx_Wait();
+
+    do {
+        input_poll(&in);
+    } while (!in.advance && !quit_requested);
+}
+
 /** Confirms before calling save_delete_all() -- real, permanent save erasure
  * (see save.h), not a toy. Defaults the cursor to "No" so accidentally
  * confirming past this screen can't happen with a single stray press. */
@@ -484,7 +521,7 @@ static bool run_debug_chapter_menu(vn_vm_t *vm)
 static void run_debug_menu(vn_vm_t *vm)
 {
     enum {
-        DBG_POEM, DBG_TEXT, DBG_TEAR, DBG_WINDOW, DBG_CHAPTERS,
+        DBG_POEM, DBG_TEXT, DBG_SCENEINFO, DBG_TEAR, DBG_WINDOW, DBG_CHAPTERS,
         DBG_DEL_SAYORI, DBG_DEL_NATSUKI, DBG_DEL_YURI, DBG_DEL_MONIKA,
         DBG_ERASE, DBG_CLOSE, DBG_ACTION_MAX,
     };
@@ -507,6 +544,10 @@ static void run_debug_menu(vn_vm_t *vm)
         count++;
 
         if (vm) {
+            actions[count] = DBG_SCENEINFO;
+            strcpy(labels[count], "Scene diagnostic");
+            count++;
+
             actions[count] = DBG_TEAR;
             sprintf(labels[count], "Tear glitch: %s", vm->scene.tear_on ? "ON" : "OFF");
             count++;
@@ -572,6 +613,10 @@ static void run_debug_menu(vn_vm_t *vm)
 
             case DBG_TEXT:
                 run_debug_text_test();
+                break;
+
+            case DBG_SCENEINFO:
+                run_debug_scene_info(vm);
                 break;
 
             case DBG_TEAR:

@@ -1054,6 +1054,11 @@ static bool is_cg(uint8_t id)
     return cg_index_buf && id < cg_index_count && cg_index_buf[id] != 0xFF;
 }
 
+bool assets_debug_is_cg(uint8_t id)
+{
+    return is_cg(id);
+}
+
 bool assets_scene(uint8_t id, uint8_t *dest)
 {
     if (is_cg(id) && cgpack_read_pixels(id, dest)) {
