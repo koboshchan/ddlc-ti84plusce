@@ -1527,13 +1527,19 @@ class Compiler:
                 self._emit_confirm_screen(*confirm)
                 return
         if stripped.startswith("call screen dialog("):
-            # credits.rpyc's postcredits_loop: a one-button "Error: Script
-            # file is missing or corrupt" acknowledgement shown if a 100%-
-            # complete player re-enters credits -- see _parse_dialog_call.
-            message = _parse_dialog_call(stripped)
-            if message is not None:
+            # DDLC's own one-button acknowledgement idiom -- credits.rpyc's
+            # postcredits_loop ("Error: Script file is missing or corrupt",
+            # ok_action=Quit(...)) is the only site with ok_action=Quit;
+            # every other real site (ch40's s_kill_early climax,
+            # poemgame.rpyc's instructions, splash.rpyc's skip-button hint)
+            # uses ok_action=Return() -- acknowledge and keep playing, not
+            # quit -- see _parse_dialog_call.
+            dialog = _parse_dialog_call(stripped)
+            if dialog is not None:
+                message, quits = dialog
                 self.asm.narrate(_strip_text_tags(message))
-                self.asm.end()
+                if quits:
+                    self.asm.end()
                 return
         if stripped == "pause":
             # Ren'Py's own bare `pause` statement (distinct from DDLC's
@@ -2569,15 +2575,20 @@ def _parse_confirm_call(stripped: str) -> tuple[str, bool, bool] | None:
     return (message.value, yes_value, no_value)
 
 
-def _parse_dialog_call(stripped: str) -> str | None:
-    """The message string for DDLC's own `call screen dialog(message="...",
-    ok_action=Quit(...))` idiom -- postcredits_loop's own fake "save file
-    corrupt" error, shown if a 100%-complete player re-enters credits.
-    Always just a one-button acknowledgement-then-quit in the one real use
-    found, so only the message matters; the caller treats it as narration
-    followed by an unconditional OP_END regardless of what ok_action itself
-    says. None if @p stripped isn't this shape. @p stripped still has its
-    `call screen ` prefix; only the `dialog(...)` call itself is parsed."""
+def _parse_dialog_call(stripped: str) -> tuple[str, bool] | None:
+    """(message, quits) for DDLC's own `call screen dialog(...)` one-button
+    acknowledgement idiom. The message is either a `message="..."` keyword
+    (credits.rpyc's postcredits_loop, its only use) or the first positional
+    argument (every other real site: ch40's s_kill_early climax,
+    poemgame.rpyc's instructions, splash.rpyc's skip-button hint). @p quits
+    is True only for `ok_action=Quit(...)` (credits.rpyc again) -- every
+    other site uses `ok_action=Return()`, an acknowledge-and-keep-playing
+    that must NOT end the script; conflating the two used to silently drop
+    ch40's climactic dialogue entirely (this whole idiom fell through to
+    "unsupported statement" whenever the message was positional, and even
+    a matched Return() site would have wrongly ended the story). None if
+    @p stripped isn't this shape. @p stripped still has its `call screen `
+    prefix; only the `dialog(...)` call itself is parsed."""
     prefix = "call screen "
     if not stripped.startswith(prefix):
         return None
@@ -2587,11 +2598,20 @@ def _parse_dialog_call(stripped: str) -> str | None:
         return None
     if not (isinstance(call, ast.Call) and _ident_name(call.func) == "dialog"):
         return None
+    message = None
     for kw in call.keywords:
         if (kw.arg == "message" and isinstance(kw.value, ast.Constant)
                 and isinstance(kw.value.value, str)):
-            return kw.value.value
-    return None
+            message = kw.value.value
+    if message is None and call.args and isinstance(call.args[0], ast.Constant) \
+            and isinstance(call.args[0].value, str):
+        message = call.args[0].value
+    if message is None:
+        return None
+    quits = any(kw.arg == "ok_action" and isinstance(kw.value, ast.Call)
+                and _ident_name(kw.value.func) == "Quit"
+                for kw in call.keywords)
+    return message, quits
 
 
 def _text_call_literal(src: str) -> str | None:
