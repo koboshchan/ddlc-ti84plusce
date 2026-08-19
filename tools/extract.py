@@ -3,10 +3,17 @@
 
 Usage: python3 tools/extract.py <path-to-DDLC-game-dir> [--dest assets/raw]
 
-Only scripts.rpa and images.rpa are extracted. audio.rpa is skipped (the
-TI-84 Plus CE has no audio hardware) and fonts.rpa is skipped (the engine
-uses graphx's built-in font; any font it ships must be open-licensed, not
-Team Salvato's, per LICENSE).
+scripts.rpa, images.rpa, and fonts.rpa are extracted. audio.rpa is skipped
+(the TI-84 Plus CE has no audio hardware).
+
+fonts.rpa itself ships several fonts under several different licenses (see
+docs/FORMAT.md's "Text rendering" section) -- per LICENSE, this project only
+*uses* the ones with a license that permits it (Halogen.ttf: public domain;
+RifficFree-Bold.ttf: free for personal and commercial use). The rest of the
+pack (including Aller_Rg.ttf, DDLC's own actual dialogue font, which is
+Dalton Maag's commercial font under a 25-user/verbatim-redistribution-only
+free tier) is extracted here like every other asset but never read by
+tools/convert_fonts.py or baked into a build.
 """
 
 from __future__ import annotations
@@ -17,7 +24,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-ARCHIVES = ("scripts.rpa", "images.rpa")
+ARCHIVES = ("scripts.rpa", "images.rpa", "fonts.rpa")
 
 
 def extract(game_dir: Path, dest: Path) -> None:

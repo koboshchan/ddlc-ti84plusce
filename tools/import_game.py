@@ -40,6 +40,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import convert_fonts
 import convert_images
 import export_cgpack
 import extract
@@ -759,6 +760,12 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
               f"-> {build_dir / 'cgpack'} (copy onto a FAT32 drive as /DDLC/)")
         appvars.append(write_appvar(export_cgpack.build_fingerprint(manifest),
                                     "DCGVER", appvar_dir))
+
+    # Halogen (index 0, default/body text) + RifficFree-Bold (index 1,
+    # namebox + menu labels) -- see convert_fonts.py's own docstring for why
+    # only these two of fonts.rpa's several bundled fonts are used.
+    fontpack = convert_fonts.build_fontpack(raw_dir, build_dir)
+    appvars.append(write_appvar(fontpack.read_bytes(), "DFONTS", appvar_dir))
 
     total = sum(p.stat().st_size for p in appvars)
     print(f"{len(appvars)} AppVars, {total} bytes total "

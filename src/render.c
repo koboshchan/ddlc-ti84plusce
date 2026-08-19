@@ -7,6 +7,7 @@
 #include "render.h"
 #include "text.h"
 
+#include <fontlibc.h>
 #include <graphx.h>
 #include <sys/timers.h>
 
@@ -21,6 +22,12 @@
  * declaration would otherwise be visible. */
 static uint32_t tear_rng_state;
 
+/* Forward-declared for the same reason as tear_rng_state above -- defined
+ * in the "Text measurement" section further down, but render_init() needs
+ * to call it before that section's own declaration would otherwise be
+ * visible. */
+static void set_font(uint8_t index);
+
 void render_init(void)
 {
     /* No gfx_SetDefaultPalette() here: assets_init() already loaded the
@@ -29,14 +36,24 @@ void render_init(void)
      * the whole thing with a generic gradient. */
     gfx_Begin();
     gfx_SetDrawBuffer();
-    gfx_SetTextTransparentColor(COL_TRANSPARENT);
-    gfx_SetTextBGColor(COL_TRANSPARENT);
-    /* Independent of the text transparency above -- a separate graphx
-     * global. Not actually read by assets_draw_sprite_zoomed() (it checks
-     * the transparent index directly rather than going through a
+    /* Independent of the text setup below -- a separate graphx global. Not
+     * actually read by assets_draw_sprite_zoomed() (it checks the
+     * transparent index directly rather than going through a
      * gfx_TransparentSprite()-style call), but set here once anyway to keep
      * this convention fixed and documented in one place. */
     gfx_SetTransparentColor(COL_TRANSPARENT);
+
+    /* fontlibc, not graphx's own built-in font -- see set_font()'s own
+     * comment for why DFONTS ships two real DDLC fonts (Halogen, index 0;
+     * RifficFree-Bold, index 1) instead. Transparency here is the fontlibc
+     * equivalent of the old gfx_SetTextTransparentColor()/SetTextBGColor()
+     * pair: skip drawing a glyph's "off" pixels rather than filling them
+     * with a background color, so text draws over whatever's already
+     * there. Index 0 (Halogen) is the default/body-text font; the namebox
+     * is the one place that switches to index 1, and switches back
+     * immediately after (see render_box()). */
+    fontlib_SetTransparency(true);
+    set_font(0);
 
     /* Seeds the tear effect's own PRNG -- see its section below for why
      * this doesn't share vn.c's OP_RANDOM state. 0 remapped to a fixed
@@ -55,30 +72,51 @@ void render_end(void)
  * Text measurement
  * ------------------------------------------------------------------------ */
 
-/* gfx_GetStringWidth needs a NUL-terminated string, but the wrapper measures
- * slices, so widths are summed per character instead. */
+/* DFONTS ships two of DDLC's own real bundled fonts, at the two indices
+ * below -- not graphx's built-in font, and not DDLC's actual dialogue font
+ * (Aller_Rg.ttf, Dalton Maag's commercial font under a 25-user/verbatim-
+ * redistribution-only free tier that a public build pipeline can't legally
+ * satisfy -- see tools/extract.py's own docstring). Both licenses were
+ * checked directly, not assumed from a font's name:
+ *   0 = Halogen.ttf (public domain) -- default/body text: dialogue,
+ *       narration, menus, everywhere except the namebox below.
+ *   1 = RifficFree-Bold.ttf (free for personal and commercial use) -- the
+ *       one place this is authentic rather than an approximation: it's
+ *       DDLC's own real gui.name_font, i.e. its actual namebox font.
+ * tools/convert_fonts.py builds the pack; index order there is index order
+ * here, not looked up by name on-calc. */
+#define FONT_DEFAULT 0
+#define FONT_NAME    1
+
+static void set_font(uint8_t index)
+{
+    fontlib_SetFont(fontlib_GetFontByIndex("DFONTS", index), 0);
+}
+
+/* fontlib_GetStringWidthL exists and would save the loop, but its stop-code
+ * handling isn't verified against a non-NUL-terminated slice (this measures
+ * substrings of a larger buffer, not always a real C string) -- summing
+ * per-glyph widths costs nothing extra at this scale and sidesteps needing
+ * to find out the hard way. */
 static unsigned measure(void *ctx, const char *str, size_t len)
 {
     (void)ctx;
 
     unsigned w = 0;
     for (size_t i = 0; i < len; i++) {
-        w += gfx_GetCharWidth(str[i]);
+        w += fontlib_GetGlyphWidth((uint8_t)str[i]);
     }
     return w;
 }
 
-/* Root cause of the "official" -> "of ficial" bug: a bare loop of
- * gfx_PrintChar() calls -- each one individually valid, cursor-advanced by
- * its own gfx_GetCharWidth() same as everywhere else here -- visibly opened
- * an extra gap at some letter pairs (confirmed live: reproducible and
- * specific to this per-character path, since the exact same text through a
- * single gfx_PrintStringXY() call, and gfx_GetCharWidth()'s own per-letter
- * numbers, both came back clean). Copying the slice into a NUL-terminated
- * buffer and handing the whole thing to gfx_PrintStringXY() in one call
- * sidesteps whatever that per-character quirk is. 96 bytes comfortably
- * covers a full dialogue line: max_width=308px / the narrowest glyph here
- * (5px, see the char-width probe) is at most 61 characters. */
+/* Historical note: this used to loop individual gfx_PrintChar() calls,
+ * which visibly opened a gap at some letter pairs ("official" ->
+ * "of ficial") that a single whole-string draw call didn't -- root cause
+ * never fully pinned down, but copying into a NUL-terminated buffer and
+ * handing fontlib_DrawString() the whole slice at once sidesteps it either
+ * way, same fix as when this was gfx_PrintStringXY(). 96 bytes comfortably
+ * covers a full dialogue line (see the file this bug was fixed in for the
+ * exact per-glyph math this was checked against at the time). */
 static void print_slice(const char *str, size_t len, int x, int y)
 {
     char buf[96];
@@ -87,23 +125,24 @@ static void print_slice(const char *str, size_t len, int x, int y)
     }
     memcpy(buf, str, len);
     buf[len] = '\0';
-    gfx_PrintStringXY(buf, x, y);
+    fontlib_SetCursorPosition(x, y);
+    fontlib_DrawString(buf);
 }
 
 /* Real DDLC's dialogue font is a solid fill over a distinct outline, not a
- * flat single color -- this font has no such glyph, so the outline is
- * faked the same way most sprite-font-less engines do it: the same slice
- * drawn at a 1px offset in @p outline along each of the 4 cardinal
- * directions, then once more dead center in @p fill on top.
- * gfx_SetTextTransparentColor() (render_init()) keeps every pass from
- * clobbering non-glyph pixels, so the offset passes only ever widen each
- * glyph's own silhouette by a ring -- never touch what's already there
- * outside it -- and the final centered pass repaints every pixel the true
- * glyph covers, leaving just that ring showing through as the outline.
- * Cardinal-only (not the full 8-direction ring, which also hits the
- * diagonals) -- the diagonal passes double up at every corner of a glyph's
- * strokes, reading as a noticeably heavier/blockier outline than real
- * DDLC's thin one. */
+ * flat single color -- neither Halogen nor RifficFree-Bold ship such a
+ * glyph, so the outline is faked the same way most sprite-font-less
+ * engines do it: the same slice drawn at a 1px offset in @p outline along
+ * each of the 4 cardinal directions, then once more dead center in @p fill
+ * on top. fontlib_SetTransparency(true) (render_init()) keeps every pass
+ * from clobbering non-glyph pixels, so the offset passes only ever widen
+ * each glyph's own silhouette by a ring -- never touch what's already
+ * there outside it -- and the final centered pass repaints every pixel the
+ * true glyph covers, leaving just that ring showing through as the
+ * outline. Cardinal-only (not the full 8-direction ring, which also hits
+ * the diagonals) -- the diagonal passes double up at every corner of a
+ * glyph's strokes, reading as a noticeably heavier/blockier outline than
+ * real DDLC's thin one. */
 static void print_slice_outlined(const char *str, size_t len, int x, int y,
                                  uint8_t fill, uint8_t outline)
 {
@@ -112,11 +151,11 @@ static void print_slice_outlined(const char *str, size_t len, int x, int y,
         {-1, 0},         {1, 0},
                  {0,  1},
     };
-    gfx_SetTextFGColor(outline);
+    fontlib_SetForegroundColor(outline);
     for (int i = 0; i < 4; i++) {
         print_slice(str, len, x + off[i][0], y + off[i][1]);
     }
-    gfx_SetTextFGColor(fill);
+    fontlib_SetForegroundColor(fill);
     print_slice(str, len, x, y);
 }
 
@@ -350,8 +389,9 @@ static void draw_background(uint8_t bg)
          * that bug is root-caused. */
         char diag[24];
         sprintf(diag, bg == VN_NO_SPRITE ? "bg=NONE (0xFF)" : "bg=%u (load failed)", bg);
-        gfx_SetTextFGColor(COL_WHITE);
-        gfx_PrintStringXY(diag, 4, 4);
+        fontlib_SetForegroundColor(COL_WHITE);
+        fontlib_SetCursorPosition(4, 4);
+        fontlib_DrawString(diag);
     }
 }
 
@@ -969,6 +1009,13 @@ void render_box(const vn_scene_t *scene, const char *speaker,
          * pixels the plate mechanism captured or restored underneath it
          * are always immediately painted over again before the frame is
          * presented. */
+        /* The one place that switches away from the default font -- see
+         * set_font()'s own comment: RifficFree-Bold here is DDLC's actual
+         * real namebox font (gui.name_font), not an approximation like
+         * Halogen everywhere else is. Switched back immediately after so
+         * every other caller can keep assuming the default font is active
+         * without having to set it itself. */
+        set_font(FONT_NAME);
         if (have_namebox) {
             const int nb_x = pad, nb_y = BOX_Y - NAMEBOX_H + 4;
             blit_raw(nb_x, nb_y, namebox_px, NAMEBOX_W, NAMEBOX_H);
@@ -980,6 +1027,7 @@ void render_box(const vn_scene_t *scene, const char *speaker,
                                  COL_WHITE, COL_NAME);
             y += 11;
         }
+        set_font(FONT_DEFAULT);
         had_namebox = true;
     } else if (had_namebox) {
         /* Just transitioned from a shown namebox to narration -- redraw the
@@ -1069,8 +1117,9 @@ void render_menu(const char *const *choices, uint8_t count, uint8_t selected)
         gfx_SetColor(COL_BOX_EDGE);
         gfx_Rectangle(x, y, w, h - 2);
 
-        gfx_SetTextFGColor(i == selected ? COL_BLACK : COL_WHITE);
-        gfx_PrintStringXY(choices[i], x + 6, y + 3);
+        fontlib_SetForegroundColor(i == selected ? COL_BLACK : COL_WHITE);
+        fontlib_SetCursorPosition(x + 6, y + 3);
+        fontlib_DrawString(choices[i]);
     }
 }
 
@@ -1097,13 +1146,27 @@ void render_backdrop(uint8_t color)
 
 void render_text(const char *s, int x, int y, uint8_t color)
 {
-    gfx_SetTextFGColor(color);
-    gfx_PrintStringXY(s, x, y);
+    fontlib_SetForegroundColor(color);
+    fontlib_SetCursorPosition(x, y);
+    fontlib_DrawString(s);
+}
+
+/* Same per-glyph-sum reasoning as measure()'s own comment -- this is a real
+ * NUL-terminated C string, so fontlib_GetStringWidth(s) would work too, but
+ * summing keeps every width computation in this file going through the
+ * same one code path rather than two. */
+static unsigned string_width(const char *s)
+{
+    unsigned w = 0;
+    for (const char *p = s; *p; p++) {
+        w += fontlib_GetGlyphWidth((uint8_t)*p);
+    }
+    return w;
 }
 
 void render_text_centered(const char *s, int y, uint8_t color)
 {
-    render_text(s, (SCREEN_W - (int)gfx_GetStringWidth(s)) / 2, y, color);
+    render_text(s, (SCREEN_W - (int)string_width(s)) / 2, y, color);
 }
 
 void render_list_menu(const char *const *items, uint8_t count, uint8_t selected,
@@ -1116,9 +1179,11 @@ void render_list_menu(const char *const *items, uint8_t count, uint8_t selected,
         uint8_t color = is_selected ? selected_color : normal_color;
         int line_y = y + i * line_h;
 
-        gfx_SetTextFGColor(color);
-        gfx_PrintStringXY(is_selected ? ">" : " ", x, line_y);
-        gfx_PrintStringXY(items[i], x + 10, line_y);
+        fontlib_SetForegroundColor(color);
+        fontlib_SetCursorPosition(x, line_y);
+        fontlib_DrawString(is_selected ? ">" : " ");
+        fontlib_SetCursorPosition(x + 10, line_y);
+        fontlib_DrawString(items[i]);
     }
 }
 
@@ -1136,8 +1201,9 @@ void render_list_menu_bar(const char *const *items, uint8_t count, uint8_t selec
         if (is_selected) {
             render_fill_rect(x - pad, line_y - 3, w, line_h - 3, bar_color);
         }
-        gfx_SetTextFGColor(is_selected ? sel_text_color : text_color);
-        gfx_PrintStringXY(items[i], x, line_y);
+        fontlib_SetForegroundColor(is_selected ? sel_text_color : text_color);
+        fontlib_SetCursorPosition(x, line_y);
+        fontlib_DrawString(items[i]);
     }
 }
 
@@ -1249,8 +1315,9 @@ void render_title_screen(uint8_t selected, unsigned t)
             gfx_SetColor(COL_NAV_EDGE);
             gfx_FillRectangle(nav_x, y - 2, NAV_W, MENU_LINE_H - 2);
         }
-        gfx_SetTextFGColor(COL_BOX_FILL);
-        gfx_PrintStringXY(items[i], nav_x + MENU_X, y);
+        fontlib_SetForegroundColor(COL_BOX_FILL);
+        fontlib_SetCursorPosition(nav_x + MENU_X, y);
+        fontlib_DrawString(items[i]);
     }
 
     /* Logo bounce-drops from above -- over the nav panel but under the front
