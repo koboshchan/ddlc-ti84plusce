@@ -7,13 +7,15 @@ scripts.rpa, images.rpa, and fonts.rpa are extracted. audio.rpa is skipped
 (the TI-84 Plus CE has no audio hardware).
 
 fonts.rpa itself ships several fonts under several different licenses (see
-docs/FORMAT.md's "Text rendering" section) -- per LICENSE, this project only
-*uses* the ones with a license that permits it (Halogen.ttf: public domain;
-RifficFree-Bold.ttf: free for personal and commercial use). The rest of the
-pack (including Aller_Rg.ttf, DDLC's own actual dialogue font, which is
-Dalton Maag's commercial font under a 25-user/verbatim-redistribution-only
-free tier) is extracted here like every other asset but never read by
-tools/convert_fonts.py or baked into a build.
+docs/FORMAT.md's "Text rendering" section). Two are actually used by
+tools/convert_fonts.py, both DDLC's own real fonts (gui.rpy):
+Aller_Rg.ttf (Dalton Maag's commercial font, free-tier licensed for up to
+25 users) and RifficFree-Bold.ttf (free for personal and commercial use).
+Like every other asset here, neither is committed to this repo -- both are
+extracted fresh from the user's own legally obtained copy of the game each
+build, per LICENSE's "no copyrighted assets... hosted, distributed, or
+bundled within this repository." The rest of the pack is extracted
+alongside them like any other asset but never read by the build.
 """
 
 from __future__ import annotations

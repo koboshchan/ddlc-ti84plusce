@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Turn two of DDLC's own bundled fonts into one convfont fontpack.
 
-Only fonts with a license that actually permits this are used -- see
-extract.py's own docstring and docs/FORMAT.md's "Text rendering" section.
-Index 0 in the pack is Halogen (public domain), the default/body-text font;
-index 1 is RifficFree-Bold (free for personal and commercial use), DDLC's
-own real font for the speaker namebox (gui.rpy's name_font) and several
-menu labels. src/assets.c reads them back out by that same fixed index via
-fontlibc's fontlib_GetFontByIndex() -- the pack's own internal names aren't
-used as a lookup key on-calc, so nothing here needs to match render.c
-symbol-for-symbol, just index-for-index.
+Both are DDLC's own real fonts (gui.rpy), extracted from the user's own
+legally obtained copy of the game the same way every other asset is (see
+extract.py's own docstring) -- not redistributed by this repo itself.
+Index 0 in the pack is Aller_Rg.ttf, gui.default_font (dialogue, narration,
+choices, general UI); index 1 is RifficFree-Bold, gui.name_font (the
+speaker namebox, plus several menu labels). src/assets.c reads them back
+out by that same fixed index via fontlibc's fontlib_GetFontByIndex() -- the
+pack's own internal names aren't used as a lookup key on-calc, so nothing
+here needs to match render.c symbol-for-symbol, just index-for-index.
 
 Output is a single packed binary (fontlib_font_pack_t) -- packaging that
 into a TI AppVar is import_game.py's job, same split of responsibility as
@@ -35,7 +35,7 @@ import ttf_to_convfont
 # RifficFree-Bold's boldest glyphs not to collide with each other -- see
 # the FORMAT.md note on its lowercase "i" losing its dot below this.
 FONTS = [
-    ("gui/font/Halogen.ttf", 12, "Halogen"),
+    ("gui/font/Aller_Rg.ttf", 12, "AllerRg"),
     ("gui/font/RifficFree-Bold.ttf", 12, "RifficFreeBold"),
 ]
 
@@ -50,8 +50,8 @@ def build_fontpack(raw_dir: Path, build_dir: Path) -> Path:
 
     convfont_args = ["convfont", "-o", "fontpack",
                       "-N", "DDLCFonts", "-A", "ddlc-ti84plusce",
-                      "-C", "See LICENSE -- not Team Salvato's",
-                      "-D", "Halogen (index 0) + RifficFree-Bold (index 1)",
+                      "-C", "See LICENSE -- extracted from the user's own copy",
+                      "-D", "Aller_Rg (index 0) + RifficFree-Bold (index 1)",
                       "-V", "1", "-P", "ASCII"]
 
     for rel_path, height, name in FONTS:

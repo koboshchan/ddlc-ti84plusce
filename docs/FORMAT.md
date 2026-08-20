@@ -80,6 +80,39 @@ even though neither `DPALGAME` nor a CG palette reserves them for anything.
 | 7 | `COL_SHADOW` | drop shadow |
 | 10-49 | *(no `COL_*` constant)* | the real textbox.png/namebox.png art's own ~40 colors (`UI_BOX_FIXED_ENTRIES`, tools/convert_images.py) -- reserved by content, not by a single semantic meaning, since that art needs far more than one flat color per element to render its gradient/dot-pattern shading without banding |
 
+## Text rendering
+
+Dialogue/UI text is drawn through `fontlibc`, not graphx's own built-in
+font -- `tools/ttf_to_convfont.py` rasterizes a TTF into `convfont`'s own
+text-format font description (printable ASCII, 32-126, this engine's whole
+charset), and `tools/convert_fonts.py` bundles two of them into one
+`fontpack` via `convfont`, packaged as the `DFONTS` AppVar
+(`import_game.py`). Both are DDLC's own real fonts (`gui.rpy`), extracted
+from the user's own legally obtained copy of the game the same way every
+other asset is (`extract.py` now extracts `fonts.rpa` too) -- neither is
+committed to this repo. Fixed pack index, not a name lookup on-calc
+(`fontlib_GetFontByIndex("DFONTS", index)`):
+
+| Index | Font | gui.rpy role | Used for |
+|---|---|---|---|
+| 0 | `Aller_Rg.ttf` | `default_font` | dialogue, narration, choices, general UI -- everywhere except the namebox |
+| 1 | `RifficFree-Bold.ttf` | `name_font` | the speaker namebox specifically (`render_box()`'s one `set_font(FONT_NAME)` call, switched back to index 0 immediately after) |
+
+`fonts.rpa` ships several other fonts (`F25_Bank_Printer.ttf`, the dev
+console's font; `m1`/`n1`/`s1`/`y1`/`y2`/`y3.ttf`, each character's
+glitch/corruption font for the poem minigame; `Halogen.ttf`,
+`VerilySerifMono.otf`, used for a few secondary menu/credits styles) --
+`extract.py` pulls the whole archive down like any other asset, but only
+the two above are ever read by `convert_fonts.py`.
+
+Real DDLC's dialogue text is a solid fill over a distinct outline
+(`screens.rpy`'s `outlines` style property, applied at render time -- not
+baked into either font's own glyphs). `render.c`'s `print_slice_outlined()`
+fakes the same look by drawing the same text 4 times at a 1px cardinal
+offset in the outline color, then once more dead center in the fill color
+-- `fontlib_SetTransparency(true)` keeps each pass from clobbering
+already-drawn pixels outside its own glyph silhouettes.
+
 ## Bytecode
 
 Little-endian throughout. `u24` operands (`OP_JUMP`/`OP_CALL`/`OP_IF`/

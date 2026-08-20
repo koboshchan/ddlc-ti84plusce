@@ -44,12 +44,12 @@ void render_init(void)
     gfx_SetTransparentColor(COL_TRANSPARENT);
 
     /* fontlibc, not graphx's own built-in font -- see set_font()'s own
-     * comment for why DFONTS ships two real DDLC fonts (Halogen, index 0;
+     * comment for why DFONTS ships two real DDLC fonts (Aller_Rg, index 0;
      * RifficFree-Bold, index 1) instead. Transparency here is the fontlibc
      * equivalent of the old gfx_SetTextTransparentColor()/SetTextBGColor()
      * pair: skip drawing a glyph's "off" pixels rather than filling them
      * with a background color, so text draws over whatever's already
-     * there. Index 0 (Halogen) is the default/body-text font; the namebox
+     * there. Index 0 (Aller_Rg) is the default/body-text font; the namebox
      * is the one place that switches to index 1, and switches back
      * immediately after (see render_box()). */
     fontlib_SetTransparency(true);
@@ -73,16 +73,13 @@ void render_end(void)
  * ------------------------------------------------------------------------ */
 
 /* DFONTS ships two of DDLC's own real bundled fonts, at the two indices
- * below -- not graphx's built-in font, and not DDLC's actual dialogue font
- * (Aller_Rg.ttf, Dalton Maag's commercial font under a 25-user/verbatim-
- * redistribution-only free tier that a public build pipeline can't legally
- * satisfy -- see tools/extract.py's own docstring). Both licenses were
- * checked directly, not assumed from a font's name:
- *   0 = Halogen.ttf (public domain) -- default/body text: dialogue,
+ * below -- not graphx's built-in font. Both are extracted fresh from the
+ * user's own legally obtained copy of the game every build, never
+ * committed to this repo (see tools/extract.py's own docstring):
+ *   0 = Aller_Rg.ttf -- DDLC's actual gui.default_font: dialogue,
  *       narration, menus, everywhere except the namebox below.
- *   1 = RifficFree-Bold.ttf (free for personal and commercial use) -- the
- *       one place this is authentic rather than an approximation: it's
- *       DDLC's own real gui.name_font, i.e. its actual namebox font.
+ *   1 = RifficFree-Bold.ttf -- DDLC's actual gui.name_font, i.e. its real
+ *       namebox font.
  * tools/convert_fonts.py builds the pack; index order there is index order
  * here, not looked up by name on-calc. */
 #define FONT_DEFAULT 0
@@ -130,8 +127,9 @@ static void print_slice(const char *str, size_t len, int x, int y)
 }
 
 /* Real DDLC's dialogue font is a solid fill over a distinct outline, not a
- * flat single color -- neither Halogen nor RifficFree-Bold ship such a
- * glyph, so the outline is faked the same way most sprite-font-less
+ * flat single color -- that's screens.rpy's own `outlines` style property
+ * applied at render time, not something baked into Aller_Rg.ttf's glyphs,
+ * so this engine has to fake it too, the same way most sprite-font-less
  * engines do it: the same slice drawn at a 1px offset in @p outline along
  * each of the 4 cardinal directions, then once more dead center in @p fill
  * on top. fontlib_SetTransparency(true) (render_init()) keeps every pass
@@ -1010,16 +1008,21 @@ void render_box(const vn_scene_t *scene, const char *speaker,
          * are always immediately painted over again before the frame is
          * presented. */
         /* The one place that switches away from the default font -- see
-         * set_font()'s own comment: RifficFree-Bold here is DDLC's actual
-         * real namebox font (gui.name_font), not an approximation like
-         * Halogen everywhere else is. Switched back immediately after so
-         * every other caller can keep assuming the default font is active
-         * without having to set it itself. */
+         * set_font()'s own comment: RifficFree-Bold here, Aller_Rg
+         * everywhere else, matching gui.rpy's own name_font/default_font
+         * split exactly. Switched back immediately after so every other
+         * caller can keep assuming the default font is active without
+         * having to set it itself. */
         set_font(FONT_NAME);
         if (have_namebox) {
             const int nb_x = pad, nb_y = BOX_Y - NAMEBOX_H + 4;
             blit_raw(nb_x, nb_y, namebox_px, NAMEBOX_W, NAMEBOX_H);
-            print_slice_outlined(speaker, strlen(speaker), nb_x + 8, nb_y + 4,
+            /* +2, not +4: tuned for graphx's old ~7px-tall built-in font --
+             * RifficFree-Bold's real cell height (12px, see set_font()'s
+             * comment) sat almost flush against NAMEBOX_H's bottom edge at
+             * that same offset, reading as the name text crowding too low
+             * in the box. */
+            print_slice_outlined(speaker, strlen(speaker), nb_x + 8, nb_y + 2,
                                  COL_WHITE, COL_NAME);
             y = nb_y + NAMEBOX_H + 2;
         } else {
@@ -1309,15 +1312,15 @@ void render_title_screen(uint8_t selected, unsigned t)
     gfx_SetColor(COL_NAV_EDGE);
     gfx_FillRectangle(nav_x + NAV_W - NAV_EDGE_W, 0, NAV_EDGE_W, SCREEN_H);
 
+    /* Outlined like dialogue text (print_slice_outlined) rather than the
+     * flat-fill-plus-highlight-bar this used to be -- real DDLC's own nav
+     * panel text is outlined, and marks the selected item by recoloring
+     * the text itself (a lighter pink), not a background bar behind it. */
     for (uint8_t i = 0; i < count; i++) {
         int y = MENU_Y + i * MENU_LINE_H;
-        if (i == selected) {
-            gfx_SetColor(COL_NAV_EDGE);
-            gfx_FillRectangle(nav_x, y - 2, NAV_W, MENU_LINE_H - 2);
-        }
-        fontlib_SetForegroundColor(COL_BOX_FILL);
-        fontlib_SetCursorPosition(nav_x + MENU_X, y);
-        fontlib_DrawString(items[i]);
+        uint8_t fill = i == selected ? COL_NAME : COL_WHITE;
+        print_slice_outlined(items[i], strlen(items[i]), nav_x + MENU_X, y,
+                             fill, COL_BOX_FILL);
     }
 
     /* Logo bounce-drops from above -- over the nav panel but under the front
