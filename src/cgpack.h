@@ -56,4 +56,18 @@ void cgpack_poll(void);
  */
 bool cgpack_read_pixels(uint8_t id, uint8_t *dest);
 
+/**
+ * Diagnostic snapshot of the USB/pack state, for the debug menu's external
+ * CG test -- not needed by cgpack_read_pixels() itself, which already
+ * degrades correctly on its own.
+ */
+typedef enum {
+    CGPACK_NO_USB,       /* usb_Init() itself failed/never ran */
+    CGPACK_NO_DRIVE,     /* usb ready, nothing plugged in/mounted */
+    CGPACK_WRONG_PACK,   /* a drive mounted, but no matching /DDLC/BUILD.ID */
+    CGPACK_READY,        /* mounted AND fingerprint matched -- reads will work */
+} cgpack_status_t;
+
+cgpack_status_t cgpack_status(void);
+
 #endif /* CGPACK_H */

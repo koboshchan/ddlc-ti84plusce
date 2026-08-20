@@ -192,6 +192,29 @@ static uint32_t vn_rand_next(vn_vm_t *vm)
     return x;
 }
 
+/* ASCII stand-in for glitchtext.rpyc's own Latin-Extended/accented
+ * `nonunicode` charset -- this engine's font is ASCII-only, so a
+ * punctuation/symbol set reads as "corrupted text" instead, same
+ * "approximate rather than drop it" precedent as the zoom/dizzy ATL cases
+ * in tools/image_resolve.py. No `[`/`]`/`{`/`}` in the set: those are the
+ * delimiters "[player]"/"[gtext]"-style substitution and {tag}-stripping
+ * already use elsewhere, and a glyph matching one by chance could confuse
+ * either at display time even though this buffer is spliced in well after
+ * both have already run over the surrounding literal text. */
+void vn_debug_glitchtext(vn_vm_t *vm, uint8_t lo, uint8_t hi)
+{
+    static const char glyphs[] = "!@#$%^&*?/\\|<>~;:_-+=";
+    uint32_t span  = (hi > lo) ? (uint32_t)(hi - lo) + 1u : 1u;
+    uint8_t  count = (uint8_t)(lo + (uint8_t)(vn_rand_next(vm) % span));
+    if (count > VN_GLITCH_MAX) {
+        count = VN_GLITCH_MAX;
+    }
+    for (uint8_t i = 0; i < count; i++) {
+        vm->glitch_buf[i] = glyphs[vn_rand_next(vm) % (sizeof(glyphs) - 1)];
+    }
+    vm->glitch_buf[count] = '\0';
+}
+
 void vn_init(vn_vm_t *vm, const uint8_t *code, size_t code_size,
              const vn_host_t *host, uint32_t seed)
 {
@@ -490,32 +513,12 @@ bool vn_step(vn_vm_t *vm)
         }
 
         case OP_GLITCHTEXT: {
-            /* ASCII stand-in for glitchtext.rpyc's own Latin-Extended/
-             * accented `nonunicode` charset -- this engine's font is
-             * ASCII-only, so a punctuation/symbol set reads as "corrupted
-             * text" instead, same "approximate rather than drop it"
-             * precedent as the zoom/dizzy ATL cases in
-             * tools/image_resolve.py. No `[`/`]`/`{`/`}` in the set: those
-             * are the delimiters "[player]"/"[gtext]"-style substitution
-             * and {tag}-stripping already use elsewhere, and a glyph
-             * matching one by chance could confuse either at display time
-             * even though this buffer is spliced in well after both have
-             * already run over the surrounding literal text. */
-            static const char glyphs[] = "!@#$%^&*?/\\|<>~;:_-+=";
             uint8_t lo = read_u8(vm);
             uint8_t hi = read_u8(vm);
             if (vm->status != VN_RUNNING) {
                 break;
             }
-            uint32_t span  = (hi > lo) ? (uint32_t)(hi - lo) + 1u : 1u;
-            uint8_t  count = (uint8_t)(lo + (uint8_t)(vn_rand_next(vm) % span));
-            if (count > VN_GLITCH_MAX) {
-                count = VN_GLITCH_MAX;
-            }
-            for (uint8_t i = 0; i < count; i++) {
-                vm->glitch_buf[i] = glyphs[vn_rand_next(vm) % (sizeof(glyphs) - 1)];
-            }
-            vm->glitch_buf[count] = '\0';
+            vn_debug_glitchtext(vm, lo, hi);
             break;
         }
 

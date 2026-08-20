@@ -1115,6 +1115,43 @@ void render_debug_text_test(void)
     }
 }
 
+/* Debug menu's text-font test -- draws a sample line in each real font this
+ * engine ships (see docs/FORMAT.md's "Text rendering"): DDLC's real
+ * Aller_Rg (FONT_DEFAULT, everything but the namebox) and RifficFree-Bold
+ * (FONT_NAME, namebox + a few menu labels), labeled, so a font-pack rebuild
+ * (tools/convert_fonts.py) or a fontlib regression shows up here directly. */
+void render_debug_font_test(void)
+{
+    render_backdrop(COL_BOX_FILL);
+
+    static const char *const sample = "The quick brown fox jumps 0123456789";
+    int y = 20;
+
+    set_font(FONT_DEFAULT);
+    render_text("Aller_Rg (default, FONT_DEFAULT)", 6, y, COL_NAME);
+    y += 14;
+    print_slice_outlined(sample, strlen(sample), 6, y, COL_WHITE, COL_BLACK);
+    y += 26;
+
+    set_font(FONT_NAME);
+    render_text("RifficFree-Bold (namebox, FONT_NAME)", 6, y, COL_NAME);
+    y += 14;
+    print_slice_outlined(sample, strlen(sample), 6, y, COL_WHITE, COL_BLACK);
+
+    set_font(FONT_DEFAULT);
+}
+
+/* Debug menu's external-CG test -- draw_background() already transparently
+ * upgrades to the full-res cgpack version when one's available (see
+ * assets_scene()/cgpack_read_pixels()), so this is just that same real path
+ * pointed at a caller-picked CG scene id, with no separate "try the pack"
+ * step of its own. main.c overlays its own status/caption text and calls
+ * render_present() afterward, same split as render_debug_text_test(). */
+void render_debug_bg_preview(uint8_t bg_id)
+{
+    draw_background(bg_id);
+}
+
 void render_menu(const char *const *choices, uint8_t count, uint8_t selected)
 {
     scene_obscured();

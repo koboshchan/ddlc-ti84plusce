@@ -568,4 +568,12 @@ vn_status_t vn_run(vn_vm_t *vm);
 /** Human-readable form of @p status, for the host simulator and debugging. */
 const char *vn_status_str(vn_status_t status);
 
+/**
+ * Refills @p vm->glitch_buf exactly like OP_GLITCHTEXT (same charset, same
+ * PRNG draw off @p vm->rng_state) -- exposed so the debug menu's own glitch-
+ * text test can exercise the real mechanism without needing a fake opcode
+ * stream to drive it through vn_step().
+ */
+void vn_debug_glitchtext(vn_vm_t *vm, uint8_t lo, uint8_t hi);
+
 #endif /* VN_H */

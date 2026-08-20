@@ -137,6 +137,15 @@ void render_box(const vn_scene_t *scene, const char *speaker,
  * and friends. */
 void render_debug_text_test(void);
 
+/** Debug menu's text-font test -- see its own doc comment in render.c.
+ * Draws only; caller handles input/present. */
+void render_debug_font_test(void);
+
+/** Debug menu's external-CG test -- draws @p bg_id via the real
+ * draw_background() path (transparently upgrading to the full-res cgpack
+ * version when available). Draws only; caller handles input/present. */
+void render_debug_bg_preview(uint8_t bg_id);
+
 /** Draw the choice menu over the current scene, highlighting @p selected. */
 void render_menu(const char *const *choices, uint8_t count, uint8_t selected);
 

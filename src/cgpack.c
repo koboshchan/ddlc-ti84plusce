@@ -160,6 +160,17 @@ void cgpack_poll(void)
     }
 }
 
+cgpack_status_t cgpack_status(void)
+{
+    if (!usb_ready) {
+        return CGPACK_NO_USB;
+    }
+    if (!mounted) {
+        return CGPACK_NO_DRIVE;
+    }
+    return pack_ok ? CGPACK_READY : CGPACK_WRONG_PACK;
+}
+
 bool cgpack_read_pixels(uint8_t id, uint8_t *dest)
 {
     if (!pack_ok) {

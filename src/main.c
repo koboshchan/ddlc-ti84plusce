@@ -371,6 +371,241 @@ static void run_debug_text_test(void)
     } while (!in.advance && !quit_requested);
 }
 
+/* Debug menu's text-font test -- see render_debug_font_test()'s own doc
+ * comment in render.c for what it actually checks. */
+static void run_debug_font_test(void)
+{
+    input_t in;
+
+    render_debug_font_test();
+    render_text("2nd / Enter to return", 14, SCREEN_H - 20, COL_BOX_EDGE);
+    render_present(TRANS_CUT);
+    gfx_Wait();
+
+    do {
+        input_poll(&in);
+    } while (!in.advance && !quit_requested);
+}
+
+/** Debug menu's animation test: cycles a chosen sprite id through
+ * VN_FLAG_ZOOM/HOP/SINK via the real render_scene() pipeline (draw_actor()'s
+ * own animation math), so a regression there shows up here directly rather
+ * than needing a specific story beat reached mid-game. Doesn't touch the
+ * real story vm at all -- a throwaway local vn_scene_t is enough, so this is
+ * reachable even from the title screen (see run_debug_menu()'s own comment
+ * on why some items need a live vm and some don't).
+ *
+ * show_seq only bumps on an actual selection change (or a manual 2nd
+ * retrigger), not every frame -- see vn_actor_t's own comment on why: HOP is
+ * one-shot, and bumping it every redraw would restart the bounce every
+ * frame instead of letting it play out. */
+static void run_debug_anim_test(void)
+{
+    static const char *const anim_names[3] = {
+        "ZOOM (speaking pop)", "HOP (one-shot bounce)", "SINK (drift + hold)",
+    };
+    static const uint8_t anim_flags[3] = { VN_FLAG_ZOOM, VN_FLAG_HOP, VN_FLAG_SINK };
+    vn_scene_t scene;
+    uint16_t   sprite  = 0;
+    uint8_t    anim    = 0;
+    bool       changed = true;
+    input_t in;
+    char line[32];
+
+    memset(&scene, 0, sizeof(scene));
+    for (int i = 0; i < VN_MAX_CHARS; i++) {
+        scene.actors[i].character = VN_NO_SPRITE;
+    }
+    scene.background      = VN_NO_SPRITE;
+    scene.actors[0].overlay = VN_NO_OVERLAY;
+    scene.actors[0].pos     = 80; /* center_x = pos*2 = 160, screen center */
+
+    for (;;) {
+        scene.actors[0].character = 0;
+        scene.actors[0].sprite    = sprite;
+        scene.actors[0].flags     = anim_flags[anim];
+        if (changed) {
+            scene.actors[0].show_seq++;
+            changed = false;
+        }
+
+        render_backdrop(COL_BOX_FILL);
+        render_scene(&scene);
+        sprintf(line, "Sprite id: %u", sprite);
+        render_text(line, 8, 4, COL_WHITE);
+        render_text(anim_names[anim], 8, SCREEN_H - 34, COL_WHITE);
+        render_text("Up/Dn: anim  L/R: sprite  2nd: retrigger  Mode: back",
+                    8, SCREEN_H - 18, COL_BOX_EDGE);
+        render_present(TRANS_CUT);
+        gfx_Wait();
+
+        input_poll(&in);
+        if (quit_requested || in.pause) {
+            break;
+        }
+        if (in.up) {
+            anim = (uint8_t)((anim + 1) % 3);
+            changed = true;
+        }
+        if (in.down) {
+            anim = (uint8_t)((anim + 2) % 3);
+            changed = true;
+        }
+        if (in.left && sprite > 0) {
+            sprite--;
+            changed = true;
+        }
+        if (in.right) {
+            sprite++;
+            changed = true;
+        }
+        if (in.advance) {
+            changed = true; /* manual re-trigger, e.g. to replay HOP */
+        }
+    }
+
+    /* This scene's actor/plate state is entirely local to this screen --
+     * force the next real render_scene_lazy() (the story's own idle/
+     * typewriter loop) to do a genuine full redraw instead of trusting
+     * whatever this left the draw buffer holding. */
+    render_invalidate_scene();
+}
+
+/** Debug menu's external-CG test: points the real draw_background() path
+ * (which already transparently upgrades to a full-res cgpack read when one's
+ * available -- see assets_scene()/cgpack_read_pixels()) at a caller-picked
+ * scene id, and shows the live USB/pack status alongside it. No separate
+ * "try loading the pack" step of its own -- that's the whole point, this
+ * exercises the exact path a real CG scene draw already goes through. */
+static void run_debug_cg_test(void)
+{
+    static const char *const status_names[4] = {
+        "no USB", "no drive", "wrong pack (BUILD.ID mismatch)", "READY (full-res)",
+    };
+    uint8_t bg = 0;
+    input_t in;
+    char line[48];
+
+    for (;;) {
+        cgpack_poll(); /* pick up a drive plugged/unplugged mid-test */
+
+        render_debug_bg_preview(bg);
+        sprintf(line, "bg id: %u   is_cg: %s", bg, assets_debug_is_cg(bg) ? "yes" : "no");
+        render_text(line, 8, 4, COL_WHITE);
+        sprintf(line, "cgpack: %s", status_names[cgpack_status()]);
+        render_text(line, 8, 18, COL_WHITE);
+        render_text("Left/Right: bg id   Mode: back", 8, SCREEN_H - 18, COL_BOX_EDGE);
+        render_present(TRANS_CUT);
+        gfx_Wait();
+
+        input_poll(&in);
+        if (quit_requested || in.pause) {
+            render_invalidate_scene();
+            return;
+        }
+        if (in.left) {
+            bg--;
+        }
+        if (in.right) {
+            bg++;
+        }
+    }
+}
+
+/** Debug menu's glitch-text render test: runs the real vn_debug_glitchtext()
+ * (same charset, same PRNG draw OP_GLITCHTEXT itself uses) against a
+ * throwaway local vm rather than the real story one -- glitch_buf and
+ * rng_state are the only fields it touches, so a disposable vn_vm_t seeded
+ * off clock() is enough, and unlike the animation test above there's no
+ * scene state to invalidate afterward since nothing here ever calls
+ * render_scene(). */
+static void run_debug_glitch_test(void)
+{
+    vn_vm_t glitch_vm;
+    uint8_t hi = 20;
+    input_t in;
+    char line[24];
+
+    memset(&glitch_vm, 0, sizeof(glitch_vm));
+    glitch_vm.rng_state = (uint32_t)clock() | 1;
+
+    for (;;) {
+        vn_debug_glitchtext(&glitch_vm, hi, hi);
+
+        render_backdrop(COL_BOX_FILL);
+        render_text("Glitch text render test", 14, 8, COL_NAME);
+        sprintf(line, "length: %u", hi);
+        render_text(line, 14, 26, COL_WHITE);
+        /* Not wrapped -- a length past what one line holds just runs off
+         * the right edge, which is fine for a debug tool checking the
+         * character set/PRNG, not layout. */
+        render_text(glitch_vm.glitch_buf, 14, 44, COL_WHITE);
+        render_text("Left/Right: length   2nd: reroll   Mode: back",
+                    14, SCREEN_H - 18, COL_BOX_EDGE);
+        render_present(TRANS_CUT);
+        gfx_Wait();
+
+        input_poll(&in);
+        if (quit_requested || in.pause) {
+            return;
+        }
+        if (in.left && hi > 0) {
+            hi--;
+        }
+        if (in.right && hi < VN_GLITCH_MAX) {
+            hi++;
+        }
+        /* in.advance just loops back around to a fresh reroll above --
+         * no explicit handling needed. */
+    }
+}
+
+/** Debug menu's "trigger chance events" screen: DDLC's real
+ * `renpy.random.randint(0, N) == 0`-gated cosmetic events (the ghost menu,
+ * the disclaimer-text swap, ...), listed with their real odds and actual
+ * reachability in this engine -- most are architecturally blocked on
+ * persistent.playthrough always being 0 (see vn.h's own VN_PLAYTHROUGH_VAR
+ * comment and TODO.md), not just "not implemented yet", so an honest status
+ * readout is more useful here than a fake "trigger" button that can't
+ * actually reproduce what the real game does. Where a *real* random
+ * mechanic already exists in this engine (glitchtext(), the tear glitch),
+ * this points at the debug menu item that already exercises it instead of
+ * duplicating it here. */
+static void run_debug_events_test(void)
+{
+    static const char *const lines[] = {
+        "Ghost menu (1/64 per boot):",
+        "  blocked -- playthrough always 0",
+        "Disclaimer text swap (1/4):",
+        "  blocked -- same playthrough gate",
+        "Monika's-eyes glitch:",
+        "  real, gated on real story state",
+        "Poem sticker/jumpscare events:",
+        "  not implemented (see TODO.md)",
+        "Glitch text (glitchtext()):",
+        "  implemented -- see the test above",
+        "Tear glitch:",
+        "  implemented -- see its own toggle",
+    };
+    input_t in;
+    int y = 10;
+
+    render_backdrop(COL_BOX_FILL);
+    render_text("Trigger chance events", 14, y, COL_NAME);
+    y += 18;
+    for (size_t i = 0; i < sizeof(lines) / sizeof(lines[0]); i++) {
+        render_text(lines[i], 14, y, COL_WHITE);
+        y += 15;
+    }
+    render_text("2nd / Enter to return", 14, SCREEN_H - 20, COL_BOX_EDGE);
+    render_present(TRANS_CUT);
+    gfx_Wait();
+
+    do {
+        input_poll(&in);
+    } while (!in.advance && !quit_requested);
+}
+
 /** Debug menu diagnostic: dumps the current scene's background id, whether
  * assets_debug_is_cg() thinks it's a CG (baked with its own private
  * palette, per DCGIDX), and the first few RGB565 entries of whatever
@@ -521,7 +756,8 @@ static bool run_debug_chapter_menu(vn_vm_t *vm)
 static void run_debug_menu(vn_vm_t *vm)
 {
     enum {
-        DBG_POEM, DBG_TEXT, DBG_SCENEINFO, DBG_TEAR, DBG_WINDOW, DBG_CHAPTERS,
+        DBG_POEM, DBG_TEXT, DBG_FONT, DBG_ANIM, DBG_CG, DBG_GLITCH, DBG_EVENTS,
+        DBG_SCENEINFO, DBG_TEAR, DBG_WINDOW, DBG_CHAPTERS,
         DBG_DEL_SAYORI, DBG_DEL_NATSUKI, DBG_DEL_YURI, DBG_DEL_MONIKA,
         DBG_ERASE, DBG_CLOSE, DBG_ACTION_MAX,
     };
@@ -541,6 +777,26 @@ static void run_debug_menu(vn_vm_t *vm)
 
         actions[count] = DBG_TEXT;
         strcpy(labels[count], "Dialogue text render test");
+        count++;
+
+        actions[count] = DBG_FONT;
+        strcpy(labels[count], "Text font test");
+        count++;
+
+        actions[count] = DBG_ANIM;
+        strcpy(labels[count], "Animation test");
+        count++;
+
+        actions[count] = DBG_CG;
+        strcpy(labels[count], "External CG test");
+        count++;
+
+        actions[count] = DBG_GLITCH;
+        strcpy(labels[count], "Glitch text render test");
+        count++;
+
+        actions[count] = DBG_EVENTS;
+        strcpy(labels[count], "Trigger chance events");
         count++;
 
         if (vm) {
@@ -613,6 +869,26 @@ static void run_debug_menu(vn_vm_t *vm)
 
             case DBG_TEXT:
                 run_debug_text_test();
+                break;
+
+            case DBG_FONT:
+                run_debug_font_test();
+                break;
+
+            case DBG_ANIM:
+                run_debug_anim_test();
+                break;
+
+            case DBG_CG:
+                run_debug_cg_test();
+                break;
+
+            case DBG_GLITCH:
+                run_debug_glitch_test();
+                break;
+
+            case DBG_EVENTS:
+                run_debug_events_test();
                 break;
 
             case DBG_SCENEINFO:
