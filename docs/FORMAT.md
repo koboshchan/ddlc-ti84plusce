@@ -1112,13 +1112,31 @@ bigger feature than this section originally assumed.
 
 ## Character presence AppVars
 
-`src/chars.c` creates four empty AppVars — `SAYORI`, `NATSUKI`, `YURI`,
-`MONIKA` — as the on-calc stand-in for each character's Ren'Py `.chr` file.
-They carry no content; only their existence is meaningful. The Act 2/3 "file
-deletion" meta effect is implemented as `ti_Delete` on the relevant AppVar,
-and `chars_present()` lets the engine ask the filesystem directly rather than
-tracking deletion state separately. `chars_init()` only creates AppVars that
-are missing, so a deletion from a prior session persists across restarts.
+Four empty AppVars — `SAYORI`, `NATSUKI`, `YURI`, `MONIKA` — are the on-calc
+stand-in for each character's Ren'Py `.chr` file, baked into the bundle
+already present (`tools/import_game.py`'s `do_package()`). They carry no
+content; only their existence is meaningful. The meta "file deletion" effect
+(`src/chars.c`) is implemented as `ti_Delete` on the relevant AppVar, and
+`chars_present()` lets the engine ask the filesystem directly rather than
+tracking deletion state separately.
+
+`chars_init()` itself doesn't touch these four at all — it only checks for
+a `DINIT` marker AppVar, which (unlike the character AppVars) is never
+baked into the bundle, only ever created here at runtime. Present means
+some earlier boot of this same flashed `.b84` already ran this, so the
+character AppVars are whatever the player's left them as since and nothing
+happens; missing means this is the first boot since flashing, `DINIT` gets
+created, and there's nothing else to do since the character AppVars ship
+already present. This split exists because a naive "create any of the 4
+that are missing" loop run on every boot can't tell "never existed" apart
+from "deliberately deleted in a previous session" — it would silently
+resurrect a deleted character the next time the program launched, which an
+earlier version of this actually did (confirmed live: chars_init() cannot
+distinguish those two cases from the character AppVars' own state alone).
+
+Wiring an `OP_*` to trigger `chars_delete()` from the bytecode — the actual
+story content a deletion should unlock — is deferred to the meta/glitch
+content milestone; today only the persistence primitive exists.
 
 ## Poem minigame
 

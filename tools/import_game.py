@@ -761,11 +761,26 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
         appvars.append(write_appvar(export_cgpack.build_fingerprint(manifest),
                                     "DCGVER", appvar_dir))
 
-    # Halogen (index 0, default/body text) + RifficFree-Bold (index 1,
-    # namebox + menu labels) -- see convert_fonts.py's own docstring for why
-    # only these two of fonts.rpa's several bundled fonts are used.
+    # Aller_Rg (index 0, default/body text) + RifficFree-Bold (index 1,
+    # namebox + menu labels) -- see convert_fonts.py's own docstring for
+    # which of fonts.rpa's several bundled fonts these are and why.
     fontpack = convert_fonts.build_fontpack(raw_dir, build_dir)
     appvars.append(write_appvar(fontpack.read_bytes(), "DFONTS", appvar_dir))
+
+    # The 4 real DDLC character ".chr" file stand-ins (src/chars.c/.h) --
+    # empty AppVars named after each character, whose mere existence *is*
+    # the "not deleted" state (ti_Delete removes one to represent deletion,
+    # exactly like removing the real .chr file on PC). Baked into the
+    # bundle here, at their fresh/undeleted state, rather than created by
+    # chars_init() at every boot -- a runtime create-if-missing loop can't
+    # tell "never existed" apart from "deliberately deleted in a previous
+    # session", so it would silently undo any deletion on every restart.
+    # chars_init()'s own DINIT marker (never baked into the bundle, only
+    # ever created at runtime) is what makes first-boot-after-flash
+    # (these AppVars present, exactly as shipped) distinct from every
+    # later boot (leave them alone, whatever state they're actually in).
+    for name in ("SAYORI", "NATSUKI", "YURI", "MONIKA"):
+        appvars.append(write_appvar(b"", name, appvar_dir))
 
     total = sum(p.stat().st_size for p in appvars)
     print(f"{len(appvars)} AppVars, {total} bytes total "

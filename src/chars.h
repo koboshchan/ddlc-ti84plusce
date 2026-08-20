@@ -4,9 +4,11 @@
  *
  * In the original game, Monika's Act 2/3 corruption "deletes" a character by
  * removing their .chr file from disk. The calc equivalent: one empty AppVar
- * per character (SAYORI/NATSUKI/YURI/MONIKA). Deleting the AppVar with
- * ti_Delete *is* the effect -- no game logic needs to track deletion state
- * separately, since chars_present() just asks the filesystem.
+ * per character (SAYORI/NATSUKI/YURI/MONIKA), baked into the bundle already
+ * present (tools/import_game.py's do_package()) rather than created here.
+ * Deleting the AppVar with ti_Delete *is* the effect -- no game logic needs
+ * to track deletion state separately, since chars_present() just asks the
+ * filesystem.
  *
  * The AppVars are empty by design: this module only tracks presence/absence,
  * not content. Wiring an OP_* to trigger chars_delete() from the bytecode is
@@ -28,10 +30,16 @@ enum {
 };
 
 /**
- * Ensure all 4 character AppVars exist, creating any that are missing.
- * Safe to call every boot: existing AppVars (including ones already deleted
- * by chars_delete() in a prior session) are left untouched, so deletion
- * persists across restarts instead of being silently undone.
+ * First boot after this .b84 was flashed, marks it done and returns --
+ * nothing else to do, since the 4 character AppVars ship already present
+ * in the bundle. Every later boot, the marker AppVar (DINIT, never itself
+ * baked into the bundle -- only ever created here) already exists, so this
+ * returns immediately without touching the character AppVars at all,
+ * whatever state they're actually in. That distinction is the whole point:
+ * a naive "create any of the 4 that are missing" loop run on every boot
+ * can't tell "never existed" apart from "deliberately deleted in a
+ * previous session", so it would silently resurrect a deleted character
+ * the very next time the program launched.
  */
 void chars_init(void);
 

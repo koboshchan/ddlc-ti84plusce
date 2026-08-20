@@ -14,21 +14,22 @@ static const char *const chars_name[CHAR_COUNT] = {
 
 void chars_init(void)
 {
-    for (uint8_t i = 0; i < CHAR_COUNT; i++) {
-        /* Already exists (present, or previously deleted-and-not-recreated
-         * by this loop since "r" only succeeds on the former) -- leave it
-         * alone either way. Only a missing AppVar gets created. */
-        uint8_t handle = ti_Open(chars_name[i], "r");
-        if (handle) {
-            ti_Close(handle);
-            continue;
-        }
+    /* Present means some previous boot (of this same flashed .b84) already
+     * ran this -- the 4 character AppVars are whatever the player's left
+     * them as since, and this function has nothing left to do. See
+     * chars_init()'s own header comment for why that check has to be a
+     * separate marker rather than re-deriving it from the character
+     * AppVars themselves. */
+    uint8_t handle = ti_Open("DINIT", "r");
+    if (handle) {
+        ti_Close(handle);
+        return;
+    }
 
-        handle = ti_Open(chars_name[i], "w");
-        if (handle) {
-            ti_SetArchiveStatus(true, handle);
-            ti_Close(handle);
-        }
+    handle = ti_Open("DINIT", "w");
+    if (handle) {
+        ti_SetArchiveStatus(true, handle);
+        ti_Close(handle);
     }
 }
 
