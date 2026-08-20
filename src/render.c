@@ -727,6 +727,15 @@ static void apply_tear(const vn_scene_t *scene, unsigned t)
         if (off == 0) {
             continue;
         }
+        /* Normalized to [0, SCREEN_W) once per chunk, not per pixel -- the
+         * eZ80 has no hardware divider, so the % this used to do inside
+         * the x loop below (up to SCREEN_W * rows_per_chunk times per
+         * chunk per frame) was the actual cause of real, reported lag.
+         * One % here instead is negligible. */
+        int off_wrapped = (int)off % SCREEN_W;
+        if (off_wrapped < 0) {
+            off_wrapped += SCREEN_W;
+        }
         /* off > 0 wraps a copy of the row from the left back in on the
          * right (and vice versa) rather than leaving a blank edge -- an
          * exposed solid-color strip would read as a rendering bug, not
@@ -740,14 +749,16 @@ static void apply_tear(const vn_scene_t *scene, unsigned t)
             uint8_t *row = (uint8_t *)gfx_vbuffer + (size_t)y * SCREEN_W;
             uint8_t  tmp[SCREEN_W];
             memcpy(tmp, row, SCREEN_W);
-            for (int x = 0; x < SCREEN_W; x++) {
-                int sx = x - off;
-                sx %= SCREEN_W;
-                if (sx < 0) {
-                    sx += SCREEN_W;
-                }
-                row[x] = tmp[sx];
+            /* row[x] = tmp[(x - off_wrapped) mod SCREEN_W], done as two
+             * contiguous block copies instead of a 320-iteration
+             * scalar/branch loop -- off_wrapped is already in
+             * [0, SCREEN_W), so the wrap point is exactly one split, no
+             * per-pixel branching needed either. */
+            if (off_wrapped == 0) {
+                continue;
             }
+            memcpy(row, tmp + (SCREEN_W - off_wrapped), off_wrapped);
+            memcpy(row + off_wrapped, tmp, SCREEN_W - off_wrapped);
         }
     }
 }
