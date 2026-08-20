@@ -40,8 +40,16 @@ def rasterize_glyph(font: ImageFont.FreeTypeFont, ch: str, cell_w: int,
     img = Image.new("L", (cell_w, cell_h), 0)
     draw = ImageDraw.Draw(img)
     draw.text((0, ascent), ch, font=font, fill=255, anchor="ls")
-    advance = round(draw.textlength(ch, font=font))
-    if advance <= 0:
+    # +1: draw.textlength() is the font's own natural advance, but at these
+    # pixel sizes its side bearing is often a fraction of a pixel that
+    # round() collapses to 0 -- with no sub-pixel resolution to fall back
+    # on, that reads as adjacent glyphs having no gap at all ("bunched
+    # together" -- confirmed live: real DDLC's own main menu has visible
+    # letter spacing this didn't). A flat +1 guarantees at least one blank
+    # column between glyphs regardless of what the font's own metrics
+    # rounded down to.
+    advance = round(draw.textlength(ch, font=font)) + 1
+    if advance <= 1:
         advance = max(1, cell_w // 2)  # space and other zero-ink glyphs still need real width
     px = img.load()
     bitmap = [[px[x, y] >= THRESHOLD for x in range(cell_w)] for y in range(cell_h)]
