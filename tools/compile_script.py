@@ -884,16 +884,25 @@ class Compiler:
             # `hide white`/`hide black` removes just the overlay) -- since
             # this engine has no overlay layer, faking the flash means
             # actually swapping the background out here and remembering
-            # what it was, so _emit_Hide can swap it back. Any other bare
-            # tag (`black` used alone, `end`, poem_specialN, ...) is a real
-            # terminal full-screen image with no matching Hide expected, so
-            # it just clears any stale flash bookkeeping instead.
-            if imgname[0] in ("white", "black"):
-                self._flash_tag = imgname[0]
-                self._pre_flash_bg = self._current_bg
-            else:
-                self._flash_tag = None
-                self._pre_flash_bg = None
+            # what it was, so _emit_Hide can swap it back.
+            #
+            # Every bare tag gets this tracked now, not just white/black --
+            # an earlier version assumed any other bare tag (`end`,
+            # poem_specialN, ...) was a real terminal image with no
+            # matching Hide expected, but that's false for at least 4 real
+            # sites found live (ch22's `y_glitch_head`/`blood_eye`/
+            # `blood_eye2`, poemresponses2's `darkred`): DDLC uses this
+            # same overlay-flash idiom for other full-screen effects too,
+            # not just white/black specifically, and the old assumption
+            # left their `hide` calls skipped ("unknown character tag"),
+            # which would have stuck the scene on that image forever with
+            # no way back -- the exact same bug class the white/black fix
+            # addressed, just for tags that fix didn't cover. If a bare
+            # tag genuinely has no matching Hide (a real terminal image),
+            # this bookkeeping just sits unused until the next real scene
+            # change resets it (_emit_Scene) -- harmless either way.
+            self._flash_tag = imgname[0]
+            self._pre_flash_bg = self._current_bg
             self.asm.scene(scene_id, vnasm.TRANS_CUT)
             self._current_bg = scene_id
             self.last_sprite.clear()
