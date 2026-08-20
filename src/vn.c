@@ -81,6 +81,21 @@ static uint32_t read_u24(vn_vm_t *vm)
     return v;
 }
 
+static uint32_t read_u32(vn_vm_t *vm)
+{
+    if (!have(vm, 4)) {
+        vm->status = VN_ERR_BOUNDS;
+        return 0;
+    }
+    uint32_t off = VN_CHUNK_OFFSET(vm->pc);
+    uint32_t v = (uint32_t)vm->code[off] |
+                 ((uint32_t)vm->code[off + 1] << 8) |
+                 ((uint32_t)vm->code[off + 2] << 16) |
+                 ((uint32_t)vm->code[off + 3] << 24);
+    vm->pc += 4;
+    return v;
+}
+
 /* ---------------------------------------------------------------------------
  * Actor slots
  * ------------------------------------------------------------------------ */
@@ -428,6 +443,17 @@ bool vn_step(vn_vm_t *vm)
             break;
         }
 
+        case OP_PAUSE_LONG: {
+            uint32_t ms = read_u32(vm);
+            if (vm->status != VN_RUNNING) {
+                break;
+            }
+            if (vm->host->pause) {
+                vm->host->pause(vm->host->ctx, ms);
+            }
+            break;
+        }
+
         case OP_MINIGAME: {
             uint8_t winner_var = read_u8(vm);
             uint8_t s_var      = read_u8(vm);
@@ -490,6 +516,32 @@ bool vn_step(vn_vm_t *vm)
                 vm->glitch_buf[i] = glyphs[vn_rand_next(vm) % (sizeof(glyphs) - 1)];
             }
             vm->glitch_buf[count] = '\0';
+            break;
+        }
+
+        case OP_CHAR_CHECK: {
+            uint8_t  ch  = read_u8(vm);
+            uint32_t tgt = read_u24(vm);
+            if (vm->status != VN_RUNNING) {
+                break;
+            }
+            bool present = vm->host->char_present
+                         ? vm->host->char_present(vm->host->ctx, ch)
+                         : true;
+            if (!present) {
+                vm->pc = tgt;
+            }
+            break;
+        }
+
+        case OP_CHAR_DELETE: {
+            uint8_t ch = read_u8(vm);
+            if (vm->status != VN_RUNNING) {
+                break;
+            }
+            if (vm->host->char_delete) {
+                vm->host->char_delete(vm->host->ctx, ch);
+            }
             break;
         }
 
@@ -574,6 +626,13 @@ bool vn_step(vn_vm_t *vm)
         }
 
         case OP_END:
+            vm->status = VN_FINISHED;
+            break;
+
+        case OP_QUIT:
+            if (vm->host->request_quit) {
+                vm->host->request_quit(vm->host->ctx);
+            }
             vm->status = VN_FINISHED;
             break;
 

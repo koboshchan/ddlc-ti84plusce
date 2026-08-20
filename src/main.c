@@ -1034,7 +1034,7 @@ static uint8_t host_menu(void *ctx, const vn_scene_t *scene,
  * navigation and pause-menu-open keys with no meaning mid-beat, and
  * reaching the pause menu from here isn't possible anyway (this callback
  * has no vm to hand it). */
-static void host_pause(void *ctx, uint16_t ms)
+static void host_pause(void *ctx, uint32_t ms)
 {
     (void)ctx;
 
@@ -1089,6 +1089,33 @@ static uint8_t host_minigame(void *ctx, int16_t *s, int16_t *n, int16_t *y)
     return poem_run(s, n, y);
 }
 
+/* Compiles DDLC's own `try: renpy.file("../characters/X.chr")
+ * except: renpy.jump(...)` idiom -- see vn.h's OP_CHAR_CHECK. */
+static bool host_char_present(void *ctx, uint8_t character)
+{
+    (void)ctx;
+    return chars_present(character);
+}
+
+/* Compiles DDLC's own `delete_character(name)` helper for real -- see
+ * vn.h's OP_CHAR_DELETE. */
+static void host_char_delete(void *ctx, uint8_t character)
+{
+    (void)ctx;
+    chars_delete(character);
+}
+
+/* A real `renpy.quit()` -- see vn.h's OP_QUIT. quit_requested is the same
+ * "unwind everything and exit" flag every other quit path already sets
+ * (see its own top-of-file comment); vn_run() itself still just returns
+ * VN_FINISHED either way, so every caller has to check this afterward,
+ * same as they already do for every other quit source. */
+static void host_request_quit(void *ctx)
+{
+    (void)ctx;
+    quit_requested = true;
+}
+
 /* .ctx is set to &vm once, in main(), after vm exists -- host_say needs it
  * to reach the pause menu (see wait_for_advance). */
 static vn_host_t host = {
@@ -1102,6 +1129,9 @@ static vn_host_t host = {
     .minigame   = host_minigame,
     .resolve_label = assets_resolve_label,
     .delete_saves  = host_delete_saves,
+    .char_present  = host_char_present,
+    .char_delete   = host_char_delete,
+    .request_quit  = host_request_quit,
     .ctx        = NULL,
 };
 

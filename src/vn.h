@@ -142,6 +142,55 @@ enum vn_op {
                           * "corrupted" ASCII punctuation set instead --
                           * same "approximate, don't just drop it" call as
                           * the zoom/dizzy ATL simplifications.          */
+
+    OP_CHAR_CHECK = 0x19, /* ch:u8 tgt:u24 (packed) -- if the host's
+                          * char_present callback reports @p ch (TAG_TO_CHAR
+                          * order) missing, jump to @p tgt; otherwise fall
+                          * through. Compiles DDLC's own
+                          * `try: renpy.file("../characters/X.chr")
+                          * except: renpy.jump(...)` idiom (this compiler
+                          * has no exception-handling support at all --
+                          * see compile_script.py's _match_char_file_check())
+                          * -- confirmed real, e.g. script-ch0.rpyc's own
+                          * opening lines gate `label ch0_kill` (the
+                          * "PLEASE MAKE IT STOP" meta easter egg) exactly
+                          * this way, checking monika.chr specifically. */
+
+    OP_CHAR_DELETE = 0x1A, /* ch:u8 -- calls the host's char_delete callback
+                          * for @p ch (TAG_TO_CHAR order). Compiles DDLC's
+                          * own `delete_character(name)` helper
+                          * (definitions.rpyc: `os.remove(".../name.chr")`)
+                          * for real, deleting the on-calc AppVar so a later
+                          * boot's own OP_CHAR_CHECK sees it gone too --
+                          * confirmed real via ch0_kill's own closing lines
+                          * (deletes all four character files right before
+                          * renpy.quit()) and splash.rpyc's `s_kill_early`
+                          * check (gated on Sayori's file specifically,
+                          * which ch0_kill's own deletion just caused). */
+
+    OP_QUIT = 0x1B, /* real `renpy.quit()`, distinct from OP_END -- see
+                          * vn_host_t's own request_quit for why the
+                          * distinction matters (main.c would otherwise
+                          * treat a script-requested quit exactly like
+                          * running out of content and keep going, e.g. into
+                          * name entry, instead of actually exiting). */
+
+    OP_PAUSE_LONG = 0x1C, /* ms:u32 -- same wait-up-to-@p ms-or-a-click
+                          * behavior as OP_PAUSE, just with room for a delay
+                          * over OP_PAUSE's own 65.535s ceiling (a plain
+                          * u16). The one real use: splash.rpyc's
+                          * `s_kill_early` ending shows its closing "Now
+                          * everyone can be happy." line only after the
+                          * player's been idle on the monochrome CG for a
+                          * real 10 minutes (600 seconds) -- an ATL `pause
+                          * 600` on the Text() displayable itself, not a
+                          * script-level statement this compiler would
+                          * otherwise ever see (see compile_script.py's
+                          * _match_delayed_reveal_text()). Simplified from
+                          * the real ATL's own 60-second fade-in to an
+                          * instant reveal once the wait ends -- same
+                          * "approximate, don't just drop it" call as the
+                          * zoom/dizzy ATL simplifications elsewhere. */
 };
 
 /** Comparison selectors for OP_IF. */
@@ -353,8 +402,11 @@ typedef struct {
     /** Redraw after a scene/show/hide, running @p trans (enum vn_trans). */
     void (*update)(void *ctx, const vn_scene_t *scene, uint8_t trans);
 
-    /** Idle for @p frames frames. */
-    void (*pause)(void *ctx, uint16_t ms);
+    /** Idle for @p ms milliseconds, or until the player advances/quits,
+     * whichever comes first (0 means no timeout at all). uint32_t so
+     * OP_PAUSE_LONG's own delay can pass through unwidened -- OP_PAUSE's
+     * u16 wire value is still cast up the same way. */
+    void (*pause)(void *ctx, uint32_t ms);
 
     /** Poll for a quit request (CLEAR on calc, EOF on host). */
     bool (*quit)(void *ctx);
@@ -407,6 +459,38 @@ typedef struct {
      * flourish.
      */
     void (*delete_saves)(void *ctx);
+
+    /**
+     * True if @p character's (TAG_TO_CHAR order) on-calc ".chr" AppVar
+     * still exists -- see OP_CHAR_CHECK, src/chars.c's chars_present().
+     * Optional: NULL means every character always reads present, same
+     * spirit as @p pause/@p minigame being optional -- the meta
+     * file-deletion easter egg just never triggers rather than crashing.
+     */
+    bool (*char_present)(void *ctx, uint8_t character);
+
+    /**
+     * Deletes @p character's (TAG_TO_CHAR order) on-calc ".chr" AppVar for
+     * real -- see OP_CHAR_DELETE, src/chars.c's chars_delete(). Optional:
+     * NULL means the call is silently skipped, same spirit as @p pause/
+     * @p delete_saves -- the deletion just doesn't happen rather than
+     * crashing.
+     */
+    void (*char_delete)(void *ctx, uint8_t character);
+
+    /**
+     * A real `renpy.quit()` was reached -- see OP_QUIT. Unlike ordinary
+     * running-out-of-content (OP_END, VN_FINISHED either way), this means
+     * the whole app should exit, not just this vn_run() call: main.c's own
+     * `quit_requested` global is exactly the existing "unwind everything
+     * and exit" signal (see its own comment) every other quit path already
+     * sets, so this just sets that same flag rather than inventing a
+     * second one. Optional: NULL means the call is silently skipped, same
+     * spirit as @p pause/@p delete_saves -- a script-requested quit
+     * degrades to "keep going" rather than crashing (matches OP_END's own
+     * existing behavior when this callback isn't wired up).
+     */
+    void (*request_quit)(void *ctx);
 
     void *ctx;
 } vn_host_t;

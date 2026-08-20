@@ -36,6 +36,10 @@ OP_TEAR_HIDE = 0x15
 OP_WINDOW_HIDE = 0x16
 OP_WINDOW_SHOW = 0x17
 OP_GLITCHTEXT = 0x18
+OP_CHAR_CHECK = 0x19
+OP_CHAR_DELETE = 0x1A
+OP_QUIT = 0x1B
+OP_PAUSE_LONG = 0x1C
 
 CMP_EQ, CMP_NE, CMP_LT, CMP_LE, CMP_GT, CMP_GE = range(6)
 TRANS_CUT, TRANS_FADE = 0, 1
@@ -96,6 +100,11 @@ class Assembler:
         if not -0x8000 <= v <= 0x7FFF:
             raise AsmError(f"i16 out of range: {v}")
         self.code += struct.pack("<h", v)
+
+    def _u32(self, v: int) -> None:
+        if not 0 <= v <= 0xFFFFFFFF:
+            raise AsmError(f"u32 out of range: {v}")
+        self.code += struct.pack("<I", v)
 
     def _ref(self, label: str) -> None:
         """Emit a u24 placeholder to be backpatched by resolve()."""
@@ -299,12 +308,31 @@ class Assembler:
         self._u8(lo)
         self._u8(hi)
 
+    def char_check(self, character: int, label: str) -> None:
+        """Compiles DDLC's own `try: renpy.file("../characters/X.chr")
+        except: renpy.jump(label)` idiom -- see OP_CHAR_CHECK."""
+        self._u8(OP_CHAR_CHECK)
+        self._u8(character)
+        self._ref(label)
+
+    def char_delete(self, character: int) -> None:
+        """Compiles DDLC's own `delete_character(name)` helper (a real
+        `os.remove(".../name.chr")`) -- see OP_CHAR_DELETE."""
+        self._u8(OP_CHAR_DELETE)
+        self._u8(character)
+
     def pause(self, ms: int) -> None:
         """0 means wait for input with no timeout (DDLC's own bare
         `pause()`); otherwise waits up to @ms milliseconds or until the
         player advances, whichever comes first."""
         self._u8(OP_PAUSE)
         self._u16(ms)
+
+    def pause_long(self, ms: int) -> None:
+        """Same as pause(), but for a delay over OP_PAUSE's own 65.535s
+        ceiling -- see OP_PAUSE_LONG."""
+        self._u8(OP_PAUSE_LONG)
+        self._u32(ms)
 
     def sound(self, id_: int = 0) -> None:
         """Always a no-op on-calc (no CE audio) -- reserved so audio-control
@@ -314,6 +342,11 @@ class Assembler:
 
     def end(self) -> None:
         self._u8(OP_END)
+
+    def quit(self) -> None:
+        """Compiles a real `renpy.quit()` -- distinct from end() (OP_END,
+        "ran out of content"): see OP_QUIT."""
+        self._u8(OP_QUIT)
 
     def minigame(self, winner_var: int, s_var: int, n_var: int, y_var: int) -> None:
         """Runs the host-side minigame screen; stores its outcome across

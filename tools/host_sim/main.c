@@ -195,7 +195,7 @@ static void host_update(void *ctx, const vn_scene_t *scene, uint8_t trans)
     printf("]\n");
 }
 
-static void host_pause(void *ctx, uint16_t ms)
+static void host_pause(void *ctx, uint32_t ms)
 {
     (void)ctx;
     if (opt_trace) {
@@ -251,6 +251,38 @@ static bool host_resolve_label(void *ctx, int16_t str_id, uint32_t *addr_out)
     return false;
 }
 
+/* --absent=sayori,monika,... (see parse_absent()) -- one bit per TAG_TO_CHAR
+ * index, set means that character's on-calc ".chr" AppVar is simulated
+ * missing. Lets a replay deliberately exercise OP_CHAR_CHECK/OP_CHAR_DELETE
+ * (the monika.chr/s_kill_early meta easter eggs) without a real calc. */
+static uint8_t absent_mask;
+static uint8_t deleted_mask; /* what OP_CHAR_DELETE actually did this run */
+
+static bool host_char_present(void *ctx, uint8_t character)
+{
+    (void)ctx;
+    return !((absent_mask | deleted_mask) & (1u << character));
+}
+
+static void host_char_delete(void *ctx, uint8_t character)
+{
+    (void)ctx;
+    deleted_mask |= (uint8_t)(1u << character);
+}
+
+/* Set by OP_QUIT (a real `renpy.quit()`) -- see vn_host_t's own
+ * request_quit. vn_run() itself still just returns VN_FINISHED either way,
+ * so this is the only way a replay can tell "the script asked to quit" apart
+ * from "ran out of content" (main() cares about exactly this distinction --
+ * see host_request_quit()'s own comment there). */
+static bool quit_requested;
+
+static void host_request_quit(void *ctx)
+{
+    (void)ctx;
+    quit_requested = true;
+}
+
 static const vn_host_t host = {
     .string     = host_string,
     .say        = host_say,
@@ -264,8 +296,29 @@ static const vn_host_t host = {
      * regression tool that isn't rendering anything. */
     .resolve_label = host_resolve_label,
     .delete_saves  = host_delete_saves,
+    .char_present  = host_char_present,
+    .char_delete   = host_char_delete,
+    .request_quit  = host_request_quit,
     .ctx        = NULL,
 };
+
+static void parse_absent(const char *arg)
+{
+    static const char *const names[] = {"sayori", "natsuki", "yuri", "monika"};
+    const char *p = arg;
+
+    while (*p != '\0') {
+        const char *comma = strchr(p, ',');
+        size_t      len   = comma ? (size_t)(comma - p) : strlen(p);
+        for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+            if (strlen(names[i]) == len && strncmp(p, names[i], len) == 0) {
+                absent_mask |= (uint8_t)(1u << i);
+                break;
+            }
+        }
+        p = comma ? comma + 1 : p + len;
+    }
+}
 
 static void parse_choices(const char *arg)
 {
@@ -383,6 +436,8 @@ int main(int argc, char **argv)
             opt_seed = (uint32_t)strtoul(argv[i] + 7, NULL, 0);
         } else if (strncmp(argv[i], "--choices=", 10) == 0) {
             parse_choices(argv[i] + 10);
+        } else if (strncmp(argv[i], "--absent=", 9) == 0) {
+            parse_absent(argv[i] + 9);
         } else if (strncmp(argv[i], "--vnb=", 6) == 0) {
             if (!load_vnb(argv[i] + 6)) {
                 return 2;
@@ -460,6 +515,17 @@ int main(int argc, char **argv)
     printf("pc     : %u / %u\n", (unsigned)VN_CHUNK_OFFSET(vm.pc), (unsigned)vm.code_size);
     printf("lines  : %u\n", say_count);
     printf("menus  : %u\n", menu_count);
+    printf("quit   : %s\n", quit_requested ? "yes (real renpy.quit())" : "no");
+    if (deleted_mask) {
+        static const char *const names[] = {"sayori", "natsuki", "yuri", "monika"};
+        printf("deleted:");
+        for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+            if (deleted_mask & (1u << i)) {
+                printf(" %s", names[i]);
+            }
+        }
+        printf("\n");
+    }
 
     /* Anything other than a clean finish is a build failure. */
     return status == VN_FINISHED ? 0 : 1;

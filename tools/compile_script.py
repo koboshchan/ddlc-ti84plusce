@@ -330,6 +330,14 @@ class Compiler:
     _current_bg: int | None = field(default=None, init=False)
     _flash_tag: str | None = field(default=None, init=False)   # 'white'/'black' currently "up", or None
     _pre_flash_bg: int | None = field(default=None, init=False)  # _current_bg from just before it went up
+    # One-shot: set by _emit_Show right after a delayed-reveal `Show
+    # Text(...)` (see _match_atl_delay_seconds) already emitted its own
+    # pause_long()+narrate() pair, which together already provide the same
+    # "wait for a click" that DDLC's own very next statement -- a bare
+    # `pause` UserStatement, s_kill_early's real line 378 -- would otherwise
+    # duplicate (an extra, unnecessary click before renpy.quit()). Consumed
+    # (and cleared) by _emit_UserStatement's own bare-`pause` case.
+    _suppress_next_bare_pause: bool = field(default=False, init=False)
     # Characters actually on screen right now (a Show adds, a real Hide
     # removes, any real background change clears it) -- separate from
     # last_sprite/last_pos/last_flags, which remember a character's *last*
@@ -818,6 +826,21 @@ class Compiler:
             # file, so it can't go through scene_id() below. Always a
             # literal string in the one real use found, unlike
             # splash_warning's one dynamic case.
+            delay_s = _atl_delay_seconds(getattr(node, "atl", None))
+            if delay_s is not None:
+                # s_kill_early's own real closing beat: the Text displayable
+                # itself carries a bare ATL `pause 600` (confirmed real via
+                # its own atl block, not visible at the statement level --
+                # see OP_PAUSE_LONG's own comment) before a 60s fade-in this
+                # engine simplifies away, same call as the zoom/dizzy ATL
+                # simplifications elsewhere. narrate() already provides its
+                # own "wait for a click" after showing the text, so the very
+                # next statement -- splash.rpyc's own bare `pause` right
+                # before `renpy.quit()` -- would just be a second, redundant
+                # click; _emit_UserStatement's bare-`pause` case checks this
+                # flag and skips emitting that one.
+                self.asm.pause_long(round(delay_s * 1000))
+                self._suppress_next_bare_pause = True
             self.asm.narrate(_strip_text_tags(text_literal))
             return
 
@@ -1556,6 +1579,14 @@ class Compiler:
             # own closing beat waits here for a click before renpy.quit().
             # ms=0 is OP_PAUSE's own "wait for a click, no timeout" sentinel,
             # same as a no-args `pause()` call.
+            if self._suppress_next_bare_pause:
+                # The immediately preceding `Show Text(...)` already emitted
+                # its own pause_long()+narrate() pair, which already ends in
+                # exactly this same "wait for a click" -- see _emit_Show's
+                # own comment. Emitting this one too would just be a second,
+                # unnecessary click before renpy.quit().
+                self._suppress_next_bare_pause = False
+                return
             self.asm.pause(0)
             return
         if stripped.startswith("pause "):
@@ -1627,6 +1658,25 @@ class Compiler:
             self.asm.nop()
 
     def _emit_python_stmt(self, stmt) -> bool:
+        char_check = _match_char_file_check(stmt)
+        if char_check is not None:
+            char_index, label = char_check
+            self.asm.char_check(char_index, label)
+            return True
+
+        flag_check = _match_playthrough_char_flag_check(stmt)
+        if flag_check is not None:
+            char_index, flag_var = flag_check
+            flag_slot = self._var_slot(flag_var)
+            missing_label = self._gensym("char_missing")
+            done_label = self._gensym("char_flag_done")
+            self.asm.char_check(char_index, missing_label)
+            self.asm.jump(done_label)
+            self.asm.label(missing_label)
+            self.asm.set(flag_slot, 1)
+            self.asm.label(done_label)
+            return True
+
         if (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
                 and _ident_name(stmt.value.func) == "pause"):
             # DDLC's own pause(seconds) helper (a thin renpy.pause()
@@ -1658,6 +1708,17 @@ class Compiler:
                 tag = _const_scalar(stmt.value.args[0])
                 if isinstance(tag, str) and tag in TAG_TO_CHAR:
                     self.asm.set(self._var_slot(self.DELETED_VARS[TAG_TO_CHAR[tag]]), 1)
+                    # The real `delete_character()` (definitions.rpyc) is
+                    # `os.remove(".../name.chr")` -- a real file deletion,
+                    # not just an in-story flag. Deleting the actual AppVar
+                    # too (not just the DELETED_VARS flag above) is what
+                    # makes a later boot's own OP_CHAR_CHECK/s_kill_early
+                    # check see it gone -- confirmed necessary by ch0_kill's
+                    # own closing lines deleting all four character files
+                    # right before quitting, which splash.rpyc's
+                    # `s_kill_early` check (Sayori's file specifically) then
+                    # has to detect on the very next launch.
+                    self.asm.char_delete(TAG_TO_CHAR[tag])
                     return True
                 return False
             if fn == "restore_all_characters" and not stmt.value.args:
@@ -1673,11 +1734,15 @@ class Compiler:
                 self.asm.delete_saves()
                 return True
             if fn == "renpy.quit" and not stmt.value.args:
-                # s_kill_early's own closing beat -- OP_END is exactly
-                # "finish now, unconditionally", which is what real Ren'Py
-                # quitting to the OS means for a player who's just reached
-                # the true end of what this compiled build has to show them.
-                self.asm.end()
+                # A real `renpy.quit()` -- s_kill_early's own closing beat,
+                # ch0_kill's "PLEASE MAKE IT STOP!" finale -- has to exit
+                # the whole app, not just this vn_run() call (which OP_END
+                # alone can't signal: it's the same "ran out of content"
+                # stub used for a label simply finishing, e.g.
+                # splashscreen's own `ret()` right before `Show intro`, and
+                # main.c would otherwise keep going straight into name
+                # entry/the title screen after either one). See OP_QUIT.
+                self.asm.quit()
                 return True
         if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
             var = _ident_name(stmt.targets[0])
@@ -2505,6 +2570,139 @@ def _randint_call(node) -> tuple[int, int] | None:
         lo, hi = _const_int(node.args[0]), _const_int(node.args[1])
         return (lo, hi) if lo is not None and hi is not None else None
     return None
+
+
+def _match_char_file_check(stmt) -> tuple[int, str] | None:
+    """(character_index, jump_label) if @p stmt is DDLC's own
+    `try: renpy.file("../characters/X.chr")
+     except: renpy.jump("Y")` idiom -- confirmed real at script-ch0.rpyc's
+    own opening lines, monika.chr's existence check gating `label
+    ch0_kill` (the "PLEASE MAKE IT STOP" meta easter egg). This compiler
+    has no real exception-handling support at all (see OP_CHAR_CHECK's
+    own comment) -- this hand-recognizes the one specific shape found,
+    the same way _match_glitchtext_call/_parse_tear_call hand-recognize
+    their own real idioms, rather than attempting to walk try/except in
+    general. None if @p stmt isn't this exact shape (a single `renpy.file`
+    call in the try body, one bare `except:` with a single `renpy.jump`
+    call in its body -- anything else, including a real exception type or
+    extra statements either side, is left unsupported)."""
+    if not isinstance(stmt, ast.Try):
+        return None
+    if (len(stmt.body) != 1 or len(stmt.handlers) != 1
+            or stmt.orelse or stmt.finalbody):
+        return None
+
+    call_stmt = stmt.body[0]
+    if not (isinstance(call_stmt, ast.Expr) and isinstance(call_stmt.value, ast.Call)
+            and _ident_name(call_stmt.value.func) == "renpy.file"
+            and len(call_stmt.value.args) == 1 and not call_stmt.value.keywords):
+        return None
+    path = _const_scalar(call_stmt.value.args[0])
+    if not isinstance(path, str):
+        return None
+    m = re.fullmatch(r"\.\./characters/(\w+)\.chr", path)
+    if m is None or m.group(1) not in TAG_TO_CHAR:
+        return None
+    char_index = TAG_TO_CHAR[m.group(1)]
+
+    handler = stmt.handlers[0]
+    if handler.type is not None or len(handler.body) != 1:
+        return None  # only a bare `except:` matches
+    jump_stmt = handler.body[0]
+    if not (isinstance(jump_stmt, ast.Expr) and isinstance(jump_stmt.value, ast.Call)
+            and _ident_name(jump_stmt.value.func) == "renpy.jump"
+            and len(jump_stmt.value.args) == 1 and not jump_stmt.value.keywords):
+        return None
+    label = _const_scalar(jump_stmt.value.args[0])
+    if not isinstance(label, str):
+        return None
+
+    return (char_index, label)
+
+
+def _atl_delay_seconds(atl) -> float | None:
+    """The delay (in seconds) of a bare ATL `pause N` statement inside @p
+    atl's own top-level statements, if any -- None if @p atl is absent or
+    has no such statement. ATL's own `pause N` is a RawMultipurpose whose
+    only content is a single unwarped expression (no warper/duration/
+    properties/splines): `(N, None)`. Confirmed real at splash.rpyc's own
+    `Show Text("Now everyone can be happy.", ...)` (its own ATL block sets
+    xalign/yalign/alpha 0.0, `pause 600`, then a 60s linear fade to alpha
+    0.5 -- see OP_PAUSE_LONG) -- this compiler has no general ATL
+    interpreter at all, so this hand-recognizes just the one shape needed
+    rather than attempting to walk ATL in general, same spirit as every
+    other _match_*() helper here."""
+    statements = getattr(atl, "statements", None) if atl is not None else None
+    if not statements:
+        return None
+    for stmt in statements:
+        if (type(stmt).__name__ == "RawMultipurpose" and not stmt.warper
+                and stmt.duration in (None, "0") and not stmt.properties
+                and not stmt.splines and len(stmt.expressions) == 1
+                and stmt.expressions[0][1] is None):
+            try:
+                return float(stmt.expressions[0][0])
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _match_playthrough_char_flag_check(stmt) -> tuple[int, str] | None:
+    """(character_index, flag_var_name) if @p stmt is splash.rpyc's own
+    `if persistent.playthrough == 0:
+         try: renpy.file("../characters/X.chr")
+         except: VAR = True`
+    idiom -- confirmed real at splash.rpyc's own `label splashscreen`
+    (line ~278), gating the `s_kill_early`/(implicitly) `s_kill_early`-style
+    flags that the game's later `if VAR:` checks branch on (see
+    _match_char_file_check's sibling comment for why this compiler can't
+    walk try/except in general). Unlike that sibling matcher, this one's
+    except body sets a flag rather than jumping -- the surrounding `if
+    persistent.playthrough == 0:` guard is always true for this engine (see
+    Compiler.PLAYTHROUGH_VAR's own comment), so it's matched literally
+    rather than evaluated, and the Try inside is otherwise identical in
+    shape. None if @p stmt isn't exactly this."""
+    if not (isinstance(stmt, ast.If) and len(stmt.body) == 1 and not stmt.orelse):
+        return None
+    test = stmt.test
+    if not (isinstance(test, ast.Compare) and isinstance(test.left, ast.Attribute)
+            and _ident_name(test.left) == "persistent.playthrough"
+            and len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq)
+            and len(test.comparators) == 1 and _const_scalar(test.comparators[0]) == 0):
+        return None
+
+    inner = stmt.body[0]
+    if not isinstance(inner, ast.Try):
+        return None
+    if len(inner.body) != 1 or len(inner.handlers) != 1 or inner.orelse or inner.finalbody:
+        return None
+
+    call_stmt = inner.body[0]
+    if not (isinstance(call_stmt, ast.Expr) and isinstance(call_stmt.value, ast.Call)
+            and _ident_name(call_stmt.value.func) == "renpy.file"
+            and len(call_stmt.value.args) == 1 and not call_stmt.value.keywords):
+        return None
+    path = _const_scalar(call_stmt.value.args[0])
+    if not isinstance(path, str):
+        return None
+    m = re.fullmatch(r"\.\./characters/(\w+)\.chr", path)
+    if m is None or m.group(1) not in TAG_TO_CHAR:
+        return None
+    char_index = TAG_TO_CHAR[m.group(1)]
+
+    handler = inner.handlers[0]
+    if handler.type is not None or len(handler.body) != 1:
+        return None  # only a bare `except:` matches
+    set_stmt = handler.body[0]
+    if not (isinstance(set_stmt, ast.Assign) and len(set_stmt.targets) == 1
+            and isinstance(set_stmt.targets[0], ast.Name)
+            # _const_scalar() folds bool into int (True -> 1), since ast.Constant's
+            # own .value for a bool literal already *is* a bool (an int subclass) --
+            # compare against 1, not `is True`.
+            and _const_scalar(set_stmt.value) == 1):
+        return None
+
+    return (char_index, set_stmt.targets[0].id)
 
 
 def _match_glitchtext_call(node) -> tuple[int, int] | None:
