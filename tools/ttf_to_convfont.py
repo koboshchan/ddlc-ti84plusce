@@ -40,19 +40,29 @@ def rasterize_glyph(font: ImageFont.FreeTypeFont, ch: str, cell_w: int,
     img = Image.new("L", (cell_w, cell_h), 0)
     draw = ImageDraw.Draw(img)
     draw.text((0, ascent), ch, font=font, fill=255, anchor="ls")
-    # +1: draw.textlength() is the font's own natural advance, but at these
-    # pixel sizes its side bearing is often a fraction of a pixel that
-    # round() collapses to 0 -- with no sub-pixel resolution to fall back
-    # on, that reads as adjacent glyphs having no gap at all ("bunched
-    # together" -- confirmed live: real DDLC's own main menu has visible
-    # letter spacing this didn't). A flat +1 guarantees at least one blank
-    # column between glyphs regardless of what the font's own metrics
-    # rounded down to.
-    advance = round(draw.textlength(ch, font=font)) + 1
-    if advance <= 1:
-        advance = max(1, cell_w // 2)  # space and other zero-ink glyphs still need real width
     px = img.load()
     bitmap = [[px[x, y] >= THRESHOLD for x in range(cell_w)] for y in range(cell_h)]
+
+    natural_advance = round(draw.textlength(ch, font=font))
+    # A flat "+1 no matter what" here used to read as too tight for one font
+    # (0 gap at these pixel sizes -- draw.textlength()'s side bearing
+    # rounds away to nothing) and visibly too loose for another (Aller_Rg's
+    # own side bearing is already real at this size, so adding to it
+    # doubled the gap -- confirmed live: "That girl is Sayori..." spaced
+    # noticeably wider than real DDLC's own rendering). Basing the minimum
+    # on the glyph's own actual rendered ink instead of the font's reported
+    # metric fixes both: only pad up to a 1px gap after the *real* rightmost
+    # lit pixel, so a font whose natural advance already clears that does
+    # nothing extra, and one that doesn't gets exactly enough to stop
+    # touching its neighbor.
+    ink_right = -1
+    for y in range(cell_h):
+        for x in range(cell_w):
+            if bitmap[y][x]:
+                ink_right = max(ink_right, x)
+    advance = max(natural_advance, ink_right + 2)
+    if advance <= 0:
+        advance = max(1, cell_w // 2)  # space and other zero-ink glyphs still need real width
     return bitmap, advance
 
 
