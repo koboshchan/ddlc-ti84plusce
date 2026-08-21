@@ -56,4 +56,16 @@ void persist_load(vn_vm_t *vm);
  */
 bool persist_save(const vn_vm_t *vm);
 
+/**
+ * Returns true if the player has already acknowledged the initial 13+ content
+ * warning on this calculator.
+ */
+bool persist_first_run_done(void);
+
+/**
+ * Marks the initial 13+ content warning as acknowledged, saving a persistent
+ * AppVar so it only ever appears on the very first boot.
+ */
+void persist_first_run_set_done(void);
+
 #endif /* PERSIST_H */

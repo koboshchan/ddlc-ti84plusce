@@ -132,3 +132,25 @@ bool persist_save(const vn_vm_t *vm)
     free(buf);
     return written == 1;
 }
+
+bool persist_first_run_done(void)
+{
+    uint8_t handle = ti_Open("DFIRST", "r");
+    if (!handle) {
+        return false;
+    }
+    ti_Close(handle);
+    return true;
+}
+
+void persist_first_run_set_done(void)
+{
+    uint8_t handle = ti_Open("DFIRST", "w");
+    if (handle) {
+        uint8_t val = 1;
+        ti_Write(&val, 1, 1, handle);
+        ti_SetArchiveStatus(true, handle);
+        ti_Close(handle);
+    }
+}
+

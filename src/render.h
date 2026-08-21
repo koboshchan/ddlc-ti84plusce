@@ -243,10 +243,18 @@ void render_fill_rect(int x, int y, int w, int h, uint8_t color);
  * choice menu. Requires the title palette (assets_use_title_palette()).
  */
 void render_title_screen(uint8_t selected, unsigned t);
-
-/** A bordered, filled box -- the pause overlay card, save/load slot cards,
- * drawn over an already-rendered game scene. Content (header text, list
- * menu) is the caller's job. */
 void render_pause_box(int x, int y, int w, int h, uint8_t fill_color, uint8_t edge_color);
+
+#define GAME_MENU_SAVE   0
+#define GAME_MENU_LOAD   1
+#define GAME_MENU_PAUSE  2
+
+#define PANE_SIDEBAR 0
+#define PANE_GRID    1
+
+void render_splash_warning(void);
+void render_disclaimer_screen(void);
+void render_game_menu(uint8_t mode, uint8_t focused_pane, uint8_t sidebar_selected,
+                      uint8_t slot_selected, bool is_in_game, unsigned t);
 
 #endif /* RENDER_H */

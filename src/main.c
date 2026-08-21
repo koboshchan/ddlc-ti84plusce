@@ -47,6 +47,7 @@ static bool returning_to_title;
  * reads lives; declared here because the pause menu and the idle wait, both
  * above it, draw a dialogue box too. */
 static const char *speaker_display_name(const vn_vm_t *vm, uint8_t speaker);
+static void run_help_screen(void);
 
 /* ---------------------------------------------------------------------------
  * Input
@@ -148,173 +149,173 @@ static void input_poll(input_t *in)
  * Pause menu, save/load slots, title screen, help
  * ------------------------------------------------------------------------ */
 
-#define PAUSE_BOX_X 60
-#define PAUSE_BOX_Y 40
-#define PAUSE_BOX_W 200
-#define PAUSE_BOX_H 160
-
-static const char *const pause_items[] = { "Resume", "Save", "Load", "Title Screen" };
-#define PAUSE_RESUME 0
-#define PAUSE_SAVE   1
-#define PAUSE_LOAD   2
-#define PAUSE_TITLE  3
-#define PAUSE_COUNT  4
-
-/* Save/load slots laid out as a grid of DDLC-style "page" cards rather than
- * a text list, wrapping to a new row every SLOT_GRID_COLS -- SAVE_SLOTS=6
- * makes a 3x2 grid, echoing DDLC's own multi-page save grid at a size that
- * still fits the screen without scrolling or paging. */
-#define SLOT_GRID_COLS  3
-#define SLOT_CARD_W    84
-#define SLOT_CARD_H    75
-#define SLOT_CARD_GAP  12
-#define SLOT_ROW_GAP   10
-#define SLOT_GRID_Y    50
-
-/** Runs the save-slot picker over a full-screen card grid. Returns the
- * chosen slot (1..SAVE_SLOTS), or 0 if the player cancelled (Mode) or quit.
- * When @p require_existing is set (Load), empty slots are shown but can't be
- * confirmed -- there's nothing to load. */
-static uint8_t run_slot_picker(const char *title, bool require_existing)
+/**
+ * Runs the authentic DDLC Game Menu / Save & Load selector (Images 3 & 4).
+ *
+ * @param vm Current VM state (non-NULL when in-game, NULL on title screen)
+ * @param initial_mode GAME_MENU_SAVE or GAME_MENU_LOAD or GAME_MENU_PAUSE
+ * @param is_in_game True if paused during story, false from title screen
+ * @return Chosen slot (1..SAVE_SLOTS) if loaded from title screen,
+ *         or 0 if resumed / cancelled / handled internally.
+ */
+static uint8_t run_game_menu(vn_vm_t *vm, uint8_t initial_mode, bool is_in_game)
 {
-    const char *const status[2] = { "Empty", "Saved" };
-    const uint8_t rows = (SAVE_SLOTS + SLOT_GRID_COLS - 1) / SLOT_GRID_COLS;
-    uint8_t selected = 0;
+    uint8_t mode = initial_mode;
+    uint8_t focused_pane = PANE_GRID;
+    uint8_t sidebar_selected = (mode == GAME_MENU_SAVE) ? 0 : 1;
+    uint8_t slot_selected = 0;
+    clock_t start = clock();
 
-    const int total_w = SLOT_GRID_COLS * SLOT_CARD_W + (SLOT_GRID_COLS - 1) * SLOT_CARD_GAP;
-    const int grid_x  = (SCREEN_W - total_w) / 2;
+    const uint8_t item_count = is_in_game ? 6 : 5;
+
+    assets_use_title_palette(true);
 
     for (;;) {
-        render_backdrop(COL_BOX_FILL);
-        render_text_centered(title, 16, COL_NAME);
-        render_fill_rect(grid_x, 40, total_w, 1, COL_BOX_EDGE);
-
-        for (uint8_t i = 0; i < SAVE_SLOTS; i++) {
-            uint8_t col = i % SLOT_GRID_COLS;
-            uint8_t row = i / SLOT_GRID_COLS;
-            int cx = grid_x + col * (SLOT_CARD_W + SLOT_CARD_GAP);
-            int cy = SLOT_GRID_Y + row * (SLOT_CARD_H + SLOT_ROW_GAP);
-            bool is_selected = i == selected;
-            bool has_save = save_exists(i + 1);
-            uint8_t text_color = is_selected ? COL_BOX_FILL : COL_WHITE;
-            char label[8];
-
-            render_pause_box(cx, cy, SLOT_CARD_W, SLOT_CARD_H,
-                             is_selected ? COL_HIGHLIGHT : COL_BOX_FILL, COL_BOX_EDGE);
-            sprintf(label, "Slot %u", i + 1);
-            render_text(label, cx + 10, cy + 28, text_color);
-            render_text(status[has_save], cx + 10, cy + 46, text_color);
-        }
-
-        render_text_centered("2nd: choose   Mode: cancel", SCREEN_H - 18, COL_BOX_EDGE);
+        unsigned elapsed = (unsigned)((clock() - start) * 1000UL / CLOCKS_PER_SEC);
+        render_game_menu(mode, focused_pane, sidebar_selected, slot_selected, is_in_game, elapsed);
         render_present(TRANS_CUT);
         gfx_Wait();
 
         input_t in;
         input_poll(&in);
-        if (quit_requested || in.pause) {
+
+        if (quit_requested) {
+            assets_use_title_palette(false);
             return 0;
         }
 
-        uint8_t col = selected % SLOT_GRID_COLS;
-        uint8_t row = selected / SLOT_GRID_COLS;
-        if (in.left) {
-            col = col == 0 ? SLOT_GRID_COLS - 1 : (uint8_t)(col - 1);
-        }
-        if (in.right) {
-            col = (uint8_t)((col + 1) % SLOT_GRID_COLS);
-        }
-        if (in.up) {
-            row = row == 0 ? (uint8_t)(rows - 1) : (uint8_t)(row - 1);
-        }
-        if (in.down) {
-            row = (uint8_t)((row + 1) % rows);
-        }
-        /* A short last row (SAVE_SLOTS not a multiple of SLOT_GRID_COLS)
-         * can put col/row past the real slot count -- only move onto a
-         * card that actually exists. */
-        uint8_t candidate = (uint8_t)(row * SLOT_GRID_COLS + col);
-        if (candidate < SAVE_SLOTS) {
-            selected = candidate;
+        /* Mode / Cancel returns to previous screen or resumes */
+        if (in.pause) {
+            assets_use_title_palette(false);
+            return 0;
         }
 
-        if (in.advance) {
-            if (require_existing && !save_exists(selected + 1)) {
-                continue; /* nothing there to load */
+        /* Dual-pane D-pad Navigation */
+        if (focused_pane == PANE_SIDEBAR) {
+            if (in.up) {
+                sidebar_selected = (sidebar_selected == 0) ? (uint8_t)(item_count - 1) : (uint8_t)(sidebar_selected - 1);
             }
-            return selected + 1;
-        }
-    }
-}
+            if (in.down) {
+                sidebar_selected = (uint8_t)((sidebar_selected + 1) % item_count);
+            }
+            if (in.right) {
+                focused_pane = PANE_GRID;
+                slot_selected = (sidebar_selected < 3) ? 0 : 3;
+            }
+        } else { /* PANE_GRID */
+            uint8_t col = slot_selected % 3;
+            uint8_t row = slot_selected / 3;
 
-/** Runs the pause menu (opened via Mode while reading a fully-revealed
- * line) over the already-rendered current scene. Save/Load are handled
- * entirely here, writing/reading @p vm directly: vn_step() always re-reads
- * vm->pc fresh, so overwriting it mid-callback like this is enough for the
- * VM to resume from a loaded position once control unwinds back to it.
- * Returns true if the player chose "Title Screen" (caller should unwind),
- * false to resume gameplay (either untouched, or just loaded). */
-static bool run_pause_menu(vn_vm_t *vm)
-{
-    uint8_t selected = 0;
+            if (in.left) {
+                if (col == 0) {
+                    focused_pane = PANE_SIDEBAR;
+                    sidebar_selected = (row == 0) ? (mode == GAME_MENU_SAVE ? 0 : 1) : 2;
+                } else {
+                    slot_selected--;
+                }
+            }
+            if (in.right) {
+                if (col < 2) {
+                    slot_selected++;
+                }
+            }
+            if (in.up) {
+                if (row > 0) {
+                    slot_selected -= 3;
+                }
+            }
+            if (in.down) {
+                if (row == 0) {
+                    slot_selected += 3;
+                }
+            }
+        }
 
-    for (;;) {
-        render_scene(&vm->scene);
-        render_box(&vm->scene, speaker_display_name(vm, vm->scene.speaker),
-                   vm->scene.text, SIZE_MAX);
-        render_fill_rect(PAUSE_BOX_X + 5, PAUSE_BOX_Y + 5, PAUSE_BOX_W, PAUSE_BOX_H, COL_SHADOW);
-        render_pause_box(PAUSE_BOX_X, PAUSE_BOX_Y, PAUSE_BOX_W, PAUSE_BOX_H, COL_BOX_FILL, COL_BOX_EDGE);
-        render_text("Paused", PAUSE_BOX_X + 16, PAUSE_BOX_Y + 14, COL_NAME);
-        render_fill_rect(PAUSE_BOX_X + 16, PAUSE_BOX_Y + 30, PAUSE_BOX_W - 32, 1, COL_BOX_EDGE);
-        render_list_menu_bar(pause_items, PAUSE_COUNT, selected,
-                             PAUSE_BOX_X + 22, PAUSE_BOX_Y + 46, PAUSE_BOX_W - 32,
-                             COL_WHITE, COL_HIGHLIGHT, COL_BOX_FILL);
-        render_text("2nd: select   Mode: close", PAUSE_BOX_X + 16, PAUSE_BOX_Y + PAUSE_BOX_H - 16,
-                    COL_BOX_EDGE);
-        render_present(TRANS_CUT);
-        gfx_Wait();
-
-        input_t in;
-        input_poll(&in);
-        if (quit_requested || in.pause) {
-            return false; /* Mode again just resumes, same as picking Resume */
-        }
-        if (in.up) {
-            selected = selected == 0 ? PAUSE_COUNT - 1 : (uint8_t)(selected - 1);
-        }
-        if (in.down) {
-            selected = (uint8_t)((selected + 1) % PAUSE_COUNT);
-        }
         if (!in.advance) {
             continue;
         }
 
-        switch (selected) {
-            case PAUSE_RESUME:
-                return false;
-
-            case PAUSE_SAVE: {
-                uint8_t slot = run_slot_picker("Save Game", false);
-                if (slot != 0) {
-                    save_write(slot, vm);
+        /* 2nd / Enter confirmed */
+        if (focused_pane == PANE_SIDEBAR) {
+            if (is_in_game) {
+                switch (sidebar_selected) {
+                    case 0: /* Save Game */
+                        mode = GAME_MENU_SAVE;
+                        focused_pane = PANE_GRID;
+                        break;
+                    case 1: /* Load Game */
+                        mode = GAME_MENU_LOAD;
+                        focused_pane = PANE_GRID;
+                        break;
+                    case 2: /* Main Menu */
+                        assets_use_title_palette(false);
+                        returning_to_title = true;
+                        quit_requested = true;
+                        return 0;
+                    case 3: /* Help */
+                        run_help_screen();
+                        assets_use_title_palette(true);
+                        break;
+                    case 4: /* Quit */
+                        assets_use_title_palette(false);
+                        quit_requested = true;
+                        return 0;
+                    case 5: /* Return */
+                        assets_use_title_palette(false);
+                        return 0; /* Resumes game */
                 }
-                break; /* back to the pause list */
-            }
-
-            case PAUSE_LOAD: {
-                uint8_t slot = run_slot_picker("Load Game", true);
-                if (slot != 0) {
-                    save_load(slot, vm);
-                    return false; /* resume play at the loaded position */
+            } else { /* Title screen mode */
+                switch (sidebar_selected) {
+                    case 0: /* New Game */
+                    case 4: /* Return */
+                        assets_use_title_palette(false);
+                        return 0;
+                    case 1: /* Load Game */
+                        mode = GAME_MENU_LOAD;
+                        focused_pane = PANE_GRID;
+                        break;
+                    case 2: /* Help */
+                        run_help_screen();
+                        assets_use_title_palette(true);
+                        break;
+                    case 3: /* Quit */
+                        assets_use_title_palette(false);
+                        quit_requested = true;
+                        return 0;
                 }
-                break;
             }
-
-            case PAUSE_TITLE:
-                return true;
+        } else { /* PANE_GRID */
+            uint8_t slot = slot_selected + 1;
+            if (mode == GAME_MENU_SAVE && is_in_game && vm) {
+                save_write(slot, vm);
+            } else if (mode == GAME_MENU_LOAD) {
+                if (save_exists(slot)) {
+                    if (is_in_game && vm) {
+                        save_load(slot, vm);
+                        assets_use_title_palette(false);
+                        return 0; /* Resumes game at loaded position */
+                    } else {
+                        assets_use_title_palette(false);
+                        return slot; /* Return slot to caller to load */
+                    }
+                }
+            }
         }
     }
 }
+
+static uint8_t run_slot_picker(const char *title, bool require_existing)
+{
+    (void)title;
+    return run_game_menu(NULL, require_existing ? GAME_MENU_LOAD : GAME_MENU_SAVE, false);
+}
+
+static bool run_pause_menu(vn_vm_t *vm)
+{
+    run_game_menu(vm, GAME_MENU_SAVE, true);
+    return returning_to_title;
+}
+
 
 /* ---------------------------------------------------------------------------
  * Debug menu -- opened by the Konami code (see konami_check() above), lets a
@@ -1480,6 +1481,35 @@ static void draw_splash_logo(void)
     }
 }
 
+static void run_disclaimer_confirm(void)
+{
+    for (;;) {
+        render_disclaimer_screen();
+        render_present(TRANS_CUT);
+        gfx_Wait();
+
+        input_t in;
+        input_poll(&in);
+        if (quit_requested) {
+            return;
+        }
+        if (in.advance) {
+            persist_first_run_set_done();
+            return;
+        }
+    }
+}
+
+static bool run_splash_warning(void)
+{
+    render_fade_out();
+    render_splash_warning();
+    render_present(TRANS_CUT);
+    render_fade_in();
+
+    return splash_wait(SPLASH_HOLD_MS);
+}
+
 static void run_splash_screens(void)
 {
     splash_screen(draw_splash_logo);
@@ -1670,6 +1700,17 @@ int main(void)
     entry_pc = assets_entry_pc();
     host.ctx = &vm;
 
+    /* 1. 13+ content warning / age consent agreement (first launch only) */
+    if (!persist_first_run_done()) {
+        run_disclaimer_confirm();
+        if (quit_requested) {
+            cgpack_end();
+            render_end();
+            return 0;
+        }
+    }
+
+    /* 2. Team Salvato Logo Splash */
     run_splash_screens();
     if (quit_requested) {
         cgpack_end();
@@ -1677,17 +1718,21 @@ int main(void)
         return 0;
     }
 
-    run_splashscreen_check(&vm);
+    /* 3. Splash Warning: "This game is not suitable for children or those who are easily disturbed." */
+    run_splash_warning();
     if (quit_requested) {
         cgpack_end();
         render_end();
         return 0;
     }
 
-    if (!name_exists()) {
-        run_name_entry();
+    /* 4. Easter egg / ghost menu / s_kill_early check */
+    run_splashscreen_check(&vm);
+    if (quit_requested) {
+        cgpack_end();
+        render_end();
+        return 0;
     }
-    name_load(player_name, sizeof(player_name));
 
     /* The intro plays on the first visit and whenever the player comes back
      * out of the story, but not when they merely back out of a submenu. */
@@ -1703,6 +1748,16 @@ int main(void)
         }
         if (choice == TITLE_QUIT || quit_requested) {
             break;
+        }
+
+        if (choice == TITLE_NEW) {
+            if (!name_exists()) {
+                run_name_entry();
+                if (quit_requested) {
+                    break;
+                }
+            }
+            name_load(player_name, sizeof(player_name));
         }
 
         /* Every "New Game"/"Continue" needs the entry chunk fresh and
@@ -1743,28 +1798,12 @@ int main(void)
          * stand as written rather than being second-guessed here. */
         persist_load(&vm);
 
-        /* persistent.playthrough is deliberately never incremented here --
-         * see vn.h's VN_PLAYTHROUGH_VAR. An earlier version of this code
-         * did increment it on every New Game, which was a real, serious
-         * bug: `label start` (script.rpy) branches straight on this value
-         * -- 0 -> ch0_main (the normal Act 1 open), 1 -> ch10_main, 2 ->
-         * ch20_main, 3 -> straight to ch30_main (the Act 3 finale), 4 ->
-         * straight to credits. Incrementing it meant every New Game after
-         * the first dropped the player into progressively later,
-         * never-tested Act 2/3 content instead of restarting Act 1 --
-         * confirmed by the exact symptom a real playtester hit (repeat New
-         * Game eventually reaching "the end"). Leaving it always 0 is the
-         * correct behavior for this single-playthrough engine, not a gap:
-         * it's the same reasoning already documented for the poem
-         * minigame's own playthrough==0 assumption. This does mean the
-         * ghost menu (gated on playthrough==2) is currently unreachable in
-         * practice -- an honest limitation, not silently worked around. */
-
         if (choice == TITLE_LOAD) {
             uint8_t slot = run_slot_picker("Load Game", true);
             if (slot == 0) {
                 continue; /* cancelled -- back to the title screen */
             }
+            name_load(player_name, sizeof(player_name));
             save_load(slot, &vm);
         }
 

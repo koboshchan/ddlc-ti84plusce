@@ -5,6 +5,7 @@
 
 #include "assets.h"
 #include "render.h"
+#include "save.h"
 #include "text.h"
 
 #include <fontlibc.h>
@@ -1471,3 +1472,140 @@ void render_pause_box(int x, int y, int w, int h, uint8_t fill_color, uint8_t ed
     gfx_SetColor(edge_color);
     gfx_Rectangle_NoClip(x, y, w, h);
 }
+
+void render_splash_warning(void)
+{
+    scene_obscured();
+    render_backdrop(COL_WHITE);
+    render_text_centered("This game is not suitable for children", 104, COL_BLACK);
+    render_text_centered("or those who are easily disturbed.", 124, COL_BLACK);
+}
+
+void render_disclaimer_screen(void)
+{
+    scene_obscured();
+    render_backdrop(COL_WHITE);
+    render_text_centered("This game is not suitable for children", 24, COL_BLACK);
+    render_text_centered("or those who are easily disturbed.", 38, COL_BLACK);
+
+    render_text_centered("Individuals suffering from anxiety or depression", 68, COL_BLACK);
+    render_text_centered("may not have a safe experience playing this game.", 82, COL_BLACK);
+
+    render_text_centered("By playing Doki Doki Literature Club, you agree that", 114, COL_BLACK);
+    render_text_centered("you are at least 13 years of age, and you consent to", 128, COL_BLACK);
+    render_text_centered("your exposure of highly disturbing content.", 142, COL_BLACK);
+
+    /* Agreement button */
+    int btn_w = 140;
+    int btn_h = 24;
+    int btn_x = (SCREEN_W - btn_w) / 2;
+    int btn_y = 176;
+
+    gfx_SetColor(COL_NAV_FILL);
+    gfx_FillRectangle_NoClip(btn_x, btn_y, btn_w, btn_h);
+    gfx_SetColor(COL_NAV_EDGE);
+    gfx_Rectangle_NoClip(btn_x, btn_y, btn_w, btn_h);
+    gfx_Rectangle_NoClip(btn_x - 1, btn_y - 1, btn_w + 2, btn_h + 2);
+
+    render_text_centered("> I agree. <", btn_y + 6, COL_BOX_FILL);
+    render_text_centered("2nd / Enter to confirm", 216, COL_BOX_FILL);
+}
+
+void render_game_menu(uint8_t mode, uint8_t focused_pane, uint8_t sidebar_selected,
+                      uint8_t slot_selected, bool is_in_game, unsigned t)
+{
+    scene_obscured();
+
+    static const char *const in_game_items[] = {
+        "Save Game", "Load Game", "Main Menu", "Help", "Quit", "Return"
+    };
+    static const char *const title_items[] = {
+        "New Game", "Load Game", "Help", "Quit", "Return"
+    };
+
+    const char *const *items = is_in_game ? in_game_items : title_items;
+    const uint8_t item_count = is_in_game ? 6 : 5;
+
+    /* Animated background scroll */
+    uint8_t phase = (uint8_t)((t / 120) % 50);
+    if (!assets_title_bg(phase, phase, (uint8_t *)gfx_vbuffer)) {
+        render_backdrop(COL_WHITE);
+    }
+
+    /* Left Navigation Sidebar */
+    const int nav_w = 84;
+    const int nav_edge_w = 6;
+    gfx_SetColor(COL_NAV_FILL);
+    gfx_FillRectangle(0, 0, nav_w - nav_edge_w, SCREEN_H);
+    gfx_SetColor(COL_NAV_EDGE);
+    gfx_FillRectangle(nav_w - nav_edge_w, 0, nav_edge_w, SCREEN_H);
+
+    /* Left Header Title */
+    const char *title = (mode == GAME_MENU_SAVE) ? "Save" : (mode == GAME_MENU_LOAD ? "Load" : "Menu");
+    print_slice_outlined(title, strlen(title), 10, 14, COL_NAME, COL_BOX_FILL);
+
+    /* Left Sidebar Menu Items */
+    int start_y = is_in_game ? 80 : 96;
+    for (uint8_t i = 0; i < item_count; i++) {
+        int y = start_y + i * 18;
+        bool is_cur = (focused_pane == PANE_SIDEBAR && i == sidebar_selected);
+        uint8_t fill_col = is_cur ? COL_NAME : COL_WHITE;
+        print_slice_outlined(items[i], strlen(items[i]), 8, y, fill_col, COL_BOX_FILL);
+    }
+
+    /* Right Main Panel: "Page 1" */
+    int header_cx = 84 + (SCREEN_W - 84 - (int)string_width("Page 1")) / 2;
+    render_text("Page 1", header_cx, 16, COL_BOX_FILL);
+
+    /* 2x3 Save Slot Grid */
+    const int slot_w = 68;
+    const int slot_h = 58;
+    const int col_x[3] = { 92, 166, 240 };
+    const int row_y[2] = { 38, 118 };
+
+    for (uint8_t s = 0; s < SAVE_SLOTS; s++) {
+        uint8_t col = s % 3;
+        uint8_t row = s / 3;
+        int cx = col_x[col];
+        int cy = row_y[row];
+        bool is_selected = (focused_pane == PANE_GRID && s == slot_selected);
+        bool has_save = save_exists(s + 1);
+
+        /* Card background fill */
+        gfx_SetColor(COL_NAV_FILL);
+        gfx_FillRectangle(cx, cy, slot_w, slot_h);
+
+        /* Card border */
+        if (is_selected) {
+            gfx_SetColor(COL_WHITE);
+            gfx_Rectangle(cx, cy, slot_w, slot_h);
+            gfx_Rectangle(cx - 1, cy - 1, slot_w + 2, slot_h + 2);
+        } else {
+            gfx_SetColor(COL_NAV_EDGE);
+            gfx_Rectangle(cx, cy, slot_w, slot_h);
+        }
+
+        /* Card labels */
+        char slot_hdr[12];
+        sprintf(slot_hdr, "Slot %u", s + 1);
+        int hdr_x = cx + (slot_w - (int)string_width(slot_hdr)) / 2;
+        render_text(slot_hdr, hdr_x, cy + 12, is_selected ? COL_BOX_FILL : COL_WHITE);
+
+        const char *status_str = has_save ? "Saved" : "empty slot";
+        int stat_x = cx + (slot_w - (int)string_width(status_str)) / 2;
+        render_text(status_str, stat_x, cy + 32, is_selected ? COL_NAME : COL_NAV_EDGE);
+    }
+
+    /* Page number footer */
+    const char *page_str = "1  2  3  4  5  6  7  8  9";
+    int page_x = 84 + (SCREEN_W - 84 - (int)string_width(page_str)) / 2;
+    render_text(page_str, page_x, 204, COL_NAV_EDGE);
+    /* Highlight '1' */
+    render_text("1", page_x, 204, COL_BOX_FILL);
+
+    /* Controls hint */
+    const char *hint_str = "2nd: choose   Mode: cancel";
+    int hint_x = 84 + (SCREEN_W - 84 - (int)string_width(hint_str)) / 2;
+    render_text(hint_str, hint_x, 222, COL_BOX_FILL);
+}
+
