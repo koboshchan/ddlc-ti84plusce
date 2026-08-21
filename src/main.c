@@ -322,6 +322,9 @@ static uint8_t run_slot_picker(const char *title, bool require_existing)
 static bool run_pause_menu(vn_vm_t *vm)
 {
     run_game_menu(vm, GAME_MENU_SAVE, true);
+    if (!returning_to_title && vm) {
+        render_apply_palette(assets_scene_palette(vm->scene.background));
+    }
     return returning_to_title;
 }
 
@@ -499,6 +502,7 @@ static void run_debug_cg_test(void)
     for (;;) {
         cgpack_poll(); /* pick up a drive plugged/unplugged mid-test */
 
+        render_apply_palette(assets_scene_palette(bg));
         render_debug_bg_preview(bg);
         sprintf(line, "bg id: %u   is_cg: %s", bg, assets_debug_is_cg(bg) ? "yes" : "no");
         render_text(line, 8, 4, COL_WHITE);
@@ -510,6 +514,7 @@ static void run_debug_cg_test(void)
 
         input_poll(&in);
         if (quit_requested || in.pause) {
+            render_apply_palette(assets_scene_palette(VN_NO_SPRITE));
             render_invalidate_scene();
             return;
         }
@@ -860,6 +865,11 @@ static void run_debug_menu(vn_vm_t *vm)
 
         input_poll(&in);
         if (quit_requested || in.pause) {
+            if (vm) {
+                render_apply_palette(assets_scene_palette(vm->scene.background));
+            } else {
+                assets_use_title_palette(true);
+            }
             return;
         }
         if (in.up) {
@@ -944,6 +954,11 @@ static void run_debug_menu(vn_vm_t *vm)
                 break;
 
             case DBG_CLOSE:
+                if (vm) {
+                    render_apply_palette(assets_scene_palette(vm->scene.background));
+                } else {
+                    assets_use_title_palette(true);
+                }
                 return;
         }
     }
@@ -1810,6 +1825,7 @@ int main(void)
             save_load(slot, &vm);
         }
 
+        render_apply_palette(assets_scene_palette(vm.scene.background));
         returning_to_title = false;
         vn_run(&vm);
 
