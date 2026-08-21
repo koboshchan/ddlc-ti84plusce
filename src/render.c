@@ -501,27 +501,6 @@ static void draw_actor(const vn_actor_t *actor, unsigned t)
         int ov_x = center_x;
         int ov_y = feet_y + (zoom ? 0 : fallback_off);
 
-        /* Act 2 Easter egg: Yuri's detached eye drift */
-        if (actor->character == CHAR_YURI) {
-            static uint8_t yuri_last_seq = 0xFF;
-            static unsigned yuri_show_start = 0;
-            if (actor->show_seq != yuri_last_seq) {
-                yuri_last_seq = actor->show_seq;
-                yuri_show_start = t;
-            }
-            unsigned elapsed = t - yuri_show_start;
-            /* Drift left and down over time */
-            int drift_x = -((int)(elapsed / 250));
-            int drift_y = (int)(elapsed / 300);
-            if (drift_x < -120) drift_x = -120;
-            if (drift_y > 80) drift_y = 80;
-            ov_x += drift_x;
-            ov_y += drift_y;
-            if (elapsed < 30000) {
-                anim_moving = true;
-            }
-        }
-
         if (!(zoom && assets_draw_sprite_zoomed(actor->overlay, ov_x, ov_y))) {
             assets_draw_sprite(actor->overlay, ov_x, ov_y);
         }
