@@ -162,11 +162,13 @@ def do_compile(raw_dir: Path, build_dir: Path,
     # in poems.rpyc). See compile_script.py's load_label_params/_emit_Call.
     compiler.label_params = load_label_params(raw_dir, files)
 
-    # A background no dialogue references by name, baked first and
-    # unconditionally (regardless of --files) so its scene id is always the
-    # same value -- matching src/main.c's SPLASH_LOGO_SCENE=0. Everything
-    # dialogue bakes afterward gets whatever id comes next.
-    resolver.explicit_bg_scene("bg/splash.png")  # Team Salvato logo (splash.rpyc's `intro` ATL)
+    # Backgrounds no dialogue references by name, baked first and
+    # unconditionally (regardless of --files) so their scene ids are always
+    # fixed values -- matching src/main.c's SPLASH_LOGO_SCENE=0 and
+    # SPLASH_MENU_M_SCENE=1. Everything dialogue bakes afterward gets whatever
+    # id comes next.
+    resolver.explicit_bg_scene("bg/splash.png")       # 0: Team Salvato logo (splash.rpyc's `intro` ATL)
+    resolver.explicit_bg_scene("gui/menu_bg_m.png")   # 1: Act 2 Monika menu flash (1/50 chance)
 
     # The poem minigame's notebook background is unconditional too (same
     # reasoning), but full-screen and outside the DSCNn scene id space --

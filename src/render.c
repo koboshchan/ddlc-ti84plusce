@@ -4,6 +4,7 @@
  */
 
 #include "assets.h"
+#include "chars.h"
 #include "render.h"
 #include "save.h"
 #include "text.h"
@@ -496,9 +497,34 @@ static void draw_actor(const vn_actor_t *actor, unsigned t)
      * layered one draws its expression atom second, at the same anchor --
      * its own (dx, dy) from DSPROFF is what places it correctly relative to
      * the body atom just drawn, at either scale. */
-    if (body_drawn && actor->overlay != VN_NO_OVERLAY &&
-        !(zoom && assets_draw_sprite_zoomed(actor->overlay, center_x, feet_y))) {
-        assets_draw_sprite(actor->overlay, center_x, feet_y + fallback_off);
+    if (body_drawn && actor->overlay != VN_NO_OVERLAY) {
+        int ov_x = center_x;
+        int ov_y = feet_y + (zoom ? 0 : fallback_off);
+
+        /* Act 2 Easter egg: Yuri's detached eye drift */
+        if (actor->character == CHAR_YURI) {
+            static uint8_t yuri_last_seq = 0xFF;
+            static unsigned yuri_show_start = 0;
+            if (actor->show_seq != yuri_last_seq) {
+                yuri_last_seq = actor->show_seq;
+                yuri_show_start = t;
+            }
+            unsigned elapsed = t - yuri_show_start;
+            /* Drift left and down over time */
+            int drift_x = -((int)(elapsed / 250));
+            int drift_y = (int)(elapsed / 300);
+            if (drift_x < -120) drift_x = -120;
+            if (drift_y > 80) drift_y = 80;
+            ov_x += drift_x;
+            ov_y += drift_y;
+            if (elapsed < 30000) {
+                anim_moving = true;
+            }
+        }
+
+        if (!(zoom && assets_draw_sprite_zoomed(actor->overlay, ov_x, ov_y))) {
+            assets_draw_sprite(actor->overlay, ov_x, ov_y);
+        }
     }
 }
 
@@ -518,50 +544,40 @@ static void draw_actor(const vn_actor_t *actor, unsigned t)
  * animation needs. Only one actor moves, by a few pixels, so the only
  * region that can change is that actor's own rectangle.
  *
- * So: during a full redraw, once the background and every actor *behind*
- * the mover are down, copy that rectangle out. Subsequent frames paste it
- * back -- restoring background and rearward actors in one memcpy -- and
- * redraw the mover and whatever draws in front of it. No decode, no
- * full-scene pass, and z-order is preserved because the split is made at
- * the mover's own position in the draw order.
+ * The moving-actor plate is that rectangle: a small malloc'd buffer captured
+ * on the first frame an animation begins, after the background and all
+ * rearward actors are drawn but *before* the moving actor is blitted. On
+ * every subsequent frame of the animation the renderer doesn't touch the
+ * background or rearward actors at all: it blits the plate back into the draw
+ * buffer and repaints from the moving actor forward. When the motion ends
+ * (the actor settles, or a new dialogue line arrives) the plate is freed.
  *
- * The plate is best-effort like every other allocation here: if it can't be
- * had, animating frames just stay full redraws, which is what they were.
- * It's freed the moment the scene settles, so it holds nothing while the
- * player is simply reading.
- * ------------------------------------------------------------------------ */
+ * Bounds are computed conservatively: the bounding box of the actor's body
+ * and overlay at both 1.00x and 1.05x, expanded by PLATE_SLACK on each edge
+ * to cover the full range of the hop bounce and sink drift. That way one
+ * capture covers the whole duration of the motion without having to re-plate
+ * on every pixel of movement.
+ * ------------------------------------------------------------------------- */
 
-/* Vertical slack around the resting sprite box, covering every offset the
- * three animations can add: hop reaches -HOP_PX, the fallback rise
- * -SPEAK_POP_PX, sink +SINK_PX, and they can stack. Rounded up so the
- * rectangle stays valid for the whole animation without being recaptured. */
-#define PLATE_SLACK (HOP_PX + SPEAK_POP_PX + SINK_PX)
+#define PLATE_SLACK 16  /* pixels of margin beyond resting sprite bounds */
 
 static uint8_t *plate;
 static int      plate_x, plate_y, plate_w, plate_h;
-static int      plate_slot = -1;   /* actor slot the plate was captured before */
+static int      plate_slot = -1;  /* which actor slot owns `plate` */
 static bool     plate_valid;
 
 static void plate_free(void)
 {
     free(plate);
-    plate      = NULL;
+    plate       = NULL;
     plate_valid = false;
     plate_slot  = -1;
 }
 
-/* Screen rectangle actor @p a can occupy over the course of an animation:
- * the union of its layers, at both scales (whether the zoom succeeds is
- * decided per frame, and the scaled draw is the larger but not a superset
- * -- it is centred differently), grown by PLATE_SLACK vertically.
- *
- * Measured from ACTOR_BASELINE rather than the actor's current animated
- * feet_y, so the answer doesn't depend on when during the animation this is
- * asked. */
 static bool actor_rect(const vn_actor_t *a, int *rx, int *ry, int *rw, int *rh)
 {
-    int center_x = pos_center(a->pos);
-    int x0 = SCREEN_W, y0 = SCREEN_H, x1 = 0, y1 = 0;
+    int center_x = (int)a->pos * 2;
+    int x0 = SCREEN_W, y0 = SCENE_H, x1 = 0, y1 = 0;
     uint16_t ids[2] = { a->sprite, a->overlay };
 
     for (int i = 0; i < 2; i++) {
@@ -590,6 +606,11 @@ static bool actor_rect(const vn_actor_t *a, int *rx, int *ry, int *rw, int *rh)
         if (py < y0) y0 = py;
         if (px + zw > x1) x1 = px + zw;
         if (py + zh > y1) y1 = py + zh;
+    }
+
+    if (a->character == CHAR_YURI && a->overlay != VN_NO_OVERLAY) {
+        x0 -= 120;
+        y1 += 80;
     }
 
     y0 -= PLATE_SLACK;
@@ -1478,12 +1499,28 @@ void render_pause_box(int x, int y, int w, int h, uint8_t fill_color, uint8_t ed
     gfx_Rectangle_NoClip(x, y, w, h);
 }
 
-void render_splash_warning(void)
+void render_splash_warning(const char *msg)
 {
     scene_obscured();
     render_backdrop(COL_WHITE);
-    render_text_centered("This game is not suitable for children", 104, COL_BLACK);
-    render_text_centered("or those who are easily disturbed.", 124, COL_BLACK);
+    if (msg == NULL) {
+        msg = "This game is not suitable for children\nor those who are easily disturbed.";
+    }
+    const char *nl = strchr(msg, '\n');
+    if (nl != NULL) {
+        char line1[64];
+        size_t len1 = (size_t)(nl - msg);
+        if (len1 >= sizeof(line1)) {
+            len1 = sizeof(line1) - 1;
+        }
+        memcpy(line1, msg, len1);
+        line1[len1] = '\0';
+        const char *line2 = nl + 1;
+        render_text_centered(line1, 104, COL_BLACK);
+        render_text_centered(line2, 124, COL_BLACK);
+    } else {
+        render_text_centered(msg, 114, COL_BLACK);
+    }
 }
 
 void render_disclaimer_screen(void)

@@ -252,7 +252,10 @@ void render_pause_box(int x, int y, int w, int h, uint8_t fill_color, uint8_t ed
 #define PANE_SIDEBAR 0
 #define PANE_GRID    1
 
-void render_splash_warning(void);
+#define SPLASH_LOGO_SCENE   0
+#define SPLASH_MENU_M_SCENE 1
+
+void render_splash_warning(const char *msg);
 void render_disclaimer_screen(void);
 void render_game_menu(uint8_t mode, uint8_t focused_pane, uint8_t sidebar_selected,
                       uint8_t slot_selected, bool is_in_game, unsigned t);

@@ -18,6 +18,7 @@
 #include <fileioc.h>
 #include <graphx.h>
 #include <keypadc.h>
+#include <sys/timers.h>
 #include <ti/getcsc.h>
 #include <ti/screen.h>
 
@@ -167,6 +168,14 @@ static uint8_t run_game_menu(vn_vm_t *vm, uint8_t initial_mode, bool is_in_game)
     clock_t start = clock();
 
     const uint8_t item_count = is_in_game ? 6 : 5;
+
+    /* Act 2 Easter Egg: 1/50 (2%) chance to flash menu_bg_m for a split second */
+    if (is_in_game && (rand() % 50) == 0) {
+        if (assets_scene(SPLASH_MENU_M_SCENE, (uint8_t *)gfx_vbuffer)) {
+            render_present(TRANS_CUT);
+            msleep(150);
+        }
+    }
 
     assets_use_title_palette(true);
 
@@ -1500,10 +1509,32 @@ static void run_disclaimer_confirm(void)
     }
 }
 
+static const char *const act2_splash_messages[] = {
+    "You are my sunshine,\nMy only sunshine",
+    "I missed you.",
+    "Play with me",
+    "It's just a game, mostly.",
+    "This game is not suitable for children\nor those who are easily disturbed?",
+    "sdfasdklfgsdfgsgoinrfoenlvbd",
+    "null",
+    "I have granted kids to hell",
+    "PM died for this.",
+    "It was only partially your fault.",
+    "This game is not suitable for children\nor those who are easily dismembered.",
+    "Don't forget to backup Monika's character file."
+};
+
 static bool run_splash_warning(void)
 {
+    const char *msg = NULL;
+    /* 1 in 4 (25%) chance of eerie random splash disclaimer */
+    if ((rand() % 4) == 0) {
+        size_t idx = (size_t)(rand() % (sizeof(act2_splash_messages) / sizeof(act2_splash_messages[0])));
+        msg = act2_splash_messages[idx];
+    }
+
     render_fade_out();
-    render_splash_warning();
+    render_splash_warning(msg);
     render_present(TRANS_CUT);
     render_fade_in();
 
