@@ -102,6 +102,9 @@ static void pool_init(void)
 
 static uint16_t pool_take(void)
 {
+    if (pool_remaining == 0) {
+        return 0;
+    }
     uint16_t slot = (uint16_t)(rand() % pool_remaining);
     uint16_t idx  = pool[slot];
     pool_remaining--;

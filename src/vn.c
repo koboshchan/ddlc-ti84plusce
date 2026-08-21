@@ -345,6 +345,7 @@ bool vn_step(vn_vm_t *vm)
 
         case OP_MENU: {
             const char *choices[VN_MAX_CHOICES];
+            char        choice_bufs[VN_MAX_CHOICES][64];
             uint32_t    targets[VN_MAX_CHOICES];
 
             uint8_t count = read_u8(vm);
@@ -360,9 +361,14 @@ bool vn_step(vn_vm_t *vm)
                     break;
                 }
                 /* Options past VN_MAX_CHOICES are parsed but not offered, so
-                 * an oversized menu still leaves pc at the next instruction. */
+                 * an oversized menu still leaves pc at the next instruction.
+                 * Copy string into dedicated buffer to prevent pointer aliasing
+                 * if multiple choices undergo [player] tag substitutions. */
                 if (shown < VN_MAX_CHOICES) {
-                    choices[shown] = vm->host->string(vm->host->ctx, text);
+                    const char *s = vm->host->string(vm->host->ctx, text);
+                    strncpy(choice_bufs[shown], s ? s : "", sizeof(choice_bufs[shown]) - 1);
+                    choice_bufs[shown][sizeof(choice_bufs[shown]) - 1] = '\0';
+                    choices[shown] = choice_bufs[shown];
                     targets[shown] = tgt;
                     shown++;
                 }
@@ -508,7 +514,7 @@ bool vn_step(vn_vm_t *vm)
              * huge modulus. Every real caller (compile_script.py's
              * _randint_call) only ever emits lo=0, hi>=0. */
             uint32_t span = (hi > lo) ? (uint32_t)(hi - lo) + 1u : 1u;
-            vm->vars[var] = (int16_t)(lo + (int16_t)(vn_rand_next(vm) % span));
+            vm->vars[var] = (int16_t)((int32_t)lo + (int32_t)(vn_rand_next(vm) % span));
             break;
         }
 

@@ -573,7 +573,8 @@ class Compiler:
                 self.last_pos[char] = pos
                 self.last_flags[char] = flags
                 return pos, flags
-        return self.last_pos.get(char, vnasm.POS_CENTER), self.last_flags.get(char, 0)
+        persisted_flags = self.last_flags.get(char, 0) & ~vnasm.VN_FLAG_HOP
+        return self.last_pos.get(char, vnasm.POS_CENTER), persisted_flags
 
     # -- block emission ---------------------------------------------------------
 
@@ -1097,8 +1098,13 @@ class Compiler:
             if dispatch is not None:
                 if dispatch[0] == "poemwinner":
                     self._emit_poemwinner_dispatch(dispatch[1:], fname)
+                elif dispatch[0] == "single_appeal":
+                    self._emit_single_appeal_dispatch(dispatch[1:], fname)
                 else:
                     self._emit_chapter_opinion_dispatch(dispatch[1:], fname)
+                return
+            if isinstance(node.label, str) and node.label == '"ch4_exclusive_" + ch4_scene':
+                self._emit_ch4_exclusive_dispatch(fname)
                 return
             special_var = (_match_special_poem_call(node.label)
                           if isinstance(node.label, str) else None)
@@ -1284,6 +1290,41 @@ class Compiler:
             self.asm.jump(end_label)
             self.asm.label(char_next)
         self.asm.label(end_label)
+
+    def _emit_single_appeal_dispatch(self, dispatch: tuple, fname: str) -> None:
+        (void_fname := fname)
+        prefix, var_name, suffix = dispatch
+        var_slot = self._var_slot(var_name)
+        end_label = self._gensym("single_appeal_end")
+        for appeal in range(1, 4):
+            appeal_next = self._gensym("single_appeal_next")
+            appeal_match = self._gensym("single_appeal_match")
+            self.asm.if_(var_slot, vnasm.CMP_EQ, appeal, appeal_match)
+            self.asm.jump(appeal_next)
+            self.asm.label(appeal_match)
+            self.asm.call(f"{prefix}{appeal}{suffix}")
+            self.asm.jump(end_label)
+            self.asm.label(appeal_next)
+        self.asm.label(end_label)
+
+    def _emit_ch4_exclusive_dispatch(self, fname: str) -> None:
+        (void_fname := fname)
+        slot = self._var_slot("ch4_scene")
+        natsuki_id = self._intern("natsuki")
+        yuri_id = self._intern("yuri")
+        lbl_natsuki = self._gensym("ch4_natsuki")
+        lbl_yuri = self._gensym("ch4_yuri")
+        lbl_end = self._gensym("ch4_end")
+
+        self.asm.if_(slot, vnasm.CMP_EQ, natsuki_id, lbl_natsuki)
+        self.asm.if_(slot, vnasm.CMP_EQ, yuri_id, lbl_yuri)
+        self.asm.jump(lbl_end)
+        self.asm.label(lbl_natsuki)
+        self.asm.call("ch4_exclusive_natsuki")
+        self.asm.jump(lbl_end)
+        self.asm.label(lbl_yuri)
+        self.asm.call("ch4_exclusive_yuri")
+        self.asm.label(lbl_end)
 
     # bad/med/good -- confirmed the only 3 values script-poemresponses.rpyc's
     # own poemopinion variable is ever assigned (a literal "med" up front,
@@ -1744,6 +1785,9 @@ class Compiler:
                 # entry/the title screen after either one). See OP_QUIT.
                 self.asm.quit()
                 return True
+            if fn == "renpy.full_restart":
+                self.asm.end()
+                return True
         if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
             var = _ident_name(stmt.targets[0])
             if var is not None:
@@ -1775,6 +1819,10 @@ class Compiler:
                     # only buildable once the matching dynamic Call is
                     # reached (see _emit_Call's use of _pending_dispatch).
                     self._pending_dispatch[var] = ("poemwinner",) + dispatch
+                    return True
+                single_appeal = _match_single_appeal_dispatch(stmt.value)
+                if single_appeal is not None:
+                    self._pending_dispatch[var] = ("single_appeal",) + single_appeal
                     return True
                 chapter_dispatch = _match_chapter_dispatch(stmt.value)
                 if chapter_dispatch is not None:
@@ -1902,7 +1950,7 @@ class Compiler:
             self.asm.jump(true_label if expr.value else false_label)
             return
 
-        if isinstance(expr, (ast.Name, ast.Attribute)):
+        if isinstance(expr, (ast.Name, ast.Attribute, ast.Subscript)):
             # Bare flag -- `var != 0`, see _condition_supported().
             slot = self._var_slot(_ident_name(expr))
             self.asm.if_(slot, vnasm.CMP_NE, 0, true_label)
@@ -2315,6 +2363,49 @@ def _match_poemwinner_dispatch(node) -> tuple[str, int, str] | None:
     return (prefix, chapter, sep_term.value)
 
 
+def _match_single_appeal_dispatch(node) -> tuple[str, str, str] | None:
+    """Recognizes DDLC's single-character appeal dispatch idiom:
+    `"PREFIX" + str(eval("VAR")) [+ "SUFFIX"]` (e.g.
+    `"yuri_exclusive2_" + str(eval("y_appeal")) + "_ch22"`, `"m2_yuri_" +
+    str(eval("y_appeal"))`).
+    Returns (prefix, var_name, suffix), or None if @p node isn't this shape.
+    """
+    if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add)):
+        return None
+    terms = []
+    cur = node
+    while isinstance(cur, ast.BinOp) and isinstance(cur.op, ast.Add):
+        terms.append(cur.right)
+        cur = cur.left
+    terms.append(cur)
+    terms.reverse()
+
+    if len(terms) not in (2, 3):
+        return None
+    prefix_term = terms[0]
+    call_term = terms[1]
+    suffix = ""
+    if len(terms) == 3:
+        suffix_term = terms[2]
+        if not (isinstance(suffix_term, ast.Constant) and isinstance(suffix_term.value, str)):
+            return None
+        suffix = suffix_term.value
+
+    if not (isinstance(prefix_term, ast.Constant) and isinstance(prefix_term.value, str)):
+        return None
+    if not (isinstance(call_term, ast.Call) and isinstance(call_term.func, ast.Name)
+            and call_term.func.id == "str" and len(call_term.args) == 1):
+        return None
+    inner = call_term.args[0]
+    if not (isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
+            and inner.func.id == "eval" and len(inner.args) == 1):
+        return None
+    var_arg = inner.args[0]
+    if not (isinstance(var_arg, ast.Constant) and isinstance(var_arg.value, str)):
+        return None
+    return (prefix_term.value, var_arg.value, suffix)
+
+
 def _match_special_poem_call(expr_src: str) -> str | None:
     """Recognizes `"poem_special_" + str(persistent.special_poems[N])` --
     script-ch20/22/23.rpyc's real `call expression` target for DDLC's 11
@@ -2577,15 +2668,9 @@ def _match_char_file_check(stmt) -> tuple[int, str] | None:
     `try: renpy.file("../characters/X.chr")
      except: renpy.jump("Y")` idiom -- confirmed real at script-ch0.rpyc's
     own opening lines, monika.chr's existence check gating `label
-    ch0_kill` (the "PLEASE MAKE IT STOP" meta easter egg). This compiler
-    has no real exception-handling support at all (see OP_CHAR_CHECK's
-    own comment) -- this hand-recognizes the one specific shape found,
-    the same way _match_glitchtext_call/_parse_tear_call hand-recognize
-    their own real idioms, rather than attempting to walk try/except in
-    general. None if @p stmt isn't this exact shape (a single `renpy.file`
-    call in the try body, one bare `except:` with a single `renpy.jump`
-    call in its body -- anything else, including a real exception type or
-    extra statements either side, is left unsupported)."""
+    ch0_kill` (the "PLEASE MAKE IT STOP" meta easter egg), and inter-act
+    checks across script.rpyc. This compiler hand-recognizes the idiom,
+    allowing bare except:, except IOError:, and except Exception: handlers."""
     if not isinstance(stmt, ast.Try):
         return None
     if (len(stmt.body) != 1 or len(stmt.handlers) != 1
@@ -2600,21 +2685,26 @@ def _match_char_file_check(stmt) -> tuple[int, str] | None:
     path = _const_scalar(call_stmt.value.args[0])
     if not isinstance(path, str):
         return None
-    m = re.fullmatch(r"\.\./characters/(\w+)\.chr", path)
+    m = re.fullmatch(r"(?:\.\./)?characters/(\w+)\.chr", path)
     if m is None or m.group(1) not in TAG_TO_CHAR:
         return None
     char_index = TAG_TO_CHAR[m.group(1)]
 
     handler = stmt.handlers[0]
-    if handler.type is not None or len(handler.body) != 1:
-        return None  # only a bare `except:` matches
-    jump_stmt = handler.body[0]
-    if not (isinstance(jump_stmt, ast.Expr) and isinstance(jump_stmt.value, ast.Call)
-            and _ident_name(jump_stmt.value.func) == "renpy.jump"
-            and len(jump_stmt.value.args) == 1 and not jump_stmt.value.keywords):
-        return None
-    label = _const_scalar(jump_stmt.value.args[0])
-    if not isinstance(label, str):
+    if handler.type is not None:
+        type_name = _ident_name(handler.type)
+        if type_name not in ("IOError", "Exception", None):
+            return None
+    label = None
+    for s in handler.body:
+        if (isinstance(s, ast.Expr) and isinstance(s.value, ast.Call)
+                and _ident_name(s.value.func) == "renpy.jump"
+                and len(s.value.args) == 1 and not s.value.keywords):
+            target = _const_scalar(s.value.args[0])
+            if isinstance(target, str):
+                label = target
+                break
+    if label is None:
         return None
 
     return (char_index, label)
@@ -2649,19 +2739,15 @@ def _atl_delay_seconds(atl) -> float | None:
 
 def _match_playthrough_char_flag_check(stmt) -> tuple[int, str] | None:
     """(character_index, flag_var_name) if @p stmt is splash.rpyc's own
-    `if persistent.playthrough == 0:
-         try: renpy.file("../characters/X.chr")
-         except: VAR = True`
-    idiom -- confirmed real at splash.rpyc's own `label splashscreen`
-    (line ~278), gating the `s_kill_early`/(implicitly) `s_kill_early`-style
-    flags that the game's later `if VAR:` checks branch on (see
-    _match_char_file_check's sibling comment for why this compiler can't
-    walk try/except in general). Unlike that sibling matcher, this one's
-    except body sets a flag rather than jumping -- the surrounding `if
-    persistent.playthrough == 0:` guard is always true for this engine (see
-    Compiler.PLAYTHROUGH_VAR's own comment), so it's matched literally
-    rather than evaluated, and the Try inside is otherwise identical in
-    shape. None if @p stmt isn't exactly this."""
+    `if not s_kill_early:
+         if persistent.playthrough == 0:
+             try: renpy.file("../characters/X.chr")
+             except: VAR = True`
+    idiom (line ~278), gating the `s_kill_early` early game-over easter egg."""
+    if isinstance(stmt, ast.If) and isinstance(stmt.test, ast.UnaryOp) and isinstance(stmt.test.op, ast.Not):
+        if len(stmt.body) == 1 and isinstance(stmt.body[0], ast.If) and not stmt.orelse:
+            stmt = stmt.body[0]
+
     if not (isinstance(stmt, ast.If) and len(stmt.body) == 1 and not stmt.orelse):
         return None
     test = stmt.test
@@ -2685,20 +2771,21 @@ def _match_playthrough_char_flag_check(stmt) -> tuple[int, str] | None:
     path = _const_scalar(call_stmt.value.args[0])
     if not isinstance(path, str):
         return None
-    m = re.fullmatch(r"\.\./characters/(\w+)\.chr", path)
+    m = re.fullmatch(r"(?:\.\./)?characters/(\w+)\.chr", path)
     if m is None or m.group(1) not in TAG_TO_CHAR:
         return None
     char_index = TAG_TO_CHAR[m.group(1)]
 
     handler = inner.handlers[0]
-    if handler.type is not None or len(handler.body) != 1:
-        return None  # only a bare `except:` matches
+    if handler.type is not None:
+        type_name = _ident_name(handler.type)
+        if type_name not in ("IOError", "Exception", None):
+            return None
+    if len(handler.body) != 1:
+        return None
     set_stmt = handler.body[0]
     if not (isinstance(set_stmt, ast.Assign) and len(set_stmt.targets) == 1
             and isinstance(set_stmt.targets[0], ast.Name)
-            # _const_scalar() folds bool into int (True -> 1), since ast.Constant's
-            # own .value for a bool literal already *is* a bool (an int subclass) --
-            # compare against 1, not `is True`.
             and _const_scalar(set_stmt.value) == 1):
         return None
 
@@ -2913,6 +3000,14 @@ def _fold_constants(expr):
         # `renpy.music.get_playing(...) == X` -- always None on this engine,
         # and None never equals a real audio-track reference.
         return ast.Constant(value=isinstance(expr.ops[0], ast.NotEq))
+    if (isinstance(expr, ast.Compare) and len(expr.ops) == 1 and len(expr.comparators) == 1
+            and isinstance(expr.ops[0], (ast.Eq, ast.NotEq))):
+        left_id = _ident_name(expr.left)
+        right_id = _ident_name(expr.comparators[0])
+        if (left_id, right_id) in (("anticheat", "persistent.anticheat"), ("persistent.anticheat", "anticheat"),
+                                   ("config.version", "persistent.oldversion"), ("persistent.oldversion", "config.version")):
+            is_equal = True
+            return ast.Constant(value=is_equal if isinstance(expr.ops[0], ast.Eq) else not is_equal)
     return expr
 
 
@@ -2939,8 +3034,8 @@ def _condition_supported(expr) -> bool:
         # A compile-time-resolved leaf, e.g. from _fold_constants() --
         # never present in a raw, unfolded condition string.
         return True
-    if isinstance(expr, (ast.Name, ast.Attribute)):
-        # A bare flag (`if s_readpoem:`, `not y_ranaway`) -- treated as
+    if isinstance(expr, (ast.Name, ast.Attribute, ast.Subscript)):
+        # A bare flag (`if s_readpoem:`, `not y_ranaway`, `if persistent.clear[0]`) -- treated as
         # `var != 0`, the same truthiness a real Python `if` would use for a
         # story-tracking int/bool. Just as common in real conditions as an
         # explicit comparison (e.g. poemresponses.rpy's own item guards).

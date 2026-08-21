@@ -83,6 +83,9 @@ static bool validate_pack(void)
 
 static void try_mount(void)
 {
+    if (mounted) {
+        unmount();
+    }
     if (msd_Open(&msd, usb_dev) != MSD_SUCCESS) {
         return;
     }

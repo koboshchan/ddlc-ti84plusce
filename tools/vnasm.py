@@ -59,10 +59,11 @@ SPEAKER_NONE = 0xFF
 SPEAKER_PLAYER = 0xFE  # must match src/vn.h's VN_SPEAKER_PLAYER
 NO_OVERLAY = 0xFFFF  # OP_SHOW's overlay:u16 sentinel -- see docs/FORMAT.md's "Layered sprites"
 
-# OP_SHOW's flags:u8 bitmask -- must match src/vn.h's VN_FLAG_ZOOM/VN_FLAG_HOP
+# OP_SHOW's flags:u8 bitmask -- must match src/vn.h's VN_FLAG_ZOOM/VN_FLAG_HOP/VN_FLAG_SINK
 # and tools/compile_script.py's copies of the same values.
 VN_FLAG_ZOOM = 1
 VN_FLAG_HOP = 2
+VN_FLAG_SINK = 4
 
 
 class AsmError(Exception):

@@ -52,5 +52,5 @@ bool chars_delete(uint8_t character)
     if (character >= CHAR_COUNT) {
         return false;
     }
-    return ti_Delete(chars_name[character]) != 0;
+    return ti_Delete(chars_name[character]) == 0;
 }

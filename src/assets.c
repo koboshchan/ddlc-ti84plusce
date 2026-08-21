@@ -166,6 +166,9 @@ bool assets_load_chunk(uint8_t chunk_id)
      * worth of RAM per crossing. First call has nothing to free yet. */
     free(script_buf);
     script_buf = NULL;
+    script_code = NULL;
+    script_code_size = 0;
+    string_count = 0;
 
     /* Same reasoning, one step further: a cached scaled sprite is worth a
      * few KB of redraw savings, and the chunk about to be read is worth the
@@ -191,6 +194,10 @@ bool assets_load_chunk(uint8_t chunk_id)
     if (!handle) {
         return false;
     }
+    if (ti_GetSize(handle) < 4) {
+        ti_Close(handle);
+        return false;
+    }
     const uint8_t *packed = ti_GetDataPtr(handle);
     uint16_t total = read_u16le(packed);
     script_buf = malloc(total);
@@ -212,6 +219,9 @@ bool assets_load_chunk(uint8_t chunk_id)
     if (string_count > MAX_STRINGS) {
         free(script_buf);
         script_buf = NULL;
+        script_code = NULL;
+        script_code_size = 0;
+        string_count = 0;
         return false;
     }
 
@@ -551,7 +561,7 @@ uint32_t assets_debug_chapter_pc(uint8_t idx)
  * sprite one does -- 406 for the full game -- so the shared helper takes the
  * wider type for all callers rather than having two near-identical copies). */
 static bool lut_lookup(const uint8_t *lut, uint16_t count, uint16_t id,
-                       uint8_t *appvar_out, uint16_t *offset_out)
+                       uint8_t *appvar_out, uint16_t *offset_out, uint16_t *len_out)
 {
     if (id >= count) {
         return false;
@@ -559,6 +569,9 @@ static bool lut_lookup(const uint8_t *lut, uint16_t count, uint16_t id,
     const uint8_t *e = lut + (size_t)id * 5;
     *appvar_out = e[0];
     *offset_out = read_u16le(e + 1);
+    if (len_out) {
+        *len_out = read_u16le(e + 3);
+    }
     return true;
 }
 
@@ -569,7 +582,7 @@ static bool lut_lookup(const uint8_t *lut, uint16_t count, uint16_t id,
 static bool sprite_lookup(uint16_t id, uint8_t *appvar_out, uint16_t *offset_out,
                           int16_t *dx_out, int16_t *dy_out)
 {
-    if (!lut_lookup(sprite_lut, sprite_lut_count, id, appvar_out, offset_out)) {
+    if (!lut_lookup(sprite_lut, sprite_lut_count, id, appvar_out, offset_out, NULL)) {
         return false;
     }
     *dx_out = 0;
@@ -915,7 +928,7 @@ bool assets_draw_title(uint8_t id, int left_x, int top_y)
 {
     uint8_t appvar_idx;
     uint16_t offset;
-    if (!lut_lookup(title_lut, title_lut_count, id, &appvar_idx, &offset)) {
+    if (!lut_lookup(title_lut, title_lut_count, id, &appvar_idx, &offset, NULL)) {
         return false;
     }
 
@@ -1067,7 +1080,7 @@ bool assets_scene(uint8_t id, uint8_t *dest)
 
     uint8_t appvar_idx;
     uint16_t offset;
-    if (!lut_lookup(scene_lut, scene_lut_count, id, &appvar_idx, &offset)) {
+    if (!lut_lookup(scene_lut, scene_lut_count, id, &appvar_idx, &offset, NULL)) {
         return false;
     }
 
@@ -1115,13 +1128,18 @@ const uint16_t *assets_scene_palette(uint8_t id)
     if (is_cg(id)) {
         uint8_t appvar_idx;
         uint16_t offset;
-        if (lut_lookup(cgpal_lut, cgpal_lut_count, cg_index_buf[id], &appvar_idx, &offset)) {
+        uint16_t len = 0;
+        if (lut_lookup(cgpal_lut, cgpal_lut_count, cg_index_buf[id], &appvar_idx, &offset, &len)) {
             char name[9];
             sprintf(name, "DCGPAL%u", appvar_idx);
             uint8_t handle = ti_Open(name, "r");
             if (handle) {
                 const uint8_t *data = ti_GetDataPtr(handle);
-                memcpy(cg_palette_scratch, data + offset, sizeof(cg_palette_scratch));
+                memcpy(cg_palette_scratch, game_palette, sizeof(cg_palette_scratch));
+                if (len > sizeof(cg_palette_scratch)) {
+                    len = sizeof(cg_palette_scratch);
+                }
+                memcpy(cg_palette_scratch, data + offset, len);
                 ti_Close(handle);
                 return cg_palette_scratch;
             }

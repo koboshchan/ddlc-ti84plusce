@@ -87,7 +87,10 @@ void render_end(void)
 
 static void set_font(uint8_t index)
 {
-    fontlib_SetFont(fontlib_GetFontByIndex("DFONTS", index), 0);
+    fontlib_font_t *f = fontlib_GetFontByIndex("DFONTS", index);
+    if (f) {
+        fontlib_SetFont(f, 0);
+    }
 }
 
 /* fontlib_GetStringWidthL exists and would save the loop, but its stop-code
@@ -101,28 +104,29 @@ static unsigned measure(void *ctx, const char *str, size_t len)
 
     unsigned w = 0;
     for (size_t i = 0; i < len; i++) {
-        w += fontlib_GetGlyphWidth((uint8_t)str[i]);
+        uint8_t c = (uint8_t)str[i];
+        if (c >= 32 && c <= 126) {
+            w += fontlib_GetGlyphWidth(c);
+        }
     }
     return w;
 }
 
-/* Historical note: this used to loop individual gfx_PrintChar() calls,
- * which visibly opened a gap at some letter pairs ("official" ->
- * "of ficial") that a single whole-string draw call didn't -- root cause
- * never fully pinned down, but copying into a NUL-terminated buffer and
- * handing fontlib_DrawString() the whole slice at once sidesteps it either
- * way, same fix as when this was gfx_PrintStringXY(). 96 bytes comfortably
- * covers a full dialogue line (see the file this bug was fixed in for the
- * exact per-glyph math this was checked against at the time). */
+/* 256 bytes comfortably covers a full dialogue line even in narrow proportional
+ * fonts like Aller_Rg without truncation or UTF-8 slicing. Off-screen coordinate
+ * guards prevent unsigned 24-bit integer wrap into arbitrary memory in fontlib. */
 static void print_slice(const char *str, size_t len, int x, int y)
 {
-    char buf[96];
+    if (x < 0 || x >= SCREEN_W || y < 0 || y >= SCREEN_H) {
+        return;
+    }
+    char buf[256];
     if (len >= sizeof(buf)) {
         len = sizeof(buf) - 1;
     }
     memcpy(buf, str, len);
     buf[len] = '\0';
-    fontlib_SetCursorPosition(x, y);
+    fontlib_SetCursorPosition((unsigned int)x, (uint8_t)y);
     fontlib_DrawString(buf);
 }
 
@@ -1055,17 +1059,15 @@ void render_box(const vn_scene_t *scene, const char *speaker,
     /* text_wrap() re-measures every character-width prefix of every line it
      * builds -- real work, not free, and this used to run in full on every
      * single typewriter tick even though only @p visible had changed since
-     * the last call. Caching the wrap by @p text's own pointer identity
-     * turns that into a one-time cost per line: @p text is always
-     * scene->text, a stable zero-copy pointer for the whole typewriter
-     * reveal of one line (see assets_string()/host_say()) -- it only
-     * changes when a genuinely new line starts, which is exactly when the
-     * cache should invalidate. */
-    static const char   *cached_text;
+     * the last call. Caching the wrap by text content comparison turns that
+     * into a one-time cost per line, while staying immune to pointer aliasing
+     * when consecutive lines reuse a shared static buffer (&buf[0]). */
+    static char          cached_copy[256];
     static text_layout_t cached_full;
-    if (text != cached_text) {
+    if (strcmp(text, cached_copy) != 0) {
         text_wrap(&cached_full, text, SCREEN_W - 2 * pad, measure, NULL);
-        cached_text = text;
+        strncpy(cached_copy, text, sizeof(cached_copy) - 1);
+        cached_copy[sizeof(cached_copy) - 1] = '\0';
     }
 
     text_layout_t shown;
@@ -1150,6 +1152,8 @@ void render_debug_font_test(void)
 void render_debug_bg_preview(uint8_t bg_id)
 {
     draw_background(bg_id);
+    gfx_SetColor(COL_BLACK);
+    gfx_FillRectangle_NoClip(0, SCENE_H, SCREEN_W, BOX_H);
 }
 
 void render_menu(const char *const *choices, uint8_t count, uint8_t selected)
@@ -1169,8 +1173,7 @@ void render_menu(const char *const *choices, uint8_t count, uint8_t selected)
         gfx_Rectangle(x, y, w, h - 2);
 
         fontlib_SetForegroundColor(i == selected ? COL_BLACK : COL_WHITE);
-        fontlib_SetCursorPosition(x + 6, y + 3);
-        fontlib_DrawString(choices[i]);
+        print_slice(choices[i], strlen(choices[i]), x + 6, y + 3);
     }
 }
 
@@ -1197,8 +1200,11 @@ void render_backdrop(uint8_t color)
 
 void render_text(const char *s, int x, int y, uint8_t color)
 {
+    if (!s || x < 0 || x >= SCREEN_W || y < 0 || y >= SCREEN_H) {
+        return;
+    }
     fontlib_SetForegroundColor(color);
-    fontlib_SetCursorPosition(x, y);
+    fontlib_SetCursorPosition((unsigned int)x, (uint8_t)y);
     fontlib_DrawString(s);
 }
 
@@ -1210,14 +1216,21 @@ static unsigned string_width(const char *s)
 {
     unsigned w = 0;
     for (const char *p = s; *p; p++) {
-        w += fontlib_GetGlyphWidth((uint8_t)*p);
+        uint8_t c = (uint8_t)*p;
+        if (c >= 32 && c <= 126) {
+            w += fontlib_GetGlyphWidth(c);
+        }
     }
     return w;
 }
 
 void render_text_centered(const char *s, int y, uint8_t color)
 {
-    render_text(s, (SCREEN_W - (int)string_width(s)) / 2, y, color);
+    int cx = (SCREEN_W - (int)string_width(s)) / 2;
+    if (cx < 0) {
+        cx = 0;
+    }
+    render_text(s, cx, y, color);
 }
 
 void render_list_menu(const char *const *items, uint8_t count, uint8_t selected,

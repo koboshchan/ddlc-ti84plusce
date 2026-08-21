@@ -4,6 +4,7 @@
  */
 
 #include "save.h"
+#include "assets.h"
 
 #include <fileioc.h>
 
@@ -115,10 +116,10 @@ bool save_load(uint8_t slot, vn_vm_t *vm)
     memcpy(vm->scene.actors, blob.actors, sizeof(vm->scene.actors));
     vm->scene.speaker    = blob.speaker;
     vm->scene.text_index = blob.text_index;
-    /* Through vm->host->string(), not assets_string() directly: the host
-     * (main.c's host_string) also does "[player]" substitution, and a
-     * loaded line needs that exactly as much as one reached by playing
-     * forward does. */
+    /* Load the target chunk so blob.text_index resolves against the correct
+     * chunk string table, then resolve through vm->host->string() for
+     * [player] substitution. */
+    assets_load_chunk((uint8_t)VN_CHUNK_ID(blob.pc));
     vm->scene.text = vm->host->string(vm->host->ctx, blob.text_index);
     vm->status = VN_RUNNING;
     return true;
