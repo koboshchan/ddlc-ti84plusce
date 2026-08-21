@@ -784,7 +784,7 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
     # (these AppVars present, exactly as shipped) distinct from every
     # later boot (leave them alone, whatever state they're actually in).
     for name in ("SAYORI", "NATSUKI", "YURI", "MONIKA"):
-        appvars.append(write_appvar(b"\xFF" * 64, name, appvar_dir))
+        appvars.append(write_appvar(b"", name, appvar_dir))
 
     total = sum(p.stat().st_size for p in appvars)
     print(f"{len(appvars)} AppVars, {total} bytes total "
