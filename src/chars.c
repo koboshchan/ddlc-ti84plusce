@@ -36,6 +36,8 @@ void chars_init(void)
 
     handle = ti_Open("FIRSTRUN", "w");
     if (handle) {
+        uint8_t dummy = 1;
+        ti_Write(&dummy, 1, 1, handle);
         ti_SetArchiveStatus(true, handle);
         ti_Close(handle);
     }
