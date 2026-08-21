@@ -833,6 +833,14 @@ def do_bundle(prog_8xp: Path, appvars: list[Path], out_path: Path,
     print(f"  within the {limit}-byte archive budget "
           f"({raw_total / limit:.0%} used, {limit - raw_total} bytes spare)")
 
+    # Also stage all individual files into build/transfer_files/ for direct drag-and-drop
+    # if TI Connect CE's .b84 parser errors out on large bundles.
+    transfer_dir = out_path.parent / "transfer_files"
+    transfer_dir.mkdir(parents=True, exist_ok=True)
+    import shutil
+    for f in inputs:
+        shutil.copy(f, transfer_dir / f.name)
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
