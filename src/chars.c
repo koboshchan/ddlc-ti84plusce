@@ -16,14 +16,22 @@ void chars_init(void)
 {
     /* Present means some previous boot (of this same flashed .b84) already
      * ran this -- the 4 character AppVars are whatever the player's left
-     * them as since, and this function has nothing left to do. See
-     * chars_init()'s own header comment for why that check has to be a
-     * separate marker rather than re-deriving it from the character
-     * AppVars themselves. */
+     * them as since, and this function has nothing left to do. */
     uint8_t handle = ti_Open("DINIT", "r");
     if (handle) {
         ti_Close(handle);
         return;
+    }
+
+    /* First launch: create the 4 character AppVars in Archive */
+    for (uint8_t i = 0; i < CHAR_COUNT; i++) {
+        uint8_t ch = ti_Open(chars_name[i], "w");
+        if (ch) {
+            uint8_t dummy = 0xFF;
+            ti_Write(&dummy, 1, 1, ch);
+            ti_SetArchiveStatus(true, ch);
+            ti_Close(ch);
+        }
     }
 
     handle = ti_Open("DINIT", "w");
