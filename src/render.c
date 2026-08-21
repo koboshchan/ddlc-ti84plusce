@@ -1004,14 +1004,20 @@ void render_box(const vn_scene_t *scene, const char *speaker,
         gfx_SetColor(bottom_color);
         gfx_FillRectangle_NoClip(0, BOX_Y, SCREEN_W, BOX_H);
         if (scene->window_hidden && text != NULL && text[0] != '\0') {
-            int cx = (SCREEN_W - (int)string_width(text)) / 2;
+            int sw = (int)string_width(text);
+            /* Ren'Py AST uses xalign 0.8, yalign 0.5 for floating text like s_kill_early */
+            int cx = (int)(0.80f * (SCREEN_W - sw));
             if (cx < 6) {
                 cx = 6;
             }
+            if (cx + sw > SCREEN_W - 6) {
+                cx = SCREEN_W - sw - 6;
+            }
+            int cy = 114; /* vertically centered on 240px screen */
             uint8_t fg = (bottom_color == COL_WHITE) ? COL_BLACK : COL_WHITE;
             uint8_t outline = (bottom_color == COL_WHITE) ? COL_WHITE : COL_BLACK;
             print_slice_outlined(text, visible < strlen(text) ? visible : strlen(text),
-                                 cx, 80, fg, outline);
+                                 cx, cy, fg, outline);
         }
         return;
     }
