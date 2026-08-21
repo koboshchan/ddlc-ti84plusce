@@ -1385,7 +1385,22 @@ class ImageResolver:
                 # Compose at full CG resolution first (see CG_FULL_SIZE's
                 # comment), then downscale for the on-calc bake -- so the
                 # cgpack export is a real fit, not a re-derivation of one.
-                full_cg = _fit_and_center(art, CG_FULL_SIZE, (0, 0, 0, 255))
+                if "s_kill_early" in str(imgname) or (isinstance(getattr(defn, "path", None), str) and "s_kill_early" in defn.path):
+                    # s_kill_early in DDLC: Sayori hanging centered in a white room with static noise
+                    canvas_bg = PILImage.new("RGBA", CG_FULL_SIZE, (255, 255, 255, 255))
+                    scale = CG_FULL_SIZE[1] / art.height
+                    scaled_w = round(art.width * scale)
+                    scaled_art = art.resize((scaled_w, CG_FULL_SIZE[1]), PILImage.LANCZOS)
+                    canvas_bg.alpha_composite(scaled_art, ((CG_FULL_SIZE[0] - scaled_w) // 2, 0))
+                    noise_path = self.raw_dir / "images" / "bg" / "noise1.jpg"
+                    if noise_path.exists():
+                        noise_img = PILImage.open(noise_path).convert("RGBA").resize(CG_FULL_SIZE)
+                        noise_overlay = PILImage.blend(PILImage.new("RGBA", CG_FULL_SIZE, (0, 0, 0, 0)), noise_img, 0.18)
+                        full_cg = PILImage.alpha_composite(canvas_bg, noise_overlay)
+                    else:
+                        full_cg = canvas_bg
+                else:
+                    full_cg = _fit_and_center(art, CG_FULL_SIZE, (0, 0, 0, 255))
                 canvas = full_cg if size == CG_FULL_SIZE else full_cg.resize(size, PILImage.LANCZOS)
             else:
                 canvas = art.resize(size, PILImage.LANCZOS).convert("RGBA")

@@ -112,6 +112,18 @@ static unsigned measure(void *ctx, const char *str, size_t len)
     return w;
 }
 
+static unsigned string_width(const char *s)
+{
+    unsigned w = 0;
+    for (const char *p = s; *p; p++) {
+        uint8_t c = (uint8_t)*p;
+        if (c >= 32 && c <= 126) {
+            w += fontlib_GetGlyphWidth(c);
+        }
+    }
+    return w;
+}
+
 /* 256 bytes comfortably covers a full dialogue line even in narrow proportional
  * fonts like Aller_Rg without truncation or UTF-8 slicing. Off-screen coordinate
  * guards prevent unsigned 24-bit integer wrap into arbitrary memory in fontlib. */
@@ -958,17 +970,22 @@ static void blit_raw(int x, int y, const uint8_t *src, int w, int h)
 void render_box(const vn_scene_t *scene, const char *speaker,
                 const char *text, size_t visible)
 {
-    /* `window hide` -- DDLC uses this for a beat with no text over a clean
-     * shot of the scene. Filled black rather than left untouched: nothing
-     * else in this program ever draws y >= SCENE_H, so a stale frame's
-     * pixels (or worse, whatever happened to be in the draw buffer before
-     * gfx_Begin() cleared it) would otherwise show through the very first
-     * time this runs. Not the same effect as real Ren'Py's window hide --
-     * see vn_scene_t.window_hidden's own comment for why this engine can't
-     * expand the scene into that space instead. */
-    if (scene->window_hidden) {
+    /* `window hide` or empty text -- DDLC uses this for beats with no text
+     * (e.g. splash screens, CGs, end screens, pauses) over a clean shot of
+     * the scene. Filled black rather than drawing a stale or empty dialogue box.
+     * When window_hidden is set with text present (e.g. floating text displayables),
+     * the text is drawn directly centered over the scene. */
+    if (scene->window_hidden || text == NULL || text[0] == '\0') {
         gfx_SetColor(COL_BLACK);
         gfx_FillRectangle_NoClip(0, BOX_Y, SCREEN_W, BOX_H);
+        if (scene->window_hidden && text != NULL && text[0] != '\0') {
+            int cx = (SCREEN_W - (int)string_width(text)) / 2;
+            if (cx < 6) {
+                cx = 6;
+            }
+            print_slice_outlined(text, visible < strlen(text) ? visible : strlen(text),
+                                 cx, 80, COL_WHITE, COL_BLACK);
+        }
         return;
     }
 
@@ -1208,21 +1225,6 @@ void render_text(const char *s, int x, int y, uint8_t color)
     fontlib_DrawString(s);
 }
 
-/* Same per-glyph-sum reasoning as measure()'s own comment -- this is a real
- * NUL-terminated C string, so fontlib_GetStringWidth(s) would work too, but
- * summing keeps every width computation in this file going through the
- * same one code path rather than two. */
-static unsigned string_width(const char *s)
-{
-    unsigned w = 0;
-    for (const char *p = s; *p; p++) {
-        uint8_t c = (uint8_t)*p;
-        if (c >= 32 && c <= 126) {
-            w += fontlib_GetGlyphWidth(c);
-        }
-    }
-    return w;
-}
 
 void render_text_centered(const char *s, int y, uint8_t color)
 {

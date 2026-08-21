@@ -340,7 +340,9 @@ def _convimg_cache_key(build_dir: Path, manifest_bytes: bytes, quality: int) -> 
 
 
 def do_convert_images(build_dir: Path, quality: int, skip: bool,
-                      cache_dir: Path | None = None) -> None:
+                      cache_dir: Path | None = None,
+                      metal: bool = False,
+                      convimg_bin: Path | None = None) -> None:
     step("convert images (convimg)")
     gfx_dir = build_dir / "gfx"
     img_dir = build_dir / "img"
@@ -373,7 +375,7 @@ def do_convert_images(build_dir: Path, quality: int, skip: bool,
     doc = convert_images.build_yaml(manifest, img_dir, gfx_dir, quality=quality)
     yaml_path = build_dir / "convimg.yaml"
     yaml_path.write_text(__import__("yaml").safe_dump(doc, sort_keys=False))
-    convert_images.run_convimg(yaml_path, img_dir)
+    convert_images.run_convimg(yaml_path, img_dir, metal=metal, convimg_bin=convimg_bin)
 
     if cache_dir is not None:
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -857,6 +859,10 @@ def main() -> int:
     ap.add_argument("--archive-budget", type=int, default=ARCHIVE_LIMIT,
                     help=f"fail the build if on-calc archive usage exceeds this "
                          f"many bytes (default {ARCHIVE_LIMIT})")
+    ap.add_argument("--metal", action="store_true",
+                    help="use GPU acceleration via Metal in convimg")
+    ap.add_argument("--convimg", type=Path, default=None,
+                    help="path to custom convimg executable")
     args = ap.parse_args()
 
     args.build_dir.mkdir(parents=True, exist_ok=True)
@@ -873,8 +879,9 @@ def main() -> int:
         entry_chunk, entry_offset = find_entry_point(assemblers)
         splash_pc = find_label_pc(assemblers, "splashscreen")
         chunk_paths = write_chunks(assemblers, args.build_dir)
-        convimg_cache = args.convimg_cache if str(args.convimg_cache) else None
-        do_convert_images(args.build_dir, args.quality, args.skip_convimg, convimg_cache)
+        convimg_cache = args.convimg_cache if str(args.convimg_cache).strip() and str(args.convimg_cache) != "." else None
+        do_convert_images(args.build_dir, args.quality, args.skip_convimg, convimg_cache,
+                          metal=args.metal, convimg_bin=args.convimg)
         manifest = json.loads((args.build_dir / "manifest.json").read_text())
         appvars = do_package(args.build_dir, args.appvar_dir, args.raw_dir, manifest,
                              chunk_paths, entry_chunk, entry_offset, compiler, splash_pc)

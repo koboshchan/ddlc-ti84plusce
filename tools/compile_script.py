@@ -842,8 +842,24 @@ class Compiler:
                 # flag and skips emitting that one.
                 self.asm.pause_long(round(delay_s * 1000))
                 self._suppress_next_bare_pause = True
+            self.asm.window_hide()
             self.asm.narrate(_strip_text_tags(text_literal))
+            self.asm.window_show()
             return
+
+        # Skip low-opacity overlay layers (e.g. `show white as w2`, `show noise: alpha 0.1` in splash.rpy)
+        # that were layered over existing scenes like s_kill_early rather than replacing them
+        if node.imspec and len(node.imspec) > 2 and node.imspec[2] == "w2":
+            return
+        if imgname == ("noise",):
+            atl = getattr(node, "atl", None)
+            if atl is not None:
+                props = {}
+                for stmt in getattr(atl, "statements", []):
+                    for k, v in getattr(stmt, "properties", []):
+                        props[k] = v
+                if "alpha" in props and float(props["alpha"]) < 0.5:
+                    return
 
         if len(imgname) == 1:
             defn = self.resolver.table.get(imgname)
@@ -856,7 +872,9 @@ class Compiler:
                 # since imgname[0] here is the symbolic tag, not the literal
                 # Text(...) call source -- see image_resolve.py's
                 # _resolve_source() for where this ImageDef comes from.
+                self.asm.window_hide()
                 self.asm.narrate(_strip_text_tags(defn.text))
+                self.asm.window_show()
                 return
 
         char = TAG_TO_CHAR.get(imgname[0])

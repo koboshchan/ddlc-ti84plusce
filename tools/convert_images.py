@@ -359,10 +359,11 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
     }
 
 
-def run_convimg(yaml_path: Path, img_dir: Path, threads: int | None = None) -> None:
-    if shutil.which("convimg") is None:
-        sys.exit("convimg not found on PATH. Export CEdev/bin, e.g.:\n"
-                  '  export PATH="$HOME/CEdev/bin:$PATH"')
+def run_convimg(yaml_path: Path, img_dir: Path, threads: int | None = None,
+                metal: bool = False, convimg_bin: str | Path | None = None) -> None:
+    convimg_exe = str(convimg_bin) if convimg_bin else os.environ.get("CONVIMG", "convimg")
+    if shutil.which(convimg_exe) is None and not os.path.isfile(convimg_exe):
+        sys.exit(f"convimg not found ({convimg_exe}). Export CEdev/bin or set CONVIMG.")
     # convimg's own default is a fixed 4 threads regardless of the host --
     # a huge waste on a many-core machine for the palette quantization pass,
     # which is CPU-bound and embarrassingly parallel across images. Use
@@ -373,8 +374,10 @@ def run_convimg(yaml_path: Path, img_dir: Path, threads: int | None = None) -> N
     # bare filenames assuming that cwd (see its docstring for the two real
     # Windows bugs that forced this).
     yaml_rel = os.path.relpath(yaml_path, img_dir)
-    subprocess.run(["convimg", "-i", yaml_rel, "--threads", str(threads)],
-                   check=True, cwd=img_dir)
+    cmd = [convimg_exe, "-i", yaml_rel, "--threads", str(threads)]
+    if metal:
+        cmd.append("--metal")
+    subprocess.run(cmd, check=True, cwd=img_dir)
 
 
 def main() -> int:
