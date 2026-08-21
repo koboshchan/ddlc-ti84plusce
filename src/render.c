@@ -1529,36 +1529,6 @@ void render_splash_warning(const char *msg)
     }
 }
 
-void render_disclaimer_screen(void)
-{
-    scene_obscured();
-    render_backdrop(COL_WHITE);
-    render_text_centered("This game is not suitable for children", 24, COL_BLACK);
-    render_text_centered("or those who are easily disturbed.", 38, COL_BLACK);
-
-    render_text_centered("Individuals suffering from anxiety or depression", 68, COL_BLACK);
-    render_text_centered("may not have a safe experience playing this game.", 82, COL_BLACK);
-
-    render_text_centered("By playing Doki Doki Literature Club, you agree that", 114, COL_BLACK);
-    render_text_centered("you are at least 13 years of age, and you consent to", 128, COL_BLACK);
-    render_text_centered("your exposure of highly disturbing content.", 142, COL_BLACK);
-
-    /* Agreement button */
-    int btn_w = 140;
-    int btn_h = 24;
-    int btn_x = (SCREEN_W - btn_w) / 2;
-    int btn_y = 176;
-
-    gfx_SetColor(COL_NAV_FILL);
-    gfx_FillRectangle_NoClip(btn_x, btn_y, btn_w, btn_h);
-    gfx_SetColor(COL_NAV_EDGE);
-    gfx_Rectangle_NoClip(btn_x, btn_y, btn_w, btn_h);
-    gfx_Rectangle_NoClip(btn_x - 1, btn_y - 1, btn_w + 2, btn_h + 2);
-
-    render_text_centered("> I agree. <", btn_y + 6, COL_BOX_FILL);
-    render_text_centered("2nd / Enter to confirm", 216, COL_BOX_FILL);
-}
-
 void render_game_menu(uint8_t mode, uint8_t focused_pane, uint8_t sidebar_selected,
                       uint8_t slot_selected, bool is_in_game, unsigned t)
 {

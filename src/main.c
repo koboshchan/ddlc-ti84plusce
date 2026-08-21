@@ -1490,24 +1490,6 @@ static void draw_splash_logo(void)
     }
 }
 
-static void run_disclaimer_confirm(void)
-{
-    for (;;) {
-        render_disclaimer_screen();
-        render_present(TRANS_CUT);
-        gfx_Wait();
-
-        input_t in;
-        input_poll(&in);
-        if (quit_requested) {
-            return;
-        }
-        if (in.advance) {
-            persist_first_run_set_done();
-            return;
-        }
-    }
-}
 
 static const char *const act2_splash_messages[] = {
     "You are my sunshine,\nMy only sunshine",
@@ -1731,17 +1713,7 @@ int main(void)
     entry_pc = assets_entry_pc();
     host.ctx = &vm;
 
-    /* 1. 13+ content warning / age consent agreement (first launch only) */
-    if (!persist_first_run_done()) {
-        run_disclaimer_confirm();
-        if (quit_requested) {
-            cgpack_end();
-            render_end();
-            return 0;
-        }
-    }
-
-    /* 2. Team Salvato Logo Splash */
+    /* 1. Team Salvato Logo Splash */
     run_splash_screens();
     if (quit_requested) {
         cgpack_end();
