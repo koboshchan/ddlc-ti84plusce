@@ -973,19 +973,24 @@ void render_box(const vn_scene_t *scene, const char *speaker,
 {
     /* `window hide` or empty text -- DDLC uses this for beats with no text
      * (e.g. splash screens, CGs, end screens, pauses) over a clean shot of
-     * the scene. Filled black rather than drawing a stale or empty dialogue box.
+     * the scene. The letterbox area (rows 180..239) is filled matching the
+     * bottom row of the rendered scene so white scenes (like s_kill_early)
+     * stay seamless white with no black bar, and black scenes stay black.
      * When window_hidden is set with text present (e.g. floating text displayables),
      * the text is drawn directly centered over the scene. */
     if (scene->window_hidden || text == NULL || text[0] == '\0') {
-        gfx_SetColor(COL_BLACK);
+        uint8_t bottom_color = ((uint8_t *)gfx_vbuffer)[(SCENE_H - 1) * SCREEN_W];
+        gfx_SetColor(bottom_color);
         gfx_FillRectangle_NoClip(0, BOX_Y, SCREEN_W, BOX_H);
         if (scene->window_hidden && text != NULL && text[0] != '\0') {
             int cx = (SCREEN_W - (int)string_width(text)) / 2;
             if (cx < 6) {
                 cx = 6;
             }
+            uint8_t fg = (bottom_color == COL_WHITE) ? COL_BLACK : COL_WHITE;
+            uint8_t outline = (bottom_color == COL_WHITE) ? COL_WHITE : COL_BLACK;
             print_slice_outlined(text, visible < strlen(text) ? visible : strlen(text),
-                                 cx, 80, COL_WHITE, COL_BLACK);
+                                 cx, 80, fg, outline);
         }
         return;
     }

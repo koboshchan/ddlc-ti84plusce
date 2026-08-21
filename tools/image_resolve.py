@@ -1386,12 +1386,13 @@ class ImageResolver:
                 # comment), then downscale for the on-calc bake -- so the
                 # cgpack export is a real fit, not a re-derivation of one.
                 if "s_kill_early" in str(imgname) or (isinstance(getattr(defn, "path", None), str) and "s_kill_early" in defn.path):
-                    # s_kill_early in DDLC: Sayori hanging centered in a white room with static noise
+                    # s_kill_early in DDLC: Sayori hanging on the left (xalign 0.25) in a white room with static noise
                     canvas_bg = PILImage.new("RGBA", CG_FULL_SIZE, (255, 255, 255, 255))
                     scale = CG_FULL_SIZE[1] / art.height
                     scaled_w = round(art.width * scale)
                     scaled_art = art.resize((scaled_w, CG_FULL_SIZE[1]), PILImage.LANCZOS)
-                    canvas_bg.alpha_composite(scaled_art, ((CG_FULL_SIZE[0] - scaled_w) // 2, 0))
+                    sayori_x = round(0.25 * (CG_FULL_SIZE[0] - scaled_w))
+                    canvas_bg.alpha_composite(scaled_art, (sayori_x, 0))
                     noise_path = self.raw_dir / "images" / "bg" / "noise1.jpg"
                     if noise_path.exists():
                         noise_img = PILImage.open(noise_path).convert("RGBA").resize(CG_FULL_SIZE)
