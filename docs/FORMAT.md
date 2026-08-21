@@ -1120,14 +1120,12 @@ content; only their existence is meaningful. The meta "file deletion" effect
 `chars_present()` lets the engine ask the filesystem directly rather than
 tracking deletion state separately.
 
-`chars_init()` itself doesn't touch these four at all — it only checks for
-a `DINIT` marker AppVar, which (unlike the character AppVars) is never
-baked into the bundle, only ever created here at runtime. Present means
-some earlier boot of this same flashed `.b84` already ran this, so the
-character AppVars are whatever the player's left them as since and nothing
-happens; missing means this is the first boot since flashing, `DINIT` gets
-created, and there's nothing else to do since the character AppVars ship
-already present. This split exists because a naive "create any of the 4
+`chars_init()` creates these four character AppVars directly on first launch,
+guarded by the `FIRSTRUN` marker AppVar (which is created at runtime on first boot).
+Present means some earlier boot already ran this, so the character AppVars are
+whatever the player has left them as since and nothing happens; missing means
+this is the first boot since flashing, so the 4 character AppVars and `FIRSTRUN`
+get created. This split exists because a naive "create any of the 4
 that are missing" loop run on every boot can't tell "never existed" apart
 from "deliberately deleted in a previous session" — it would silently
 resurrect a deleted character the next time the program launched, which an

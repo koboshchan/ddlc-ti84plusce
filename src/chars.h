@@ -30,12 +30,11 @@ enum {
 };
 
 /**
- * First boot after this .b84 was flashed, marks it done and returns --
- * nothing else to do, since the 4 character AppVars ship already present
- * in the bundle. Every later boot, the marker AppVar (DINIT, never itself
- * baked into the bundle -- only ever created here) already exists, so this
- * returns immediately without touching the character AppVars at all,
- * whatever state they're actually in. That distinction is the whole point:
+ * First boot after install, creates the 4 character AppVars and marks
+ * it done by creating FIRSTRUN in Archive. Every later boot, the marker
+ * AppVar (FIRSTRUN, never baked into the bundle -- only ever created here)
+ * already exists, so this returns immediately without touching the character
+ * AppVars at all, whatever state they're actually in. That distinction is the whole point:
  * a naive "create any of the 4 that are missing" loop run on every boot
  * can't tell "never existed" apart from "deliberately deleted in a
  * previous session", so it would silently resurrect a deleted character

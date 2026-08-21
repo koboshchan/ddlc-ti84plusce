@@ -773,7 +773,7 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
 
     # The 4 real DDLC character ".chr" file stand-ins (src/chars.c/.h) --
     # Character AppVars (SAYORI/NATSUKI/YURI/MONIKA) are created on first boot
-    # by chars_init() directly on-calc (and guarded by the DINIT marker), so they
+    # by chars_init() directly on-calc (and guarded by the FIRSTRUN marker), so they
     # do not need to be transferred via TI Connect CE.
 
     total = sum(p.stat().st_size for p in appvars)

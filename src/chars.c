@@ -17,7 +17,7 @@ void chars_init(void)
     /* Present means some previous boot (of this same flashed .b84) already
      * ran this -- the 4 character AppVars are whatever the player's left
      * them as since, and this function has nothing left to do. */
-    uint8_t handle = ti_Open("DINIT", "r");
+    uint8_t handle = ti_Open("FIRSTRUN", "r");
     if (handle) {
         ti_Close(handle);
         return;
@@ -34,7 +34,7 @@ void chars_init(void)
         }
     }
 
-    handle = ti_Open("DINIT", "w");
+    handle = ti_Open("FIRSTRUN", "w");
     if (handle) {
         ti_SetArchiveStatus(true, handle);
         ti_Close(handle);
