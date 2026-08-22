@@ -1,0 +1,13 @@
+.git
+.gitignore
+.venv
+bin/
+obj/
+build/
+*.8xp
+*.8xv
+*.b84
+__pycache__
+*.pyc
+.DS_Store
+.gemini
