@@ -1188,21 +1188,46 @@ void render_debug_bg_preview(uint8_t bg_id)
 void render_menu(const char *const *choices, uint8_t count, uint8_t selected)
 {
     scene_obscured();
-    const int h    = 14;
-    const int w    = SCREEN_W - 60;
-    const int x    = 30;
-    const int top  = (SCENE_H - count * h) / 2;
+    set_font(FONT_DEFAULT);
+
+    if (count == 0) {
+        return;
+    }
+
+    const int btn_h = (count <= 4) ? 22 : (count == 5 ? 20 : 18);
+    const int gap   = (count <= 4) ? 6 : 4;
+    const int w     = SCREEN_W - 60;
+    const int x     = (SCREEN_W - w) / 2;
+    const int total_h = count * btn_h + (count - 1) * gap;
+    const int top   = (SCENE_H - total_h) / 2;
 
     for (uint8_t i = 0; i < count; i++) {
-        const int y = top + i * h;
+        const int y = top + (int)i * (btn_h + gap);
+        bool is_sel = (i == selected);
+        size_t len  = strlen(choices[i]);
+        int text_w  = (int)measure(NULL, choices[i], len);
+        int text_x  = x + (w - text_w) / 2;
+        if (text_x < x + 4) {
+            text_x = x + 4;
+        }
+        /* Vertical center: font glyph cell is 15px tall (ascent 12, descent 3).
+         * Centering in btn_h gives (btn_h - 15) / 2. */
+        int text_y  = y + (btn_h - 15) / 2;
 
-        gfx_SetColor(i == selected ? COL_HIGHLIGHT : COL_BOX_FILL);
-        gfx_FillRectangle(x, y, w, h - 2);
-        gfx_SetColor(COL_BOX_EDGE);
-        gfx_Rectangle(x, y, w, h - 2);
+        /* Drop shadow */
+        gfx_SetColor(COL_SHADOW);
+        gfx_FillRectangle(x + 1, y + 1, w, btn_h);
 
-        fontlib_SetForegroundColor(i == selected ? COL_BLACK : COL_WHITE);
-        print_slice(choices[i], strlen(choices[i]), x + 6, y + 3);
+        /* Button body */
+        gfx_SetColor(is_sel ? COL_HIGHLIGHT : COL_BOX_FILL);
+        gfx_FillRectangle(x, y, w, btn_h);
+
+        /* Border */
+        gfx_SetColor(is_sel ? COL_HIGHLIGHT : COL_BOX_EDGE);
+        gfx_Rectangle(x, y, w, btn_h);
+
+        fontlib_SetForegroundColor(is_sel ? COL_BLACK : COL_WHITE);
+        print_slice(choices[i], len, text_x, text_y);
     }
 }
 
