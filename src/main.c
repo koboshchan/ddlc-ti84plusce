@@ -639,9 +639,9 @@ static void run_debug_events_test(void)
 {
     static const char *const lines[] = {
         "Ghost menu (1/64 per boot):",
-        "  blocked -- playthrough always 0",
+        "  implemented -- Act 2 splash check",
         "Disclaimer text swap (1/4):",
-        "  blocked -- same playthrough gate",
+        "  implemented -- Act 2 splash warning",
         "Monika's-eyes glitch:",
         "  real, gated on real story state",
         "Poem sticker/jumpscare events:",
@@ -1957,11 +1957,11 @@ static const char *const act2_splash_messages[] = {
     "Don't forget to backup Monika's character file."
 };
 
-static bool run_splash_warning(void)
+static bool run_splash_warning(int16_t playthrough)
 {
     const char *msg = NULL;
-    /* 1 in 4 (25%) chance of eerie random splash disclaimer */
-    if ((rand() % 4) == 0) {
+    /* 1 in 4 (25%) chance of eerie random splash disclaimer during Act 2 (playthrough == 2) */
+    if (playthrough == 2 && (rand() % 4) == 0) {
         size_t idx = (size_t)(rand() % (sizeof(act2_splash_messages) / sizeof(act2_splash_messages[0])));
         msg = act2_splash_messages[idx];
     }
@@ -2164,6 +2164,12 @@ int main(void)
     entry_pc = assets_entry_pc();
     host.ctx = &vm;
 
+    /* Initialize vm with variable defaults and persistent state early so
+     * startup splash and disclaimer checks have access to persistent.playthrough. */
+    assets_apply_var_defaults(&vm);
+    persist_load(&vm);
+    int16_t playthrough = vm.vars[VN_PLAYTHROUGH_VAR];
+
     /* 1. Team Salvato Logo Splash */
     run_splash_screens();
     if (quit_requested) {
@@ -2172,8 +2178,9 @@ int main(void)
         return 0;
     }
 
-    /* 3. Splash Warning: "This game is not suitable for children or those who are easily disturbed." */
-    run_splash_warning();
+    /* 2. Splash Warning: "This game is not suitable for children or those who are easily disturbed."
+     * In Act 2 (playthrough == 2), there is a 1 in 4 chance of a corrupted variant. */
+    run_splash_warning(playthrough);
     if (quit_requested) {
         cgpack_end();
         render_end();

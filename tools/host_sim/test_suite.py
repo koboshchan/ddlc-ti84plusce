@@ -533,6 +533,39 @@ def run_all_tests() -> list[TestResult]:
                 error_message="" if passed else f"Invalid DSTKRS count or dimensions (count={stk_count})"
             ))
 
+    # 4.7 Act 2 Splash Messages Verification
+    main_c_path = ROOT / "src" / "main.c"
+    if main_c_path.is_file():
+        main_c = main_c_path.read_text(encoding="utf-8")
+        canonical_messages = [
+            r"You are my sunshine,\nMy only sunshine",
+            "I missed you.",
+            "Play with me",
+            "It's just a game, mostly.",
+            r"This game is not suitable for children\nor those who are easily disturbed?",
+            "sdfasdklfgsdfgsgoinrfoenlvbd",
+            "null",
+            "I have granted kids to hell",
+            "PM died for this.",
+            "It was only partially your fault.",
+            r"This game is not suitable for children\nor those who are easily dismembered.",
+            "Don't forget to backup Monika's character file."
+        ]
+        all_present = all(msg in main_c for msg in canonical_messages)
+        results.append(TestResult(
+            name="Act 2 corrupted splash disclaimer text pool (12 canonical messages)",
+            passed=all_present,
+            status="finished" if all_present else "error",
+            chunk=0,
+            pc=0,
+            lines=len(canonical_messages),
+            menus=0,
+            quit_requested=False,
+            deleted=[],
+            warnings=[],
+            error_message="" if all_present else "Missing canonical Act 2 splash messages in src/main.c"
+        ))
+
     return results
 
 
