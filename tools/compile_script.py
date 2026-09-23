@@ -19,7 +19,7 @@ from __future__ import annotations
 import ast
 import itertools
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import vnasm
@@ -302,6 +302,15 @@ class SkipEntry:
 
 
 @dataclass
+class _FlashEntry:
+    tag: str              # tag or alias, e.g. "white", "s_kill", "rg1"
+    img_tag: str          # imgname[0], e.g. "s_kill", "room_glitch"
+    scene_id: int         # scene_id that was set
+    prev_bg: int | None   # background before this entry
+    saved_chars: dict     # char -> (sprite, pos, flags)
+
+
+@dataclass
 class Compiler:
     resolver: "image_resolve.ImageResolver"
     asm: vnasm.Assembler = field(default_factory=vnasm.Assembler)
@@ -339,8 +348,8 @@ class Compiler:
     _current_bg: int | None = field(default=None, init=False)
     _current_cg_family: str | None = field(default=None, init=False)
     _current_cg_layers: list = field(default_factory=list, init=False)
-    _flash_tag: str | None = field(default=None, init=False)   # 'white'/'black' currently "up", or None
-    _pre_flash_bg: int | None = field(default=None, init=False)  # _current_bg from just before it went up
+    _flash_stack: list[_FlashEntry] = field(default_factory=list, init=False)
+    char_aliases: dict[str, int] = field(default_factory=dict, init=False)
     # One-shot: set by _emit_Show right after a delayed-reveal `Show
     # Text(...)` (see _match_atl_delay_seconds) already emitted its own
     # pause_long()+narrate() pair, which together already provide the same
@@ -585,7 +594,9 @@ class Compiler:
                 self.last_pos[char] = pos
                 self.last_flags[char] = flags
                 return pos, flags
-        persisted_flags = self.last_flags.get(char, 0)
+        # VN_FLAG_HOP is an authored one-shot bounce on initial show; do not
+        # persist it into subsequent Say attribute changes to avoid repeated bouncing.
+        persisted_flags = self.last_flags.get(char, 0) & ~vnasm.VN_FLAG_HOP
         return self.last_pos.get(char, vnasm.POS_CENTER), persisted_flags
 
     def _next_node(self):
@@ -914,6 +925,9 @@ class Compiler:
                 return
 
         char = TAG_TO_CHAR.get(imgname[0])
+        alias = node.imspec[2] if (node.imspec and len(node.imspec) > 2 and node.imspec[2]) else None
+        if char is not None and alias:
+            self.char_aliases[alias] = char
         if char is None:
             tag = imgname[0]
             matching_cg = next((pfx for pfx in CG_PREFIXES if tag.startswith(pfx)), None)
@@ -965,38 +979,38 @@ class Compiler:
                 self.last_flags.clear()
                 self.visible_chars.clear()
                 self._current_bg = None  # runtime-picked; no single compile-time id to remember
-                self._flash_tag = None
-                self._pre_flash_bg = None
+                self._flash_stack.clear()
                 return
 
             scene_id = self.resolver.scene_id(imgname)
             if scene_id is None:
                 self._skip(node, fname, f"unknown character tag in {imgname!r}")
                 return
-            # 'white'/'black' are DDLC's own full-screen flash idiom (real
-            # Ren'Py shows them on a layer above the scene, then a later
-            # `hide white`/`hide black` removes just the overlay) -- since
-            # this engine has no overlay layer, faking the flash means
-            # actually swapping the background out here and remembering
-            # what it was, so _emit_Hide can swap it back.
-            #
-            # Every bare tag gets this tracked now, not just white/black --
-            # an earlier version assumed any other bare tag (`end`,
-            # poem_specialN, ...) was a real terminal image with no
-            # matching Hide expected, but that's false for at least 4 real
-            # sites found live (ch22's `y_glitch_head`/`blood_eye`/
-            # `blood_eye2`, poemresponses2's `darkred`): DDLC uses this
-            # same overlay-flash idiom for other full-screen effects too,
-            # not just white/black specifically, and the old assumption
-            # left their `hide` calls skipped ("unknown character tag"),
-            # which would have stuck the scene on that image forever with
-            # no way back -- the exact same bug class the white/black fix
-            # addressed, just for tags that fix didn't cover. If a bare
-            # tag genuinely has no matching Hide (a real terminal image),
-            # this bookkeeping just sits unused until the next real scene
-            # change resets it (_emit_Scene) -- harmless either way.
-            self._flash_tag = imgname[0]
-            self._pre_flash_bg = self._current_bg
+            # Full-screen overlays and flashes (white, black, s_kill, splash_glitch, etc.)
+            # are tracked via _flash_stack. If this is the bottom overlay on the stack,
+            # snapshot currently visible character sprites and positions so that when all
+            # overlays are eventually hidden, the original actors can be fully restored.
+            alias = node.imspec[2] if (node.imspec and len(node.imspec) > 2 and node.imspec[2]) else imgname[0]
+            prev_bg = self._current_bg
+            if not self._flash_stack:
+                saved_chars = {
+                    c: (
+                        self.last_sprite.get(c, (0, None)),
+                        self.last_pos.get(c, vnasm.POS_CENTER),
+                        self.last_flags.get(c, 0),
+                    )
+                    for c in sorted(self.visible_chars)
+                }
+            else:
+                saved_chars = {}
+
+            self._flash_stack.append(_FlashEntry(
+                tag=alias,
+                img_tag=imgname[0],
+                scene_id=scene_id,
+                prev_bg=prev_bg,
+                saved_chars=saved_chars,
+            ))
             self.asm.scene(scene_id, vnasm.TRANS_CUT)
             self._current_bg = scene_id
             self.last_sprite.clear()
@@ -1063,33 +1077,64 @@ class Compiler:
 
         self._flush_pending_scene(vnasm.TRANS_CUT)
         char = TAG_TO_CHAR.get(imgname[0]) if imgname else None
-        if char is None:
-            tag = imgname[0] if imgname else None
-            # The other half of _emit_Show's white/black flash fake: this
-            # Hide is the real Ren'Py signal that the overlay comes back
-            # down, so undo the background swap now, then replay a Show for
-            # every character still on screen -- OP_SCENE (which restoring
-            # the background needs) clears the VM's whole actor list, so
-            # without this they'd vanish even though they were never really
-            # hidden (real Ren'Py never touched the scene layer they're on).
-            if tag is not None and tag == self._flash_tag and self._pre_flash_bg is not None:
-                self.asm.scene(self._pre_flash_bg, vnasm.TRANS_CUT)
-                self._current_bg = self._pre_flash_bg
-                for c in sorted(self.visible_chars):
-                    # .get(), not [] -- a bare `show natsuki` with no prior
-                    # sprite tracked (see the "defaulted to 0" skip above)
-                    # marks a character visible without ever populating
-                    # last_sprite for them.
-                    base, overlay = self.last_sprite.get(c, (0, None))
-                    self.asm.show(c, base, overlay, self.last_pos.get(c, vnasm.POS_CENTER),
-                                  flags=self.last_flags.get(c, 0))
-                self._flash_tag = None
-                self._pre_flash_bg = None
-                return
-            self._skip(node, fname, f"unknown character tag in Hide {imgname!r}")
+        if char is None and imgname:
+            char = self.char_aliases.get(imgname[0])
+        if char is not None:
+            self.asm.hide(char)
+            self.visible_chars.discard(char)
             return
-        self.asm.hide(char)
-        self.visible_chars.discard(char)
+
+        tag = imgname[0] if imgname else None
+
+        # Text displayables (e.g. fake_exception) don't have visual sprites on-calc;
+        # hiding them is a no-op that shouldn't report an unknown tag skip.
+        defn = self.resolver.table.get(imgname) if imgname else None
+        if defn is None and tag is not None:
+            defn = self.resolver.table.get((tag,))
+        if defn is not None and defn.kind == "text":
+            return
+
+        entry_idx = None
+        if tag is not None:
+            for idx in reversed(range(len(self._flash_stack))):
+                if tag == self._flash_stack[idx].tag:
+                    entry_idx = idx
+                    break
+
+        if entry_idx is not None:
+            entry = self._flash_stack.pop(entry_idx)
+            is_top = (entry_idx == len(self._flash_stack))
+            if is_top:
+                if self._flash_stack:
+                    next_top = self._flash_stack[-1]
+                    self.asm.scene(next_top.scene_id, vnasm.TRANS_CUT)
+                    self._current_bg = next_top.scene_id
+                else:
+                    if entry.prev_bg is not None:
+                        self.asm.scene(entry.prev_bg, vnasm.TRANS_CUT)
+                        self._current_bg = entry.prev_bg
+                    for c in sorted(entry.saved_chars):
+                        sprite, pos, flags = entry.saved_chars[c]
+                        base, overlay = sprite
+                        self.asm.show(c, base, overlay, pos, flags=flags)
+                        self.last_sprite[c] = sprite
+                        self.last_pos[c] = pos
+                        self.last_flags[c] = flags
+                        self.visible_chars.add(c)
+            else:
+                above = self._flash_stack[entry_idx]
+                above.prev_bg = entry.prev_bg
+                if entry.saved_chars and not above.saved_chars:
+                    above.saved_chars = entry.saved_chars
+            return
+
+        # If this tag names a declared Ren'Py image, hiding it when not on the flash
+        # stack is a valid defensive hide or no-op (e.g. cleared by scene change or in untaken branch).
+        if defn is not None or (tag and (tag,) in self.resolver.table):
+            return
+
+        self._skip(node, fname, f"unknown character tag in Hide {imgname!r}")
+        return
 
     def _emit_Scene(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)
@@ -1104,8 +1149,7 @@ class Compiler:
             self._current_cg_family = matching_cg
             self._current_cg_layers = [tag]
             scene_id = self.resolver.cg_composite_scene_id(tuple(self._current_cg_layers))
-            self._flash_tag = None
-            self._pre_flash_bg = None
+            self._flash_stack.clear()
             self._pending_scene = scene_id
             self.last_sprite.clear()
             self.last_pos.clear()
@@ -1134,8 +1178,7 @@ class Compiler:
                 self.last_flags.clear()
                 self.visible_chars.clear()
                 self._current_bg = None  # runtime-picked; no single compile-time id to remember
-                self._flash_tag = None
-                self._pre_flash_bg = None
+                self._flash_stack.clear()
                 return
             # Baking a branch failed -- fall through to the normal path
             # below, which hits the same ImageDef and produces an accurate
@@ -1149,8 +1192,7 @@ class Compiler:
         # background", so it supersedes any white/black flash bookkeeping
         # still pending -- a `hide white` reached after this should not try
         # to restore a background that a real Scene already replaced.
-        self._flash_tag = None
-        self._pre_flash_bg = None
+        self._flash_stack.clear()
         self._pending_scene = scene_id
         self.last_sprite.clear()  # OP_SCENE clears all actors in the VM too
         self.last_pos.clear()
@@ -1371,8 +1413,7 @@ class Compiler:
         self.last_flags.clear()
         self.visible_chars.clear()
         self._current_bg = eyes_move if eyes_move is not None else self._current_bg
-        self._flash_tag = None
-        self._pre_flash_bg = None
+        self._flash_stack.clear()
         self.asm.label(end_label)
 
     def _emit_poemwinner_dispatch(self, dispatch: tuple, fname: str) -> None:
@@ -2024,7 +2065,23 @@ class Compiler:
 
             branches.append((expr, block))
 
+        saved_stack = [replace(e) for e in self._flash_stack]
+        saved_bg = self._current_bg
+        saved_sprites = dict(self.last_sprite)
+        saved_pos = dict(self.last_pos)
+        saved_flags = dict(self.last_flags)
+        saved_visible = set(self.visible_chars)
+        saved_aliases = dict(self.char_aliases)
+
         for expr, block in branches:
+            self._flash_stack = [replace(e) for e in saved_stack]
+            self._current_bg = saved_bg
+            self.last_sprite = dict(saved_sprites)
+            self.last_pos = dict(saved_pos)
+            self.last_flags = dict(saved_flags)
+            self.visible_chars = set(saved_visible)
+            self.char_aliases = dict(saved_aliases)
+
             true_label = self._gensym("if_branch")
             next_label = self._gensym("if_next")
             self._emit_condition(expr, true_label, next_label)
@@ -2034,6 +2091,13 @@ class Compiler:
             self.asm.label(next_label)
 
         if else_block is not None:
+            self._flash_stack = [replace(e) for e in saved_stack]
+            self._current_bg = saved_bg
+            self.last_sprite = dict(saved_sprites)
+            self.last_pos = dict(saved_pos)
+            self.last_flags = dict(saved_flags)
+            self.visible_chars = set(saved_visible)
+            self.char_aliases = dict(saved_aliases)
             self.emit_block(else_block, fname)
 
         self.asm.label(end_label)
@@ -2294,7 +2358,23 @@ class Compiler:
         else:
             self.asm.menu([(caption, lbl) for (caption, _, _), lbl in zip(rows, branch_labels)])
 
+        saved_stack = [replace(e) for e in self._flash_stack]
+        saved_bg = self._current_bg
+        saved_sprites = dict(self.last_sprite)
+        saved_pos = dict(self.last_pos)
+        saved_flags = dict(self.last_flags)
+        saved_visible = set(self.visible_chars)
+        saved_aliases = dict(self.char_aliases)
+
         for (_, block, _), lbl in zip(rows, branch_labels):
+            self._flash_stack = [replace(e) for e in saved_stack]
+            self._current_bg = saved_bg
+            self.last_sprite = dict(saved_sprites)
+            self.last_pos = dict(saved_pos)
+            self.last_flags = dict(saved_flags)
+            self.visible_chars = set(saved_visible)
+            self.char_aliases = dict(saved_aliases)
+
             self.asm.label(lbl)
             self.emit_block(block, fname)
             self.asm.jump(end_label)

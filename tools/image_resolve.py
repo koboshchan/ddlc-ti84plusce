@@ -715,7 +715,7 @@ CG_PREFIXES = ("n_cg1", "n_cg2", "n_cg3", "y_cg1", "y_cg2", "y_cg3", "s_cg1", "s
 
 _CG_LAYER_ORDER = {
     # n_cg1
-    "n_cg1_bg": 0, "n_cg1_base": 10, "n_cg1b": 10,
+    "n_cg1_bg": 0, "n_cg1_base": 10, "n_cg1b": 15,
     "n_cg1_exp1": 20, "n_cg1_exp2": 21, "n_cg1_exp3": 22, "n_cg1_exp4": 23, "n_cg1_exp5": 24,
     # n_cg2
     "n_cg2_bg": 0, "n_cg2_base": 10, "n_cg2_exp1": 20, "n_cg2_exp2": 30,
@@ -749,7 +749,7 @@ def normalize_cg_layers(layers: tuple | list) -> tuple[str, ...]:
         if family:
             break
     if not family:
-        return tuple(sorted(s, key=lambda l: _CG_LAYER_ORDER.get(l, 99)))
+        return tuple(sorted(s, key=lambda l: (_CG_LAYER_ORDER.get(l, 99), l)))
 
     # Ensure root background is present
     if family == "n_cg1":
@@ -773,7 +773,7 @@ def normalize_cg_layers(layers: tuple | list) -> tuple[str, ...]:
     elif family == "s_cg2":
         if "s_cg2_base2" not in s:
             s.add("s_cg2_base1")
-    return tuple(sorted(s, key=lambda l: _CG_LAYER_ORDER.get(l, 99)))
+    return tuple(sorted(s, key=lambda l: (_CG_LAYER_ORDER.get(l, 99), l)))
 
 
 class ImageResolver:
@@ -972,6 +972,11 @@ class ImageResolver:
         if imgname in self._scene_ids:
             return self._scene_ids[imgname]
 
+        if imgname and any(imgname[0].startswith(pfx) for pfx in CG_PREFIXES):
+            sid = self.cg_composite_scene_id(imgname)
+            self._scene_ids[imgname] = sid
+            return sid
+
         # `show "gui/x.png"` -- a direct file reference with no `image`
         # statement to look up in self.table at all (see
         # _quoted_literal_path). Synthesized once, then falls through the
@@ -997,6 +1002,52 @@ class ImageResolver:
                     self.table[imgname] = literal_defn
 
         # DDLC's own script sometimes names a background by its bare tag
+        # (`scene bedroom`) even where the only `image` statement defines it
+        # as `image bg bedroom` -- confirmed real, not a guess: script-ch4.rpy
+        # itself uses both `scene bg bedroom` and bare `scene bedroom` for
+        # the identical background. Real Ren'Py resolves a bare tag against
+        # any image whose attribute list it's a subset of; this engine has
+        # no such general search, but a background is always exactly
+        # `('bg', name)` or nothing, so trying that one extra shape covers
+        # every real case without a broad, riskier attribute-matching
+        # search. Only applies when the bare name has no definition of its
+        # own, so it can never shadow a real non-bg image accidentally
+        # sharing a name with a background.
+        if imgname and imgname[0] != "bg" and imgname not in self.table:
+            prefixed = ("bg",) + imgname
+            if prefixed in self.table:
+                imgname = prefixed
+
+        is_bg = bool(imgname) and imgname[0] == "bg"
+        defn = self.table.get(imgname)
+        if defn is not None and defn.kind == "solid":
+            is_bg = True  # solid colors are cheap enough to render at bg size/palette
+
+        entry = self._bake_flat(imgname, BG_SIZE if is_bg else CG_SIZE, fit=not is_bg)
+        if entry is None:
+            return None
+        if isinstance(entry, int):
+            # _bake_flat found this content already baked under a different
+            # tag (see its own comment) -- reuse that scene id rather than
+            # shipping a duplicate AppVar (and, for an "own" CG, a duplicate
+            # palette).
+            self._scene_ids[imgname] = entry
+            return entry
+        entry["palette"] = "shared" if is_bg else "own"
+        # Which pal_cg_NNN convimg emits for this scene (matches
+        # convert_images.py's `own_scenes` enumeration order) -- None for
+        # "shared" scenes, which use pal_game instead. Packaging needs this
+        # to know which palette AppVar a given scene id pairs with.
+        entry["cg_palette_index"] = None if is_bg else self._own_scene_count
+        if not is_bg:
+            self._own_scene_count += 1
+
+        idx = len(self.scenes)
+        self._scene_content[(entry.pop("_content_hash"), not is_bg)] = idx
+        self.scenes.append(entry)
+        self._scene_ids[imgname] = idx
+        return idx
+
     def cg_composite_scene_id(self, layers: tuple | list) -> int:
         norm_layers = normalize_cg_layers(layers)
         if not norm_layers:
@@ -1042,63 +1093,6 @@ class ImageResolver:
         self._scene_content[(content_hash, True)] = idx
         self.scenes.append(entry)
         self._cg_composite_ids[norm_layers] = idx
-        return idx
-
-    def scene_id(self, imgname: tuple) -> Optional[int]:
-        if imgname in self._scene_ids:
-            return self._scene_ids[imgname]
-
-        if imgname and any(imgname[0].startswith(pfx) for pfx in CG_PREFIXES):
-            sid = self.cg_composite_scene_id(imgname)
-            self._scene_ids[imgname] = sid
-            return sid
-
-        # DDLC's own script sometimes names a background by its bare tag
-        # (`scene bedroom`) even where the only `image` statement defines it
-        # as `image bg bedroom` -- confirmed real, not a guess: script-ch4.rpy
-        # itself uses both `scene bg bedroom` and bare `scene bedroom` for
-        # the identical background. Real Ren'Py resolves a bare tag against
-        # any image whose attribute list it's a subset of; this engine has
-        # no such general search, but a background is always exactly
-        # `('bg', name)` or nothing, so trying that one extra shape covers
-        # every real case without a broad, riskier attribute-matching
-        # search. Only applies when the bare name has no definition of its
-        # own, so it can never shadow a real non-bg image accidentally
-        # sharing a name with a background.
-
-        if imgname and imgname[0] != "bg" and imgname not in self.table:
-            prefixed = ("bg",) + imgname
-            if prefixed in self.table:
-                imgname = prefixed
-
-        is_bg = bool(imgname) and imgname[0] == "bg"
-        defn = self.table.get(imgname)
-        if defn is not None and defn.kind == "solid":
-            is_bg = True  # solid colors are cheap enough to render at bg size/palette
-
-        entry = self._bake_flat(imgname, BG_SIZE if is_bg else CG_SIZE, fit=not is_bg)
-        if entry is None:
-            return None
-        if isinstance(entry, int):
-            # _bake_flat found this content already baked under a different
-            # tag (see its own comment) -- reuse that scene id rather than
-            # shipping a duplicate AppVar (and, for an "own" CG, a duplicate
-            # palette).
-            self._scene_ids[imgname] = entry
-            return entry
-        entry["palette"] = "shared" if is_bg else "own"
-        # Which pal_cg_NNN convimg emits for this scene (matches
-        # convert_images.py's `own_scenes` enumeration order) -- None for
-        # "shared" scenes, which use pal_game instead. Packaging needs this
-        # to know which palette AppVar a given scene id pairs with.
-        entry["cg_palette_index"] = None if is_bg else self._own_scene_count
-        if not is_bg:
-            self._own_scene_count += 1
-
-        idx = len(self.scenes)
-        self._scene_content[(entry.pop("_content_hash"), not is_bg)] = idx
-        self.scenes.append(entry)
-        self._scene_ids[imgname] = idx
         return idx
 
     def condswitch_variants(self, imgname: tuple) -> Optional[list]:
