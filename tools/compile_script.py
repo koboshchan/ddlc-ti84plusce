@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import vnasm
+from image_resolve import CG_PREFIXES
 from rpyc_ast import flatten, kind, load_rpyc, pycode_source
 
 # Speaker codes are stable across the whole game (renpy.ast.Define confirms
@@ -336,6 +337,8 @@ class Compiler:
     # concept, so _emit_Show's bare-tag fallback (below) has to fake it by
     # actually swapping the background out and back.
     _current_bg: int | None = field(default=None, init=False)
+    _current_cg_family: str | None = field(default=None, init=False)
+    _current_cg_layers: list = field(default_factory=list, init=False)
     _flash_tag: str | None = field(default=None, init=False)   # 'white'/'black' currently "up", or None
     _pre_flash_bg: int | None = field(default=None, init=False)  # _current_bg from just before it went up
     # One-shot: set by _emit_Show right after a delayed-reveal `Show
@@ -557,8 +560,9 @@ class Compiler:
 
     def _flush_pending_scene(self, trans: int) -> None:
         if self._pending_scene is not None:
-            self.asm.scene(self._pending_scene, trans)
-            self._current_bg = self._pending_scene
+            if self._pending_scene != self._current_bg:
+                self.asm.scene(self._pending_scene, trans)
+                self._current_bg = self._pending_scene
             self._pending_scene = None
 
     # -- position/animation tracking -----------------------------------------
@@ -911,6 +915,22 @@ class Compiler:
 
         char = TAG_TO_CHAR.get(imgname[0])
         if char is None:
+            tag = imgname[0]
+            matching_cg = next((pfx for pfx in CG_PREFIXES if tag.startswith(pfx)), None)
+            if matching_cg is not None:
+                if self._current_cg_family != matching_cg:
+                    self._current_cg_family = matching_cg
+                    self._current_cg_layers = []
+                if tag not in self._current_cg_layers:
+                    self._current_cg_layers.append(tag)
+                scene_id = self.resolver.cg_composite_scene_id(tuple(self._current_cg_layers))
+                self._pending_scene = scene_id
+                self.last_sprite.clear()
+                self.last_pos.clear()
+                self.last_flags.clear()
+                self.visible_chars.clear()
+                return
+
             # Not one of the 4 cast members -- OP_SHOW's ch:u8 operand only
             # ever names one of them, so this was always a skip until now.
             # But a bare `show X` where X isn't a character tag is DDLC's
@@ -1031,8 +1051,17 @@ class Compiler:
         self.visible_chars.add(char)
 
     def _emit_Hide(self, node, fname: str) -> None:
-        self._flush_pending_scene(vnasm.TRANS_CUT)
         imgname = node.imspec[0] if node.imspec else None
+        tag = imgname[0] if imgname else None
+        if tag is not None and any(tag.startswith(pfx) for pfx in CG_PREFIXES):
+            if self._current_cg_family is not None and tag in self._current_cg_layers:
+                self._current_cg_layers.remove(tag)
+                if self._current_cg_layers:
+                    scene_id = self.resolver.cg_composite_scene_id(tuple(self._current_cg_layers))
+                    self._pending_scene = scene_id
+            return
+
+        self._flush_pending_scene(vnasm.TRANS_CUT)
         char = TAG_TO_CHAR.get(imgname[0]) if imgname else None
         if char is None:
             tag = imgname[0] if imgname else None
@@ -1068,6 +1097,24 @@ class Compiler:
         if not imgname:
             self._skip(node, fname, "Scene with empty imspec")
             return
+
+        tag = imgname[0]
+        matching_cg = next((pfx for pfx in CG_PREFIXES if tag.startswith(pfx)), None)
+        if matching_cg is not None:
+            self._current_cg_family = matching_cg
+            self._current_cg_layers = [tag]
+            scene_id = self.resolver.cg_composite_scene_id(tuple(self._current_cg_layers))
+            self._flash_tag = None
+            self._pre_flash_bg = None
+            self._pending_scene = scene_id
+            self.last_sprite.clear()
+            self.last_pos.clear()
+            self.last_flags.clear()
+            self.visible_chars.clear()
+            return
+
+        self._current_cg_family = None
+        self._current_cg_layers = []
 
         # A top-level-ATL-RawChoice-backed background (e.g. `bg club_day2`'s
         # real 1-in-6 poster-swap variant, definitions.rpyc -- see

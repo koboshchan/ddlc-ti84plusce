@@ -711,6 +711,71 @@ def _fit_and_center(img: "PILImage.Image", size: tuple,
     return canvas
 
 
+CG_PREFIXES = ("n_cg1", "n_cg2", "n_cg3", "y_cg1", "y_cg2", "y_cg3", "s_cg1", "s_cg2", "s_cg3")
+
+_CG_LAYER_ORDER = {
+    # n_cg1
+    "n_cg1_bg": 0, "n_cg1_base": 10, "n_cg1b": 10,
+    "n_cg1_exp1": 20, "n_cg1_exp2": 21, "n_cg1_exp3": 22, "n_cg1_exp4": 23, "n_cg1_exp5": 24,
+    # n_cg2
+    "n_cg2_bg": 0, "n_cg2_base": 10, "n_cg2_exp1": 20, "n_cg2_exp2": 30,
+    # n_cg3
+    "n_cg3_base": 0, "n_cg3_exp1": 10, "n_cg3_exp2": 11, "n_cg3_cake": 20,
+    # y_cg1
+    "y_cg1_base": 0, "y_cg1_exp1": 10, "y_cg1_exp2": 11, "y_cg1_exp3": 12,
+    # y_cg2
+    "y_cg2_bg": 0, "y_cg2_base": 10, "y_cg2_details": 20, "y_cg2_nochoc": 25,
+    "y_cg2_exp2": 30, "y_cg2_exp3": 31,
+    "y_cg2_dust1": 40, "y_cg2_dust2": 41, "y_cg2_dust3": 42, "y_cg2_dust4": 43,
+    # y_cg3
+    "y_cg3_base": 0, "y_cg3_exp1": 10,
+    # s_cg1
+    "s_cg1": 0,
+    # s_cg2
+    "s_cg2_base1": 0, "s_cg2_base2": 5,
+    "s_cg2_exp1": 10, "s_cg2_exp2": 11, "s_cg2_exp3": 12,
+    # s_cg3
+    "s_cg3": 0,
+}
+
+def normalize_cg_layers(layers: tuple | list) -> tuple[str, ...]:
+    s = set(layers)
+    family = None
+    for tag in s:
+        for pfx in CG_PREFIXES:
+            if tag.startswith(pfx):
+                family = pfx
+                break
+        if family:
+            break
+    if not family:
+        return tuple(sorted(s, key=lambda l: _CG_LAYER_ORDER.get(l, 99)))
+
+    # Ensure root background is present
+    if family == "n_cg1":
+        s.add("n_cg1_bg")
+        if any("exp" in tag for tag in s) and "n_cg1b" not in s:
+            s.add("n_cg1_base")
+    elif family == "n_cg2":
+        s.add("n_cg2_bg")
+        if any("exp" in tag for tag in s):
+            s.add("n_cg2_base")
+    elif family == "n_cg3":
+        s.add("n_cg3_base")
+    elif family == "y_cg1":
+        s.add("y_cg1_base")
+    elif family == "y_cg2":
+        s.add("y_cg2_bg")
+        if any("exp" in tag or "details" in tag or "nochoc" in tag for tag in s):
+            s.add("y_cg2_base")
+    elif family == "y_cg3":
+        s.add("y_cg3_base")
+    elif family == "s_cg2":
+        if "s_cg2_base2" not in s:
+            s.add("s_cg2_base1")
+    return tuple(sorted(s, key=lambda l: _CG_LAYER_ORDER.get(l, 99)))
+
+
 class ImageResolver:
     def __init__(self, raw_dir: Path, build_dir: Path):
         self.raw_dir = raw_dir
@@ -726,6 +791,7 @@ class ImageResolver:
 
         self._sprite_ids: dict = {}
         self._scene_ids: dict = {}
+        self._cg_composite_ids: dict = {}
         self._scene_content: dict = {}  # (pixel-content hash, fit) -> existing scene id, see _bake_flat
         self._sprite_content: dict = {}  # pixel-content hash -> existing sprite id, see _bake_sprite
         self._layer_result: dict = {}   # imgname -> (base_id, overlay_id) -- sprite_layers()
@@ -931,6 +997,63 @@ class ImageResolver:
                     self.table[imgname] = literal_defn
 
         # DDLC's own script sometimes names a background by its bare tag
+    def cg_composite_scene_id(self, layers: tuple | list) -> int:
+        norm_layers = normalize_cg_layers(layers)
+        if not norm_layers:
+            return 0
+        if norm_layers in self._cg_composite_ids:
+            return self._cg_composite_ids[norm_layers]
+
+        canvas = PILImage.new("RGBA", (1280, 720), (0, 0, 0, 255))
+        for tag in norm_layers:
+            defn = self.table.get((tag,))
+            if defn is not None:
+                art = self._render_def(defn)
+                if art is not None:
+                    if art.size != (1280, 720):
+                        art = art.resize((1280, 720), PILImage.LANCZOS)
+                    canvas.alpha_composite(art.convert("RGBA"))
+
+        full_cg = _fit_and_center(canvas, CG_FULL_SIZE, (0, 0, 0, 255))
+        downscaled = full_cg.resize(CG_SIZE, PILImage.LANCZOS)
+
+        content_hash = hashlib.sha256(downscaled.tobytes()).digest()
+        existing = self._scene_content.get((content_hash, True))
+        if existing is not None:
+            self._cg_composite_ids[norm_layers] = existing
+            return existing
+
+        idx = len(self.scenes)
+        name = _safe_filename_part(norm_layers) or "cg_comp"
+        filename = f"cg_{idx:03d}_{name}.png"
+
+        downscaled.save(self.img_dir / filename)
+        full_cg.save(self.cgpack_src_dir / filename)
+
+        entry = {
+            "imgname": list(norm_layers),
+            "file": filename,
+            "w": CG_SIZE[0],
+            "h": CG_SIZE[1],
+            "palette": "own",
+            "cg_palette_index": self._own_scene_count,
+        }
+        self._own_scene_count += 1
+        self._scene_content[(content_hash, True)] = idx
+        self.scenes.append(entry)
+        self._cg_composite_ids[norm_layers] = idx
+        return idx
+
+    def scene_id(self, imgname: tuple) -> Optional[int]:
+        if imgname in self._scene_ids:
+            return self._scene_ids[imgname]
+
+        if imgname and any(imgname[0].startswith(pfx) for pfx in CG_PREFIXES):
+            sid = self.cg_composite_scene_id(imgname)
+            self._scene_ids[imgname] = sid
+            return sid
+
+        # DDLC's own script sometimes names a background by its bare tag
         # (`scene bedroom`) even where the only `image` statement defines it
         # as `image bg bedroom` -- confirmed real, not a guess: script-ch4.rpy
         # itself uses both `scene bg bedroom` and bare `scene bedroom` for
@@ -942,6 +1065,7 @@ class ImageResolver:
         # search. Only applies when the bare name has no definition of its
         # own, so it can never shadow a real non-bg image accidentally
         # sharing a name with a background.
+
         if imgname and imgname[0] != "bg" and imgname not in self.table:
             prefixed = ("bg",) + imgname
             if prefixed in self.table:
