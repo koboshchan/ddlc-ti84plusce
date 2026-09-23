@@ -281,6 +281,7 @@ enum vn_trans { TRANS_CUT = 0, TRANS_FADE = 1 };
  * condition, `label start`'s own dispatch) reads a real, always-0 value
  * rather than colliding with an ordinary story variable's slot. */
 #define VN_PLAYTHROUGH_VAR  9
+#define VN_CHAPTER_VAR      10
 
 #define VN_CALL_DEPTH    8    /* nesting depth for OP_CALL                    */
 #define VN_MAX_CHOICES   6    /* menu options the UI can display at once      */

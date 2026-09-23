@@ -12,6 +12,7 @@
 #include <graphx.h>
 #include <keypadc.h>
 #include <ti/getcsc.h>
+#include <sys/timers.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,6 +38,7 @@ extern bool quit_requested;
 typedef struct {
     char    word[POEM_WORD_MAX + 1];
     uint8_t sPoint, nPoint, yPoint;
+    bool    glitch;
 } poem_word_t;
 
 static poem_word_t poem_words[POEM_WORDS_CAP];
@@ -83,6 +85,7 @@ static bool load_words(void)
             poem_words[kept].sPoint = s;
             poem_words[kept].nPoint = n;
             poem_words[kept].yPoint = y;
+            poem_words[kept].glitch = false;
             kept++;
         }
     }
@@ -168,24 +171,95 @@ static int poem_col_x(uint8_t col)
     return col == 0 ? POEM_COL_X0 : POEM_COL_X1;
 }
 
-static void draw_background(void)
+#define POEM_STICKER_Y_IDLE  234
+#define POEM_STICKER_Y_HOP   218
+
+#define POEM_S_X_ACT1         65
+#define POEM_N_X_ACT1        160
+#define POEM_Y_X_ACT1        255
+
+#define POEM_N_X_ACT2        105
+#define POEM_Y_X_ACT2        215
+#define POEM_M_X_ACT2        160
+
+static bool persistent_seen_sticker = false;
+
+static void draw_stickers(int16_t playthrough, int16_t chapter,
+                          bool s_hop, bool n_hop, bool y_hop,
+                          bool m_hop, bool y_glitch, bool y_cut,
+                          bool poem_glitched)
 {
-    /* Full screen, unlike an ordinary dialogue scene -- the poem minigame
-     * has no dialogue box reserving the bottom 60px, so its background is
-     * baked and stored at the full 320x240 rather than through
-     * assets_scene()'s 320x180 -- see image_resolve.py's poem_background(). */
-    if (!assets_poem_bg((uint8_t *)gfx_vbuffer)) {
+    (void)chapter;
+    if (poem_glitched) {
+        assets_draw_sticker_centered(STICKER_Y_BROKEN, SCREEN_W / 2, POEM_STICKER_Y_IDLE);
+        return;
+    }
+
+    if (playthrough == 0) {
+        uint8_t s_id = s_hop ? STICKER_S_HOP : STICKER_S_IDLE;
+        int s_y = s_hop ? POEM_STICKER_Y_HOP : POEM_STICKER_Y_IDLE;
+        assets_draw_sticker_centered(s_id, POEM_S_X_ACT1, s_y);
+
+        uint8_t n_id = n_hop ? STICKER_N_HOP : STICKER_N_IDLE;
+        int n_y = n_hop ? POEM_STICKER_Y_HOP : POEM_STICKER_Y_IDLE;
+        assets_draw_sticker_centered(n_id, POEM_N_X_ACT1, n_y);
+
+        uint8_t y_id = y_hop ? STICKER_Y_HOP : STICKER_Y_IDLE;
+        int y_y = y_hop ? POEM_STICKER_Y_HOP : POEM_STICKER_Y_IDLE;
+        assets_draw_sticker_centered(y_id, POEM_Y_X_ACT1, y_y);
+    } else {
+        uint8_t n_id = n_hop ? STICKER_N_HOP : STICKER_N_IDLE;
+        int n_y = n_hop ? POEM_STICKER_Y_HOP : POEM_STICKER_Y_IDLE;
+        assets_draw_sticker_centered(n_id, POEM_N_X_ACT2, n_y);
+
+        uint8_t y_id;
+        if (y_glitch) {
+            y_id = STICKER_Y_GLITCH;
+        } else if (y_cut) {
+            y_id = STICKER_Y_CUT;
+        } else if (y_hop) {
+            y_id = STICKER_Y_HOP;
+        } else {
+            y_id = STICKER_Y_IDLE;
+        }
+        int y_y = (y_hop || y_glitch || y_cut) ? POEM_STICKER_Y_HOP : POEM_STICKER_Y_IDLE;
+        assets_draw_sticker_centered(y_id, POEM_Y_X_ACT2, y_y);
+
+        if (m_hop) {
+            assets_draw_sticker_centered(STICKER_M_HOP, POEM_M_X_ACT2, POEM_STICKER_Y_HOP - 8);
+        }
+    }
+}
+
+static void draw_background(bool poem_glitched)
+{
+    if (poem_glitched) {
+        render_backdrop(COL_WHITE);
+    } else if (!assets_poem_bg((uint8_t *)gfx_vbuffer)) {
         render_backdrop(COL_WHITE);
     }
 }
 
-static void draw_round(const uint16_t *shown, uint8_t round, uint8_t sel_col, uint8_t sel_row)
+static void draw_round(const uint16_t *shown, uint8_t round, uint8_t sel_col, uint8_t sel_row,
+                       int16_t playthrough, int16_t chapter,
+                       bool s_hop, bool n_hop, bool y_hop,
+                       bool m_hop, bool y_glitch, bool y_cut,
+                       bool poem_glitched)
 {
-    draw_background();
+    draw_background(poem_glitched);
 
-    char progress[16];
-    sprintf(progress, "%u/%u", round + 1, POEM_ROUNDS);
-    render_text(progress, SCREEN_W - 50, 10, COL_BLACK);
+    char progress[24];
+    if (playthrough >= 2 && chapter == 2) {
+        uint8_t ones = round + 1;
+        if (ones > 20) ones = 20;
+        for (uint8_t k = 0; k < ones; k++) {
+            progress[k] = '1';
+        }
+        sprintf(progress + ones, "/%u", POEM_ROUNDS);
+    } else {
+        sprintf(progress, "%u/%u", round + 1, POEM_ROUNDS);
+    }
+    render_text(progress, SCREEN_W - 55, 10, COL_BLACK);
 
     for (uint8_t col = 0; col < POEM_COLS; col++) {
         for (uint8_t row = 0; row < POEM_ROWS; row++) {
@@ -202,6 +276,9 @@ static void draw_round(const uint16_t *shown, uint8_t round, uint8_t sel_col, ui
         }
     }
 
+    draw_stickers(playthrough, chapter, s_hop, n_hop, y_hop,
+                  m_hop, y_glitch, y_cut, poem_glitched);
+
     render_present(TRANS_CUT);
     gfx_Wait();
 }
@@ -210,29 +287,22 @@ static void draw_round(const uint16_t *shown, uint8_t round, uint8_t sel_col, ui
  * Public API
  * ------------------------------------------------------------------------ */
 
-uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal)
+uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal, int16_t playthrough, int16_t chapter)
 {
-    /* Every real exit path below overwrites these before returning except
-     * the two "bail immediately" ones (missing word bank, player quit
-     * mid-game) -- zeroed up front so those don't leave the caller reading
-     * whatever was on the stack. */
     if (s_appeal) *s_appeal = 0;
     if (n_appeal) *n_appeal = 0;
     if (y_appeal) *y_appeal = 0;
 
     if (!load_words()) {
-        /* DPOEM missing -- shouldn't happen in a bundle this engine itself
-         * built, but degrade to a fixed winner rather than crash, same
-         * spirit as the rest of this codebase's optional-AppVar handling. */
         return 0;
     }
 
     srand((unsigned)clock());
     pool_init();
 
-    /* Index order matches OP_MINIGAME's TAG_TO_CHAR result: 0 sayori,
-     * 1 natsuki, 2 yuri. */
     uint16_t totals[3] = { 0, 0, 0 };
+    bool poemgame_glitched = false;
+    bool played_baa = false;
 
     for (uint8_t round = 0; round < POEM_ROUNDS; round++) {
         uint16_t shown[POEM_PER_ROUND];
@@ -240,9 +310,31 @@ uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal)
             shown[i] = pool_take();
         }
 
+        /* 1/401 chance per word slot on Act 2 (chapter >= 1) to become a glitched word */
+        if (playthrough >= 2 && !poemgame_glitched && chapter >= 1 && round < POEM_ROUNDS - 1) {
+            for (uint8_t i = 0; i < POEM_PER_ROUND; i++) {
+                if ((rand() % 401) == 0) {
+                    poem_word_t *gw = &poem_words[shown[i]];
+                    gw->glitch = true;
+                    static const char glitch_chars[] = "!@#$%^&*<>~?/{}[];^=+";
+                    for (int k = 0; k < 12; k++) {
+                        gw->word[k] = glitch_chars[rand() % (sizeof(glitch_chars) - 1)];
+                    }
+                    gw->word[12] = '\0';
+                    gw->sPoint = 0;
+                    gw->nPoint = 0;
+                    gw->yPoint = 0;
+                    break;
+                }
+            }
+        }
+
         uint8_t sel_col = 0, sel_row = 0;
         for (;;) {
-            draw_round(shown, round, sel_col, sel_row);
+            draw_round(shown, round, sel_col, sel_row,
+                       playthrough, chapter,
+                       false, false, false, false, false, false,
+                       poemgame_glitched);
 
             poem_input_t in;
             poem_poll(&in);
@@ -267,21 +359,64 @@ uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal)
         }
 
         const poem_word_t *picked = &poem_words[shown[sel_col * POEM_ROWS + sel_row]];
+        if (picked->glitch) {
+            poemgame_glitched = true;
+            /* White flash + broken Yuri head jump */
+            draw_background(true);
+            assets_draw_sticker_centered(STICKER_Y_BROKEN, SCREEN_W / 2, SCREEN_H / 2 + 22);
+            render_present(TRANS_CUT);
+            gfx_Wait();
+            msleep(400);
+        } else {
+            bool s_hop = false, n_hop = false, y_hop = false;
+            bool m_hop = false, y_glitch = false, y_cut = false;
+
+            if (playthrough == 0) {
+                s_hop = (picked->sPoint >= 3);
+                n_hop = (picked->nPoint >= 3);
+                y_hop = (picked->yPoint >= 3);
+            } else {
+                if (chapter == 2 && (rand() % 11) == 0) {
+                    m_hop = true;
+                } else if (picked->nPoint > picked->yPoint) {
+                    n_hop = true;
+                } else if (!persistent_seen_sticker && (rand() % 101) == 0) {
+                    y_glitch = true;
+                    persistent_seen_sticker = true;
+                } else if (chapter == 2) {
+                    y_cut = true;
+                } else {
+                    y_hop = true;
+                }
+            }
+
+            draw_round(shown, round, sel_col, sel_row,
+                       playthrough, chapter,
+                       s_hop, n_hop, y_hop,
+                       m_hop, y_glitch, y_cut,
+                       poemgame_glitched);
+            msleep(150);
+        }
+
+        if (poemgame_glitched && !played_baa && (rand() % 11) == 0) {
+            played_baa = true;
+        }
+
         totals[0] += picked->sPoint;
         totals[1] += picked->nPoint;
         totals[2] += picked->yPoint;
     }
 
-    /* Real DDLC's winner is whoever's total is highest, but only on a first
-     * playthrough (`persistent.playthrough == 0`) -- this engine has no
-     * persistent multi-playthrough state, so it always takes that branch;
-     * see docs/FORMAT.md's "Poem minigame". */
     uint8_t winner = 0;
-    if (totals[1] > totals[winner]) {
-        winner = 1;
-    }
-    if (totals[2] > totals[winner]) {
-        winner = 2;
+    if (playthrough > 0) {
+        winner = (totals[1] > totals[2]) ? 1 : 2;
+    } else {
+        if (totals[1] > totals[winner]) {
+            winner = 1;
+        }
+        if (totals[2] > totals[winner]) {
+            winner = 2;
+        }
     }
 
     /* totals[] is uint16_t (a sum of always-non-negative per-word points,
@@ -375,7 +510,7 @@ void poem_view(uint8_t poem_id)
     uint16_t scroll = 0;
 
     while (!quit_requested) {
-        draw_background();
+        draw_background(false);
 
         /* Draw Title */
         if (poem->title && poem->title[0]) {

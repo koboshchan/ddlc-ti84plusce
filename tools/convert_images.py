@@ -156,6 +156,7 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
     textbox_file = rel(img_dir / textbox["file"]) if textbox else None
     namebox = manifest.get("namebox") or {}
     namebox_file = rel(img_dir / namebox["file"]) if namebox else None
+    sticker_files = [rel(img_dir / s["file"]) for s in manifest.get("stickers", [])]
 
     palettes = [{
         "name": "pal_game",
@@ -173,7 +174,8 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
         # pal_uibox below (not pal_game), so pal_game's free (non-fixed)
         # slots are better spent entirely on sprites/backgrounds.
         "images": sprite_files + shared_files
-                 + ([poem_bg_file] if poem_bg_file else []),
+                 + ([poem_bg_file] if poem_bg_file else [])
+                 + sticker_files,
     }]
     if textbox_file or namebox_file:
         palettes.append({
@@ -207,6 +209,14 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
             "images": sprite_files,
         })
         outputs_converts.append("sprites")
+
+    if sticker_files:
+        converts.append({
+            "name": "stickers", "palette": "pal_game", "style": "rlet",
+            "transparent-index": 0, "dither": 0.4,
+            "images": sticker_files,
+        })
+        outputs_converts.append("stickers")
 
     if shared_files:
         converts.append({

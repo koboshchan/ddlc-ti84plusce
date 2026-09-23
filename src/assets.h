@@ -318,4 +318,10 @@ bool assets_poem_bg(uint8_t *dest);
 bool assets_textbox(uint8_t *dest);
 bool assets_namebox(uint8_t *dest);
 
+/**
+ * Draws the poem minigame chibi sticker @p id centered at (@p center_x, @p bottom_y)
+ * from DSTKRS. Returns false if DSTKRS is missing or @p id is out of range.
+ */
+bool assets_draw_sticker_centered(uint8_t id, int center_x, int bottom_y);
+
 #endif /* ASSETS_H */

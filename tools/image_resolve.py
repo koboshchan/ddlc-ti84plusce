@@ -803,6 +803,7 @@ class ImageResolver:
         self.poem_bg: dict = {}      # the poem minigame's notebook (see poem_background())
         self.textbox: dict = {}      # the real dialogue box art (see ui_box_art())
         self.namebox: dict = {}      # the real speaker namebox art (see ui_box_art())
+        self.stickers: list = []     # poem minigame chibi stickers (see bake_stickers())
         # backgrounds and CGs share ONE id space here: OP_SCENE has a single
         # `bg:u8` operand with no room for a bucket discriminator, so the
         # engine (Milestone 3) tells them apart by each entry's "palette"
@@ -1346,6 +1347,43 @@ class ImageResolver:
 
         return {"source": rel_path, "file": filename, "w": size[0], "h": size[1]}
 
+    STICKER_NAMES = (
+        "s_sticker_1",
+        "s_sticker_2",
+        "n_sticker_1",
+        "n_sticker_2",
+        "y_sticker_1",
+        "y_sticker_2",
+        "y_sticker_cut_2",
+        "y_sticker_2g",
+        "m_sticker_1",
+        "m_sticker_2",
+        "y_sticker_1_broken",
+    )
+    STICKER_HEIGHT = 44
+
+    def bake_stickers(self) -> list[dict]:
+        """Bakes the 11 chibi stickers for the poem minigame to a fixed height (44px),
+        preserving aspect ratio and transparency, into build/img/ for RLET conversion.
+        """
+        results = []
+        for name in self.STICKER_NAMES:
+            rel = f"gui/poemgame/{name}.png"
+            art = _find_art_file(self.raw_dir, rel)
+            if art is None:
+                self._log_unsupported((rel,), "poem minigame sticker not found")
+                continue
+            img = PILImage.open(art).convert("RGBA")
+            h = self.STICKER_HEIGHT
+            w = int(round(img.width * (h / img.height)))
+            resized = img.resize((w, h), PILImage.LANCZOS)
+            filename = f"{name}.png"
+            resized.save(self.img_dir / filename)
+            entry = {"name": name, "file": filename, "w": w, "h": h}
+            results.append(entry)
+        self.stickers = results
+        return results
+
     def title_bg_strip(self, rel_path: str = "gui/menu_bg.png") -> Optional[dict]:
         """Bakes the scrolling title background as a short repeating strip.
 
@@ -1563,6 +1601,7 @@ class ImageResolver:
             "poem_bg": self.poem_bg,
             "textbox": self.textbox,
             "namebox": self.namebox,
+            "stickers": self.stickers,
             "unsupported": [{"imgname": list(name), "reason": reason}
                             for name, reason in self.unsupported],
         }

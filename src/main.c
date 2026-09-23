@@ -345,10 +345,36 @@ static bool run_pause_menu(vn_vm_t *vm)
 static void run_debug_poem_test(void)
 {
     static const char *const names[3] = { "Sayori", "Natsuki", "Yuri" };
-    int16_t s = 0, n = 0, y = 0;
-    uint8_t winner = poem_run(&s, &n, &y);
-    char line[32];
+    int sel = 0;
     input_t in;
+
+    for (;;) {
+        render_backdrop(COL_BOX_FILL);
+        render_text("Poem minigame test", 14, 12, COL_NAME);
+        render_text(sel == 0 ? "> 1. Act 1 (Sayori, Natsuki, Yuri)" : "  1. Act 1 (Sayori, Natsuki, Yuri)", 14, 45, sel == 0 ? COL_HIGHLIGHT : COL_WHITE);
+        render_text(sel == 1 ? "> 2. Act 2 (Natsuki, Yuri, Easter eggs)" : "  2. Act 2 (Natsuki, Yuri, Easter eggs)", 14, 65, sel == 1 ? COL_HIGHLIGHT : COL_WHITE);
+        render_text("2nd/Enter: run   Clear: back", 14, SCREEN_H - 20, COL_BOX_EDGE);
+        render_present(TRANS_CUT);
+        gfx_Wait();
+
+        input_poll(&in);
+        if (in.quit || quit_requested) {
+            return;
+        }
+        if (in.up || in.down) {
+            sel ^= 1;
+        }
+        if (in.advance) {
+            break;
+        }
+    }
+
+    int16_t playthrough = (sel == 1) ? 2 : 0;
+    int16_t chapter = (sel == 1) ? 2 : 0;
+
+    int16_t s = 0, n = 0, y = 0;
+    uint8_t winner = poem_run(&s, &n, &y, playthrough, chapter);
+    char line[32];
 
     render_backdrop(COL_BOX_FILL);
     render_text("Poem minigame result", 14, 12, COL_NAME);
@@ -619,7 +645,7 @@ static void run_debug_events_test(void)
         "Monika's-eyes glitch:",
         "  real, gated on real story state",
         "Poem sticker/jumpscare events:",
-        "  not implemented (see TODO.md)",
+        "  implemented -- see poem minigame",
         "Glitch text (glitchtext()):",
         "  implemented -- see the test above",
         "Tear glitch:",
@@ -1787,8 +1813,10 @@ static bool host_load_chunk(void *ctx, uint8_t chunk_id,
 
 static uint8_t host_minigame(void *ctx, int16_t *s, int16_t *n, int16_t *y)
 {
-    (void)ctx;
-    return poem_run(s, n, y);
+    const vn_vm_t *vm = (const vn_vm_t *)ctx;
+    int16_t playthrough = vm ? vm->vars[VN_PLAYTHROUGH_VAR] : 0;
+    int16_t chapter = vm ? vm->vars[VN_CHAPTER_VAR] : 0;
+    return poem_run(s, n, y, playthrough, chapter);
 }
 
 /* Compiles DDLC's own `try: renpy.file("../characters/X.chr")

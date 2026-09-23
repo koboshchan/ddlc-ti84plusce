@@ -11,6 +11,21 @@
 
 #include <stdint.h>
 
+enum {
+    STICKER_S_IDLE   = 0,
+    STICKER_S_HOP    = 1,
+    STICKER_N_IDLE   = 2,
+    STICKER_N_HOP    = 3,
+    STICKER_Y_IDLE   = 4,
+    STICKER_Y_HOP    = 5,
+    STICKER_Y_CUT    = 6,
+    STICKER_Y_GLITCH = 7,
+    STICKER_M_IDLE   = 8,
+    STICKER_M_HOP    = 9,
+    STICKER_Y_BROKEN = 10,
+    STICKER_COUNT    = 11
+};
+
 /**
  * Runs the word-picking minigame to completion (20 rounds, 10 words a
  * round) and reports the outcome: the winning character's id (TAG_TO_CHAR
@@ -21,12 +36,16 @@
  * need all four, not just the winner -- see OP_MINIGAME in vn.h and
  * docs/FORMAT.md's "Poem minigame".
  *
+ * @p playthrough (from persistent.playthrough) and @p chapter (0, 1, 2)
+ * gate Act 2 specific behavior: Sayori absent, Monika sticker jump (1/11),
+ * Yuri sticker distortion (1/101), Yuri cut-arms sticker, and glitched words (1/401).
+ *
  * Any of the three appeal out-params may be NULL if that call site has no
  * slot to store it in (compile_script.py always resolves all three
  * alongside the winner today, so this is defensive, not exercised).
  * Called by main.c's vn_host_t.minigame.
  */
-uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal);
+uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal, int16_t playthrough, int16_t chapter);
 
 /**
  * Renders the in-game poem @p poem_id on full-screen notebook paper,

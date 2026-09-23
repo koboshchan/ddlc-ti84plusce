@@ -1007,6 +1007,25 @@ bool assets_namebox(uint8_t *dest)
     return load_fixed_art("DNAMEBOX", dest, NAMEBOX_W * NAMEBOX_H);
 }
 
+bool assets_draw_sticker_centered(uint8_t id, int center_x, int bottom_y)
+{
+    uint8_t handle = ti_Open("DSTKRS", "r");
+    if (!handle) {
+        return false;
+    }
+    const uint8_t *data = ti_GetDataPtr(handle);
+    uint8_t count = data[0];
+    if (id >= count) {
+        ti_Close(handle);
+        return false;
+    }
+    uint16_t offset = (uint16_t)(data[1 + (size_t)id * 2] | ((uint16_t)data[2 + (size_t)id * 2] << 8));
+    const gfx_rletsprite_t *spr = (const gfx_rletsprite_t *)(data + offset);
+    gfx_RLETSprite(spr, center_x - spr->width / 2, bottom_y - spr->height);
+    ti_Close(handle);
+    return true;
+}
+
 /* Fixed size of every background (image_resolve.py's BG_SIZE) -- baked to
  * exactly this many raw palette-index bytes, so no length needs reading out
  * of the LUT entry. CGs are baked smaller (CG_SIZE below) -- see

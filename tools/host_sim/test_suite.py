@@ -505,6 +505,34 @@ def run_all_tests() -> list[TestResult]:
             )
             results.append(r)
 
+    # 4.6 Poem Minigame Sticker AppVar (DSTKRS) verification
+    dstkrs_file = Path("build/appvars/dstkrs.8xv")
+    if dstkrs_file.exists():
+        raw_appvar = dstkrs_file.read_bytes()
+        idx = raw_appvar.find(b"DSTKRS")
+        if idx != -1:
+            var_data = raw_appvar[idx + 14:]
+            stk_count = var_data[0]
+            passed = (stk_count == 11)
+            offsets = [struct.unpack("<H", var_data[1+i*2:3+i*2])[0] for i in range(stk_count)]
+            for off in offsets:
+                w, h = var_data[off], var_data[off+1]
+                if w < 20 or w > 60 or h != 44:
+                    passed = False
+            results.append(TestResult(
+                name="Poem minigame sticker AppVar (DSTKRS 11 chibi stickers)",
+                passed=passed,
+                status="finished" if passed else "error",
+                chunk=0,
+                pc=0,
+                lines=11,
+                menus=0,
+                quit_requested=False,
+                deleted=[],
+                warnings=[],
+                error_message="" if passed else f"Invalid DSTKRS count or dimensions (count={stk_count})"
+            ))
+
     return results
 
 

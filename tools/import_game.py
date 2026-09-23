@@ -181,6 +181,7 @@ def do_compile(raw_dir: Path, build_dir: Path,
     # regardless of what --files selection compiled).
     resolver.textbox = resolver.ui_box_art("gui/textbox.png", TEXTBOX_SIZE) or {}
     resolver.namebox = resolver.ui_box_art("gui/namebox.png", NAMEBOX_SIZE) or {}
+    resolver.stickers = resolver.bake_stickers()
 
     # One Assembler (chunk) per compiled file, or more than one for a file
     # too big to fit a single chunk (compile_file_chunked() -- only
@@ -742,6 +743,21 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
     if manifest.get("namebox"):
         appvars.append(write_appvar(
             bin_for(manifest["namebox"]["file"]).read_bytes(), "DNAMEBOX", appvar_dir))
+
+    if manifest.get("stickers"):
+        sticker_entries = manifest["stickers"]
+        header_len = 1 + len(sticker_entries) * 2
+        payloads = [bin_for(s["file"]).read_bytes() for s in sticker_entries]
+        offsets = []
+        cur_offset = header_len
+        for p in payloads:
+            offsets.append(cur_offset)
+            cur_offset += len(p)
+        header = bytearray([len(sticker_entries)])
+        for off in offsets:
+            header += struct.pack("<H", off)
+        data = bytes(header) + b"".join(payloads)
+        appvars.append(write_appvar(data, "DSTKRS", appvar_dir))
 
     cg_count = sum(1 for s in manifest["scenes"] if s["palette"] == "own")
     if cg_count:
