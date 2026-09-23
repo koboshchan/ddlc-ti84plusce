@@ -23,7 +23,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import vnasm
-from image_resolve import CG_PREFIXES
+from image_resolve import CG_PREFIXES, CG_EXCLUSIVE_GROUPS
 from rpyc_ast import flatten, kind, load_rpyc, pycode_source
 
 # Speaker codes are stable across the whole game (renpy.ast.Define confirms
@@ -940,6 +940,10 @@ class Compiler:
                 if self._current_cg_family != matching_cg:
                     self._current_cg_family = matching_cg
                     self._current_cg_layers = []
+                for group in CG_EXCLUSIVE_GROUPS:
+                    if tag in group:
+                        self._current_cg_layers = [l for l in self._current_cg_layers if l not in group]
+                        break
                 if tag not in self._current_cg_layers:
                     self._current_cg_layers.append(tag)
                 scene_id = self.resolver.cg_composite_scene_id(tuple(self._current_cg_layers))

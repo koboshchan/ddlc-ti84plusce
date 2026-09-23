@@ -713,6 +713,27 @@ def _fit_and_center(img: "PILImage.Image", size: tuple,
 
 CG_PREFIXES = ("n_cg1", "n_cg2", "n_cg3", "y_cg1", "y_cg2", "y_cg3", "s_cg1", "s_cg2", "s_cg3")
 
+# Mutually exclusive layers within a CG family (e.g. facial expressions, alternative bases).
+# When a new layer from a group is shown, previous layers from the same group are replaced.
+CG_EXCLUSIVE_GROUPS = (
+    # n_cg1 expressions
+    {"n_cg1_exp1", "n_cg1_exp2", "n_cg1_exp3", "n_cg1_exp4", "n_cg1_exp5"},
+    # n_cg1 base variants
+    {"n_cg1_base", "n_cg1b"},
+    # n_cg2 expressions
+    {"n_cg2_exp1", "n_cg2_exp2"},
+    # n_cg3 expressions
+    {"n_cg3_exp1", "n_cg3_exp2"},
+    # y_cg1 expressions
+    {"y_cg1_exp1", "y_cg1_exp2", "y_cg1_exp3"},
+    # y_cg2 expressions
+    {"y_cg2_exp1", "y_cg2_exp2", "y_cg2_exp3"},
+    # s_cg2 bases
+    {"s_cg2_base1", "s_cg2_base2"},
+    # s_cg2 expressions (s_cg2_exp3 is the forehead bump mark, additive so not in this group)
+    {"s_cg2_exp1", "s_cg2_exp2"},
+)
+
 _CG_LAYER_ORDER = {
     # n_cg1
     "n_cg1_bg": 0, "n_cg1_base": 10, "n_cg1b": 15,
@@ -740,6 +761,13 @@ _CG_LAYER_ORDER = {
 
 def normalize_cg_layers(layers: tuple | list) -> tuple[str, ...]:
     s = set(layers)
+    # Deduplicate mutually exclusive layers: keep only the latest in layers sequence
+    for group in CG_EXCLUSIVE_GROUPS:
+        intersecting = [l for l in layers if l in group]
+        if len(intersecting) > 1:
+            for old in intersecting[:-1]:
+                s.discard(old)
+
     family = None
     for tag in s:
         for pfx in CG_PREFIXES:
@@ -754,7 +782,9 @@ def normalize_cg_layers(layers: tuple | list) -> tuple[str, ...]:
     # Ensure root background is present
     if family == "n_cg1":
         s.add("n_cg1_bg")
-        if any("exp" in tag for tag in s) and "n_cg1b" not in s:
+        if "n_cg1b" in s:
+            s.discard("n_cg1_base")
+        elif any("exp" in tag for tag in s):
             s.add("n_cg1_base")
     elif family == "n_cg2":
         s.add("n_cg2_bg")
@@ -771,7 +801,9 @@ def normalize_cg_layers(layers: tuple | list) -> tuple[str, ...]:
     elif family == "y_cg3":
         s.add("y_cg3_base")
     elif family == "s_cg2":
-        if "s_cg2_base2" not in s:
+        if "s_cg2_base2" in s:
+            s.discard("s_cg2_base1")
+        else:
             s.add("s_cg2_base1")
     return tuple(sorted(s, key=lambda l: (_CG_LAYER_ORDER.get(l, 99), l)))
 
