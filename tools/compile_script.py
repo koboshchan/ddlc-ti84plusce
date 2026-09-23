@@ -457,6 +457,11 @@ class Compiler:
         for name in self.DELETED_VARS:
             self._var_slot(name)
         self._var_slot(self.PLAYTHROUGH_VAR)
+        self._var_slot("chapter")
+        self._var_slot("ch2_winner")
+        self._var_slot("ch4_name")
+        self._var_slot("currentname")
+        self._var_slot("unfairto")
 
     def compile_file(self, path: Path) -> None:
         _, top = load_rpyc(path)
@@ -2012,6 +2017,30 @@ class Compiler:
                     # Same idea, different idiom -- see
                     # _emit_chapter_opinion_dispatch.
                     self._pending_dispatch[var] = ("chapter_opinion",) + chapter_dispatch
+                    return True
+                if var == "ch2_winner" and isinstance(stmt.value, ast.Call):
+                    winner_slot = self._var_slot("poemwinner[0]")
+                    ch2_slot = self._var_slot("ch2_winner")
+                    lbl_natsuki = self._gensym("ch2_nat")
+                    lbl_done = self._gensym("ch2_done")
+                    self.asm.if_(winner_slot, vnasm.CMP_EQ, 1, lbl_natsuki)
+                    self.asm.set(ch2_slot, self._intern("Yuri"))
+                    self.asm.jump(lbl_done)
+                    self.asm.label(lbl_natsuki)
+                    self.asm.set(ch2_slot, self._intern("Natsuki"))
+                    self.asm.label(lbl_done)
+                    return True
+                if var == "ch4_name" and isinstance(stmt.value, ast.Call):
+                    scene_slot = self._var_slot("ch4_scene")
+                    ch4_slot = self._var_slot("ch4_name")
+                    lbl_natsuki = self._gensym("ch4_nat")
+                    lbl_done = self._gensym("ch4_done")
+                    self.asm.if_(scene_slot, vnasm.CMP_EQ, self._intern("natsuki"), lbl_natsuki)
+                    self.asm.set(ch4_slot, self._intern("Yuri"))
+                    self.asm.jump(lbl_done)
+                    self.asm.label(lbl_natsuki)
+                    self.asm.set(ch4_slot, self._intern("Natsuki"))
+                    self.asm.label(lbl_done)
                     return True
             val = self._const_operand(stmt.value)
             if var is not None and val is not None:

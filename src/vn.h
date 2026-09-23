@@ -282,6 +282,10 @@ enum vn_trans { TRANS_CUT = 0, TRANS_FADE = 1 };
  * rather than colliding with an ordinary story variable's slot. */
 #define VN_PLAYTHROUGH_VAR  9
 #define VN_CHAPTER_VAR      10
+#define VN_CH2_WINNER_VAR   11
+#define VN_CH4_NAME_VAR     12
+#define VN_CURRENTNAME_VAR  13
+#define VN_UNFAIRTO_VAR     14
 
 #define VN_CALL_DEPTH    8    /* nesting depth for OP_CALL                    */
 #define VN_MAX_CHOICES   6    /* menu options the UI can display at once      */

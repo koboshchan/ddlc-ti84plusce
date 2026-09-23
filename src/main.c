@@ -1493,50 +1493,6 @@ static void run_help_screen(void)
 
 static char player_name[NAME_MAX_LEN + 1] = "you";
 
-/* Replaces all occurrences of "[player]" in @p s with the saved name. compile_script
- * has no opcode for real-time text substitution (that would mean suspending
- * mid-line for a value only known at runtime), so this happens here instead,
- * each time a line is fetched -- see name.h. Iterates through all matches so
- * lines like "[player], [player]!" are completely substituted. */
-static const char *substitute_player_name(const char *s)
-{
-    static char buf[256];
-
-    const char *tag = strstr(s, "[player]");
-    if (!tag) {
-        return s; /* common case: no substitution, zero-copy */
-    }
-
-    size_t name_len = strlen(player_name);
-    size_t tag_len = 8; /* strlen("[player]") */
-    size_t out_len = 0;
-    const char *p = s;
-
-    while (p && *p) {
-        const char *next_tag = strstr(p, "[player]");
-        if (!next_tag) {
-            size_t rem = strlen(p);
-            if (out_len + rem >= sizeof(buf)) {
-                return s; /* overflow protection */
-            }
-            memcpy(buf + out_len, p, rem);
-            out_len += rem;
-            break;
-        }
-        size_t chunk_len = (size_t)(next_tag - p);
-        if (out_len + chunk_len + name_len >= sizeof(buf)) {
-            return s; /* overflow protection */
-        }
-        memcpy(buf + out_len, p, chunk_len);
-        out_len += chunk_len;
-        memcpy(buf + out_len, player_name, name_len);
-        out_len += name_len;
-        p = next_tag + tag_len;
-    }
-    buf[out_len] = '\0';
-    return buf;
-}
-
 /* The name to show on the dialogue box's plate for @p speaker, or NULL for
  * narration.
  *
@@ -1570,70 +1526,127 @@ static const char *speaker_display_name(const vn_vm_t *vm, uint8_t speaker)
     return (name != NULL && name[0] != '\0') ? name : fallback[speaker];
 }
 
-/* Replaces glitch-tag placeholders ("[gtext]", "[s_name]", "[m_name]",
- * "[ntext]") in @p s with whatever random corrupt bytes OP_GLITCHTEXT last
- * placed into vm->glitch_buf. Same runtime-substitution reasoning as
- * substitute_player_name() already handles, generalized to a small fixed
- * tag set and iterated across all matches in the line.
- *
- * All four tags share the same underlying random corrupt string because
- * every one of them is always immediately interpolated and never read any
- * other way (confirmed across every real call site -- see
- * _match_glitchtext_call's own comment), and only one is ever "live" for a
- * given line, so there's no ambiguity in backing all four with the one
- * buffer OP_GLITCHTEXT just filled. */
-static const char *substitute_glitch_text(const vn_vm_t *vm, const char *s)
+/* Dynamic tag substitution in dialogue text. Replaces Ren'Py runtime bracket
+ * variables with their actual values:
+ * - "[player]" / "[currentuser]" -> player_name
+ * - "[basedir]"                 -> "DDLC"
+ * - "[ch2_winner]"              -> interned string from VN_CH2_WINNER_VAR (default "Yuri")
+ * - "[ch4_name]"                -> interned string from VN_CH4_NAME_VAR (default "Natsuki")
+ * - "[currentname]"             -> interned string from VN_CURRENTNAME_VAR (default "Yuri")
+ * - "[unfairto]"                -> interned string from VN_UNFAIRTO_VAR (default "Sayori")
+ * - "[gtext]" / "[s_name]" / "[m_name]" / "[ntext]" -> vm->glitch_buf
+ * Any unrecognized tag "[...]" is preserved verbatim.
+ */
+static const char *substitute_dialogue_tags(const vn_vm_t *vm, const char *s)
 {
-    static const char *const tags[] = { "[gtext]", "[s_name]", "[m_name]", "[ntext]" };
     static char buf[256];
 
-    bool has_tag = false;
-    for (size_t i = 0; i < sizeof(tags) / sizeof(tags[0]); i++) {
-        if (strstr(s, tags[i])) {
-            has_tag = true;
-            break;
-        }
-    }
-    if (!has_tag) {
-        return s; /* common case: no substitution, zero-copy */
+    if (!s || !strchr(s, '[')) {
+        return s; /* common case: zero-copy fast path */
     }
 
-    size_t glitch_len = strlen(vm->glitch_buf);
     size_t out_len = 0;
     const char *p = s;
 
-    while (p && *p) {
-        const char *earliest_match = NULL;
-        size_t match_tag_len = 0;
-
-        for (size_t i = 0; i < sizeof(tags) / sizeof(tags[0]); i++) {
-            const char *m = strstr(p, tags[i]);
-            if (m && (!earliest_match || m < earliest_match)) {
-                earliest_match = m;
-                match_tag_len = strlen(tags[i]);
-            }
-        }
-
-        if (!earliest_match) {
+    while (*p && out_len < sizeof(buf) - 1) {
+        const char *open_bracket = strchr(p, '[');
+        if (!open_bracket) {
             size_t rem = strlen(p);
             if (out_len + rem >= sizeof(buf)) {
-                return s;
+                rem = sizeof(buf) - 1 - out_len;
             }
             memcpy(buf + out_len, p, rem);
             out_len += rem;
             break;
         }
 
-        size_t chunk_len = (size_t)(earliest_match - p);
-        if (out_len + chunk_len + glitch_len >= sizeof(buf)) {
-            return s;
+        /* Copy literal text up to '[' */
+        size_t prefix_len = (size_t)(open_bracket - p);
+        if (out_len + prefix_len >= sizeof(buf)) {
+            prefix_len = sizeof(buf) - 1 - out_len;
         }
-        memcpy(buf + out_len, p, chunk_len);
-        out_len += chunk_len;
-        memcpy(buf + out_len, vm->glitch_buf, glitch_len);
-        out_len += glitch_len;
-        p = earliest_match + match_tag_len;
+        memcpy(buf + out_len, p, prefix_len);
+        out_len += prefix_len;
+        if (out_len >= sizeof(buf) - 1) {
+            break;
+        }
+
+        const char *close_bracket = strchr(open_bracket + 1, ']');
+        if (!close_bracket) {
+            /* No closing bracket; copy remaining string and finish */
+            size_t rem = strlen(open_bracket);
+            if (out_len + rem >= sizeof(buf)) {
+                rem = sizeof(buf) - 1 - out_len;
+            }
+            memcpy(buf + out_len, open_bracket, rem);
+            out_len += rem;
+            break;
+        }
+
+        size_t tag_len = (size_t)(close_bracket - (open_bracket + 1));
+        const char *replacement = NULL;
+
+        if (tag_len == 6 && strncmp(open_bracket + 1, "player", 6) == 0) {
+            replacement = player_name;
+        } else if (tag_len == 11 && strncmp(open_bracket + 1, "currentuser", 11) == 0) {
+            replacement = player_name;
+        } else if (tag_len == 7 && strncmp(open_bracket + 1, "basedir", 7) == 0) {
+            replacement = "DDLC";
+        } else if (tag_len == 10 && strncmp(open_bracket + 1, "ch2_winner", 10) == 0) {
+            if (vm) {
+                replacement = assets_var_string(vm->vars[VN_CH2_WINNER_VAR]);
+            }
+            if (!replacement || replacement[0] == '\0') {
+                replacement = "Yuri";
+            }
+        } else if (tag_len == 8 && strncmp(open_bracket + 1, "ch4_name", 8) == 0) {
+            if (vm) {
+                replacement = assets_var_string(vm->vars[VN_CH4_NAME_VAR]);
+            }
+            if (!replacement || replacement[0] == '\0') {
+                replacement = "Natsuki";
+            }
+        } else if (tag_len == 11 && strncmp(open_bracket + 1, "currentname", 11) == 0) {
+            if (vm) {
+                replacement = assets_var_string(vm->vars[VN_CURRENTNAME_VAR]);
+            }
+            if (!replacement || replacement[0] == '\0') {
+                replacement = "Yuri";
+            }
+        } else if (tag_len == 8 && strncmp(open_bracket + 1, "unfairto", 8) == 0) {
+            if (vm) {
+                replacement = assets_var_string(vm->vars[VN_UNFAIRTO_VAR]);
+            }
+            if (!replacement || replacement[0] == '\0') {
+                replacement = "Sayori";
+            }
+        } else if ((tag_len == 5 && strncmp(open_bracket + 1, "gtext", 5) == 0) ||
+                   (tag_len == 6 && strncmp(open_bracket + 1, "s_name", 6) == 0) ||
+                   (tag_len == 6 && strncmp(open_bracket + 1, "m_name", 6) == 0) ||
+                   (tag_len == 5 && strncmp(open_bracket + 1, "ntext", 5) == 0)) {
+            replacement = (vm && vm->glitch_buf[0]) ? vm->glitch_buf : "";
+        }
+
+        if (replacement) {
+            size_t repl_len = strlen(replacement);
+            if (out_len + repl_len >= sizeof(buf)) {
+                repl_len = sizeof(buf) - 1 - out_len;
+            }
+            memcpy(buf + out_len, replacement, repl_len);
+            out_len += repl_len;
+        } else {
+            /* Unrecognized tag: preserve "[tag]" verbatim */
+            size_t full_tag_len = (size_t)(close_bracket + 1 - open_bracket);
+            if (out_len + full_tag_len >= sizeof(buf)) {
+                full_tag_len = sizeof(buf) - 1 - out_len;
+            }
+            memcpy(buf + out_len, open_bracket, full_tag_len);
+            out_len += full_tag_len;
+        }
+
+        p = close_bracket + 1;
     }
+
     buf[out_len] = '\0';
     return buf;
 }
@@ -1641,7 +1654,7 @@ static const char *substitute_glitch_text(const vn_vm_t *vm, const char *s)
 static const char *host_string(void *ctx, uint16_t index)
 {
     const vn_vm_t *vm = ctx;
-    return substitute_glitch_text(vm, substitute_player_name(assets_string(index)));
+    return substitute_dialogue_tags(vm, assets_string(index));
 }
 
 static void host_update(void *ctx, const vn_scene_t *scene, uint8_t trans)
