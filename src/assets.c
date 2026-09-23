@@ -641,25 +641,6 @@ bool assets_draw_sprite(uint16_t id, int center_x, int feet_y)
  * division beyond that one fixed ratio, and no dependency on graphx's
  * gfx_RotateScaleSprite (which requires a *square* input sprite -- see its
  * own doc comment in graphx.h -- and character atoms never are). */
-#define ZOOM_NUM 21
-#define ZOOM_DEN 20
-
-static int zoom_scale_dim(int v)
-{
-    return (v * ZOOM_NUM + ZOOM_DEN / 2) / ZOOM_DEN;
-}
-
-/* Round-half-away-from-zero, unlike zoom_scale_dim() above (a dimension is
- * never negative) -- dx/dy frequently are (an atom cropped up/left of the
- * naive centered position), and scaling a negative offset the same way as a
- * positive one keeps a body atom and its overlay from drifting a stray
- * pixel apart from inconsistent rounding between the two. */
-static int zoom_scale_off(int v)
-{
-    return (v >= 0) ? (v * ZOOM_NUM + ZOOM_DEN / 2) / ZOOM_DEN
-                    : -((-v * ZOOM_NUM + ZOOM_DEN / 2) / ZOOM_DEN);
-}
-
 bool assets_sprite_bounds(uint16_t id, int *w, int *h, int *dx, int *dy)
 {
     uint8_t appvar_idx;
@@ -741,15 +722,15 @@ static gfx_sprite_t *zoom_cache_find(uint16_t id)
     return NULL;
 }
 
-/* Builds sprite @p id's scaled bitmap into a free (or round-robin evicted)
+/* Builds sprite @p id's uncompressed 1.00x bitmap into a free (or round-robin evicted)
  * slot and returns it, or NULL if anything along the way fails -- a missing
  * id, an unopenable AppVar, or the allocation. Callers treat NULL as
- * "draw this one unscaled instead", never as fatal.
+ * "draw this one unscaled off flash instead", never as fatal.
  *
- * Reads the source sprite straight off flash (see assets_draw_sprite()'s
- * own comment on why sprites ship uncompressed) -- only the scaled
- * destination is a real allocation here, which is worth it exactly once per
- * sprite rather than once per frame. */
+ * Reads the source sprite straight off flash -- only the uncompressed 1.00x
+ * destination is allocated here, which is retained across the speaking line.
+ * Continuous scaling (1.00x - 1.05x) renders directly to gfx_vbuffer via eZ80 asm
+ * without any further allocations. */
 static gfx_sprite_t *zoom_cache_fill(uint16_t id)
 {
     uint8_t appvar_idx;
@@ -777,61 +758,11 @@ static gfx_sprite_t *zoom_cache_fill(uint16_t id)
     gfx_ConvertFromRLETSprite(rle, plain);
     ti_Close(handle);
 
-    int zw_i = zoom_scale_dim(plain->width);
-    int zh_i = zoom_scale_dim(plain->height);
-    /* gfx_sprite_t's dimensions are uint8_t, so a source atom over 242px in
-     * either axis would scale past 255 and wrap silently, drawing garbage.
-     * The import pipeline's own limit is 255 (image_resolve.py's
-     * SPRITE_MAX_DIM), which is looser than this one -- today's largest
-     * baked atom is 196px, but nothing enforces that, so refuse rather than
-     * corrupt. The caller just draws this sprite unscaled. */
-    if (zw_i > 255 || zh_i > 255) {
-        free(plain);
-        return NULL;
-    }
-    uint8_t zw = (uint8_t)zw_i;
-    uint8_t zh = (uint8_t)zh_i;
-    gfx_sprite_t *scaled = malloc((size_t)2 + (size_t)zw * zh);
-    if (scaled == NULL) {
-        free(plain);
-        return NULL;
-    }
-    scaled->width  = zw;
-    scaled->height = zh;
-
-    /* Output pixel (x, y) samples source (x*ZOOM_DEN/ZOOM_NUM, likewise for
-     * y). Doing those two divisions per pixel is what made this path
-     * visibly laggy back when it ran every frame: the eZ80 has no divide
-     * instruction, so each one is a software routine costing far more than
-     * the byte copy it guards. The ratio is fixed at 20:21, so walk it with
-     * a Bresenham accumulator instead -- the source index advances one per
-     * output pixel except on every 21st, where it repeats.
-     *
-     * No clamping of sx/sy against the source dimensions is needed:
-     * zoom_scale_dim() rounds, so the largest output index maps to at most
-     * (dim - 1) for every dimension -- (zw-1)*20 <= 21*w - 10 < 21*w. */
-    const uint8_t *srow = plain->data;
-    uint8_t       *dst  = scaled->data;
-    int ay = 0;
-
-    for (uint8_t y = 0; y < zh; y++) {
-        fast_zoom_row(dst, srow, zw);
-        dst += zw;
-
-        ay += ZOOM_DEN;
-        if (ay >= ZOOM_NUM) {
-            ay -= ZOOM_NUM;
-            srow += plain->width;
-        }
-    }
-
-    free(plain);
-
     free(zoom_cache[zoom_cache_next].spr);
     zoom_cache[zoom_cache_next].id  = id;
-    zoom_cache[zoom_cache_next].spr = scaled;
+    zoom_cache[zoom_cache_next].spr = plain;
     zoom_cache_next = (uint8_t)((zoom_cache_next + 1) % ZOOM_CACHE_SLOTS);
-    return scaled;
+    return plain;
 }
 
 bool assets_zoom_prepare(uint16_t id)
@@ -839,17 +770,13 @@ bool assets_zoom_prepare(uint16_t id)
     return zoom_cache_find(id) != NULL || zoom_cache_fill(id) != NULL;
 }
 
-bool assets_draw_sprite_zoomed(uint16_t id, int center_x, int feet_y)
+bool assets_draw_sprite_scaled(uint16_t id, int center_x, int feet_y, unsigned int scale_permille)
 {
     gfx_sprite_t *spr = zoom_cache_find(id);
     if (spr == NULL && (spr = zoom_cache_fill(id)) == NULL) {
         return false;
     }
 
-    /* dx/dy are re-derived per draw rather than cached alongside the bitmap:
-     * sprite_lookup() is a LUT search plus an array read, no file I/O, and
-     * keeping the cache entry to just the pixels means one less thing that
-     * can fall out of step with DSPROFF. */
     uint8_t appvar_idx;
     uint16_t offset;
     int16_t dx, dy;
@@ -857,9 +784,64 @@ bool assets_draw_sprite_zoomed(uint16_t id, int center_x, int feet_y)
         return false;
     }
 
-    gfx_TransparentSprite(spr, center_x - spr->width / 2 + zoom_scale_off(dx),
-                          feet_y - spr->height + zoom_scale_off(dy));
+    int src_w = spr->width;
+    int src_h = spr->height;
+
+    int dst_w = (int)(((uint32_t)src_w * scale_permille + 500) / 1000);
+    int dst_h = (int)(((uint32_t)src_h * scale_permille + 500) / 1000);
+
+    int zdx = (dx >= 0) ? (int)(((uint32_t)dx * scale_permille + 500) / 1000)
+                        : -(int)(((uint32_t)(-dx) * scale_permille + 500) / 1000);
+    int zdy = (dy >= 0) ? (int)(((uint32_t)dy * scale_permille + 500) / 1000)
+                        : -(int)(((uint32_t)(-dy) * scale_permille + 500) / 1000);
+
+    int dst_x = center_x - dst_w / 2 + zdx;
+    int dst_y = feet_y - dst_h + zdy;
+
+    if (dst_w == src_w && dst_h == src_h) {
+        gfx_TransparentSprite(spr, dst_x, dst_y);
+        return true;
+    }
+
+    int x0 = dst_x > 0 ? dst_x : 0;
+    int x1 = (dst_x + dst_w) < SCREEN_W ? (dst_x + dst_w) : SCREEN_W;
+    int y0 = dst_y > 0 ? dst_y : 0;
+    int y1 = (dst_y + dst_h) < SCREEN_H ? (dst_y + dst_h) : SCREEN_H;
+
+    if (x0 < x1 && y0 < y1) {
+        int vis_w = x1 - x0;
+        int vis_h = y1 - y0;
+        int start_dx = x0 - dst_x;
+        int start_dy = y0 - dst_y;
+
+        uint32_t init_num_x = (uint32_t)start_dx * (uint32_t)src_w + (uint32_t)(dst_w / 2);
+        int start_sx = (int)(init_num_x / (uint32_t)dst_w);
+        uint32_t init_acc_x = init_num_x % (uint32_t)dst_w;
+
+        uint32_t init_num_y = (uint32_t)start_dy * (uint32_t)src_h + (uint32_t)(dst_h / 2);
+        int start_sy = (int)(init_num_y / (uint32_t)dst_h);
+        uint32_t acc_y = init_num_y % (uint32_t)dst_h;
+
+        const uint8_t *src_row = spr->data + (size_t)start_sy * src_w + start_sx;
+        uint8_t *dest_row = (uint8_t *)gfx_vbuffer + (size_t)y0 * SCREEN_W + x0;
+
+        for (int y = 0; y < vis_h; y++) {
+            fast_scale_row_trans(dest_row, src_row, (size_t)vis_w, init_acc_x, (unsigned int)src_w, (unsigned int)dst_w);
+            dest_row += SCREEN_W;
+            acc_y += (uint32_t)src_h;
+            while (acc_y >= (uint32_t)dst_h) {
+                acc_y -= (uint32_t)dst_h;
+                src_row += src_w;
+            }
+        }
+    }
+
     return true;
+}
+
+bool assets_draw_sprite_zoomed(uint16_t id, int center_x, int feet_y)
+{
+    return assets_draw_sprite_scaled(id, center_x, feet_y, 1050);
 }
 
 bool assets_title_layout(uint8_t id, int *x, int *y, int *dx, int *dy)

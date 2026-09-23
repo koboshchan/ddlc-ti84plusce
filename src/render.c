@@ -290,6 +290,42 @@ static int zoom_fallback_offset(uint8_t character, bool zoomed, unsigned t)
                                     t, changed_at[character], SPEAK_POP_MS);
 }
 
+static unsigned zoom_scale_permille(uint8_t character, bool zoomed, unsigned t)
+{
+    static bool     was_zoomed[VN_MAX_CHARS];
+    static unsigned changed_at[VN_MAX_CHARS];
+    static int      from_scale[VN_MAX_CHARS];
+    static int      to_scale[VN_MAX_CHARS];
+    static bool     inited;
+
+    if (!inited) {
+        for (int i = 0; i < VN_MAX_CHARS; i++) {
+            from_scale[i] = 1000;
+            to_scale[i]   = 1000;
+        }
+        inited = true;
+    }
+
+    if (character >= VN_MAX_CHARS) {
+        return zoomed ? 1050 : 1000;
+    }
+
+    if (zoomed != was_zoomed[character]) {
+        int cur = to_scale[character] + ease(ease_remain, from_scale[character] - to_scale[character],
+                                             t, changed_at[character], SPEAK_POP_MS);
+        from_scale[character] = cur;
+        to_scale[character]   = zoomed ? 1050 : 1000;
+        was_zoomed[character] = zoomed;
+        changed_at[character] = t;
+    }
+    if (t - changed_at[character] < SPEAK_POP_MS) {
+        anim_moving = true;
+    }
+
+    return (unsigned)(to_scale[character] + ease(ease_remain, from_scale[character] - to_scale[character],
+                                                 t, changed_at[character], SPEAK_POP_MS));
+}
+
 /* The real one-shot hop: DDLC's `hop`/`hopfocus` ATL eases yoffset to -20
  * over .1s then back to 0 over .1s -- a bounce that plays once per Show,
  * not a sustained state (unlike the zoom above, which holds for as long as
@@ -428,11 +464,8 @@ static void draw_actor(const vn_actor_t *actor, unsigned t)
     int center_x = pos_center(actor->pos);
     bool zoom_wanted = (actor->flags & VN_FLAG_ZOOM) != 0;
 
-    /* Called every frame regardless of whether the real zoom below actually
-     * runs and succeeds this frame -- that's what lets it track the
-     * zoomed/not-zoomed transition correctly and ease back out properly
-     * even after a run of frames where the real zoom worked and this
-     * return value went unused. */
+    /* Continuous scale (1000..1050 permille) eased over SPEAK_POP_MS */
+    unsigned scale_permille = zoom_scale_permille(actor->character, zoom_wanted, t);
     int fallback_off = zoom_fallback_offset(actor->character, zoom_wanted, t);
 
     /* The resting baseline, plus the one-shot hop if this Show authored one
@@ -445,52 +478,31 @@ static void draw_actor(const vn_actor_t *actor, unsigned t)
     }
     feet_y += sink_offset(actor->character, (actor->flags & VN_FLAG_SINK) != 0, t);
 
-    /* Both of this character's layers are committed to the same fate here,
-     * before either is drawn: preparing them separately let them disagree,
-     * since the body atom is by far the bigger allocation and so the one
-     * that failed under pressure, while the small expression atom right
-     * after it succeeded -- drawing a 1.05x head on a 1.00x body. Deciding
-     * up front makes that unreachable; the character zooms whole or not at
-     * all.
-     *
-     * After the first frame of a line these are pure cache hits (see
-     * assets.c's scaled-sprite cache), so this costs a lookup, not work. */
-    bool zoom = zoom_wanted && assets_zoom_prepare(actor->sprite) &&
-                (actor->overlay == VN_NO_OVERLAY ||
-                 assets_zoom_prepare(actor->overlay));
+    /* Check if uncompressed sprites can be cached in RAM for smooth scaling */
+    bool can_zoom = assets_zoom_prepare(actor->sprite) &&
+                    (actor->overlay == VN_NO_OVERLAY ||
+                     assets_zoom_prepare(actor->overlay));
 
-    /* The real scale can still be unavailable on a real device (no room for
-     * the bitmap alongside a large resident script chunk -- see assets.c),
-     * which is why this doesn't just branch on zoom_wanted: fall back to the
-     * plain draw, nudged by fallback_off, whenever the real scale didn't
-     * actually happen, not only when it wasn't wanted.
-     *
-     * The plain (non-zoomed) draw can independently fail the exact same way
-     * the zoom prepare above already accounts for -- the body atom is by
-     * far the bigger allocation, so under memory pressure it's the one
-     * that can lose the malloc() race while the small expression atom
-     * right after it still succeeds. Unlike the zoom path (which commits
-     * both layers to the same fate *before* drawing either, since it can
-     * cheaply check affordability with assets_zoom_prepare()), there's no
-     * equivalent cheap check for a plain draw -- so this reacts instead:
-     * only attempt the overlay once the body has actually landed a pixel,
-     * so a failed body always means a fully-skipped character for that
-     * frame, never a floating head with no body under it. */
-    bool body_drawn = zoom && assets_draw_sprite_zoomed(actor->sprite, center_x, feet_y);
+    bool body_drawn = false;
+    if (can_zoom && scale_permille > 1000) {
+        body_drawn = assets_draw_sprite_scaled(actor->sprite, center_x, feet_y, scale_permille);
+    }
     if (!body_drawn) {
-        body_drawn = assets_draw_sprite(actor->sprite, center_x, feet_y + fallback_off);
+        int y_off = can_zoom ? 0 : fallback_off;
+        body_drawn = assets_draw_sprite(actor->sprite, center_x, feet_y + y_off);
     }
 
     /* Most actors are one flattened sprite (overlay == VN_NO_OVERLAY); a
-     * layered one draws its expression atom second, at the same anchor --
-     * its own (dx, dy) from DSPROFF is what places it correctly relative to
-     * the body atom just drawn, at either scale. */
+     * layered one draws its expression atom second, at the same anchor */
     if (body_drawn && actor->overlay != VN_NO_OVERLAY) {
         int ov_x = center_x;
-        int ov_y = feet_y + (zoom ? 0 : fallback_off);
-
-        if (!(zoom && assets_draw_sprite_zoomed(actor->overlay, ov_x, ov_y))) {
-            assets_draw_sprite(actor->overlay, ov_x, ov_y);
+        bool ov_drawn = false;
+        if (can_zoom && scale_permille > 1000) {
+            ov_drawn = assets_draw_sprite_scaled(actor->overlay, ov_x, feet_y, scale_permille);
+        }
+        if (!ov_drawn) {
+            int y_off = can_zoom ? 0 : fallback_off;
+            assets_draw_sprite(actor->overlay, ov_x, feet_y + y_off);
         }
     }
 }

@@ -418,37 +418,52 @@ static void run_debug_anim_test(void)
     static const char *const anim_names[3] = {
         "ZOOM (speaking pop)", "HOP (one-shot bounce)", "SINK (drift + hold)",
     };
-    static const uint8_t anim_flags[3] = { VN_FLAG_ZOOM, VN_FLAG_HOP, VN_FLAG_SINK };
     vn_scene_t scene;
-    uint16_t   sprite  = 0;
-    uint8_t    anim    = 0;
-    bool       changed = true;
+    uint16_t   sprite    = 0;
+    uint8_t    anim      = 0;
+    bool       is_active = false;
     input_t in;
-    char line[32];
+    char line[48];
 
     memset(&scene, 0, sizeof(scene));
     for (int i = 0; i < VN_MAX_CHARS; i++) {
         scene.actors[i].character = VN_NO_SPRITE;
     }
-    scene.background      = VN_NO_SPRITE;
+    scene.background        = VN_NO_SPRITE;
     scene.actors[0].overlay = VN_NO_OVERLAY;
     scene.actors[0].pos     = 80; /* center_x = pos*2 = 160, screen center */
+
+    render_backdrop(COL_BOX_FILL);
+    render_invalidate_scene();
 
     for (;;) {
         scene.actors[0].character = 0;
         scene.actors[0].sprite    = sprite;
-        scene.actors[0].flags     = anim_flags[anim];
-        if (changed) {
-            scene.actors[0].show_seq++;
-            changed = false;
+        if (anim == 0) {
+            scene.actors[0].flags = is_active ? VN_FLAG_ZOOM : 0;
+        } else if (anim == 1) {
+            scene.actors[0].flags = is_active ? VN_FLAG_HOP : 0;
+        } else {
+            scene.actors[0].flags = is_active ? VN_FLAG_SINK : 0;
         }
 
         render_backdrop(COL_BOX_FILL);
-        render_scene(&scene);
-        sprintf(line, "Sprite id: %u", sprite);
+        render_scene_lazy(&scene);
+
+        sprintf(line, "Sprite id: %u | %s", sprite, anim_names[anim]);
         render_text(line, 8, 4, COL_WHITE);
-        render_text(anim_names[anim], 8, SCREEN_H - 34, COL_WHITE);
-        render_text("Up/Dn: anim  L/R: sprite  2nd: retrigger  Mode: back",
+
+        if (anim == 0) {
+            sprintf(line, "State: %s (press 2nd to toggle)", is_active ? "1.05x ZOOMED" : "1.00x REST");
+            render_text(line, 8, 20, is_active ? COL_HIGHLIGHT : COL_NAME);
+        } else if (anim == 1) {
+            render_text("Press 2nd to trigger HOP bounce", 8, 20, COL_HIGHLIGHT);
+        } else {
+            sprintf(line, "State: %s (press 2nd to toggle)", is_active ? "SUNK (1.06)" : "NORMAL");
+            render_text(line, 8, 20, is_active ? COL_HIGHLIGHT : COL_NAME);
+        }
+
+        render_text("Up/Dn: anim  L/R: sprite  2nd: trigger  Mode: back",
                     8, SCREEN_H - 18, COL_BOX_EDGE);
         render_present(TRANS_CUT);
         gfx_Wait();
@@ -459,22 +474,29 @@ static void run_debug_anim_test(void)
         }
         if (in.up) {
             anim = (uint8_t)((anim + 1) % 3);
-            changed = true;
+            is_active = false;
+            render_invalidate_scene();
         }
         if (in.down) {
             anim = (uint8_t)((anim + 2) % 3);
-            changed = true;
+            is_active = false;
+            render_invalidate_scene();
         }
         if (in.left && sprite > 0) {
             sprite--;
-            changed = true;
+            render_invalidate_scene();
         }
         if (in.right) {
             sprite++;
-            changed = true;
+            render_invalidate_scene();
         }
         if (in.advance) {
-            changed = true; /* manual re-trigger, e.g. to replay HOP */
+            if (anim == 1) {
+                scene.actors[0].show_seq++;
+                is_active = true;
+            } else {
+                is_active = !is_active;
+            }
         }
     }
 
@@ -631,8 +653,8 @@ static void run_debug_asm_test(void)
 
     for (;;) {
         /* Run tests and benchmark */
-        unsigned t_cg = 0, t_blit = 0, t_zoom = 0, t_shift = 0;
-        bool pass_cg = false, pass_blit = false, pass_zoom = false, pass_shift = false;
+        unsigned t_cg = 0, t_blit = 0, t_zoom = 0, t_shift = 0, t_scale = 0;
+        bool pass_cg = false, pass_blit = false, pass_zoom = false, pass_shift = false, pass_scale = false;
 
         /* 1. Verify fast_cg_upscale_2x */
         {
@@ -766,6 +788,50 @@ static void run_debug_asm_test(void)
             }
         }
 
+        /* 5. Verify fast_scale_sprite_trans */
+        int fail_x = -1, fail_y = -1;
+        {
+            static uint8_t s_src[40 * 40];
+            uint8_t *s_dst = (uint8_t *)gfx_vbuffer;
+            for (int y = 0; y < 40; y++) {
+                for (int x = 0; x < 40; x++) {
+                    s_src[y * 40 + x] = ((x + y) % 2 == 0) ? (uint8_t)(10 + (x + y) % 30) : 0;
+                }
+            }
+            memset(s_dst, 0xFF, 320 * 44);
+
+            clock_t start = clock();
+            for (int it = 0; it < 50; it++) {
+                fast_scale_sprite_trans(s_dst, 320, s_src, 40, 40, 42, 42);
+            }
+            clock_t dur = clock() - start;
+            t_scale = (unsigned)(dur * 1000UL / CLOCKS_PER_SEC / 50);
+
+            pass_scale = true;
+            for (int y = 0; y < 42; y++) {
+                int sy = (y * 40 + 21) / 42;
+                for (int x = 0; x < 42; x++) {
+                    int sx = (x * 40 + 21) / 42;
+                    uint8_t exp = s_src[sy * 40 + sx];
+                    uint8_t act = s_dst[y * 320 + x];
+                    if (exp == 0) {
+                        if (act != 0xFF) {
+                            pass_scale = false;
+                            fail_x = x; fail_y = y;
+                            break;
+                        }
+                    } else {
+                        if (act != exp) {
+                            pass_scale = false;
+                            fail_x = x; fail_y = y;
+                            break;
+                        }
+                    }
+                }
+                if (!pass_scale) break;
+            }
+        }
+
         /* Display diagnostic screen */
         for (;;) {
             render_backdrop(COL_BOX_FILL);
@@ -783,12 +849,19 @@ static void run_debug_asm_test(void)
             sprintf(line, "4. Glitch Shift  : %s (%u ms)", pass_shift ? "PASS" : "FAIL", t_shift);
             render_text(line, 14, 76, pass_shift ? COL_WHITE : COL_HIGHLIGHT);
 
-            render_text("All 4 eZ80 assembly routines active.", 14, 100, COL_NAME);
-            render_text("Streaming registers + hardware LDIR", 14, 116, COL_BOX_EDGE);
-            render_text("Code size saved: 648 bytes", 14, 132, COL_BOX_EDGE);
+            if (pass_scale) {
+                sprintf(line, "5. Scaler 1.05x  : PASS (%u ms)", t_scale);
+            } else {
+                sprintf(line, "5. Scaler 1.05x  : FAIL @%d,%d (%u ms)", fail_x, fail_y, t_scale);
+            }
+            render_text(line, 14, 92, pass_scale ? COL_WHITE : COL_HIGHLIGHT);
 
-            render_text("[Right] Live Visual Demo", 14, 156, COL_HIGHLIGHT);
-            render_text("[2nd] Re-run test suite", 14, 172, COL_WHITE);
+            render_text("All 5 eZ80 assembly routines active.", 14, 114, COL_NAME);
+            render_text("Streaming registers + hardware LDIR", 14, 130, COL_BOX_EDGE);
+            render_text("Continuous eZ80 scaling directly to screen", 14, 146, COL_BOX_EDGE);
+
+            render_text("[Right] Live Visual Demo", 14, 168, COL_HIGHLIGHT);
+            render_text("[2nd] Re-run test suite", 14, 184, COL_WHITE);
             render_text("Mode / Clear: return to Debug Menu", 14, SCREEN_H - 18, COL_BOX_EDGE);
 
             render_present(TRANS_CUT);

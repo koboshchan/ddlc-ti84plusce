@@ -61,6 +61,40 @@ void fast_zoom_row(uint8_t *dst, const uint8_t *src, size_t zw);
  */
 void fast_row_shift(uint8_t *row, uint8_t *scratch, size_t off_wrapped);
 
+/**
+ * Fast Row Scaler with Transparency Skipping
+ *
+ * Scales one row of sprite pixels from src_row into dest with Bresenham
+ * stepping in 24-bit eZ80 registers, skipping transparent pixels (color index 0).
+ *
+ * @param dest    Destination scanline pointer in framebuffer
+ * @param src_row Source row pointer in uncompressed sprite
+ * @param count   Number of destination pixels to output
+ * @param acc_x   Initial Bresenham error/accumulator
+ * @param step_x  Bresenham step numerator (source width)
+ * @param div_x   Bresenham step denominator (destination width)
+ */
+void fast_scale_row_trans(uint8_t *dest, const uint8_t *src_row, size_t count,
+                          unsigned int acc_x, unsigned int step_x, unsigned int div_x);
+
+/**
+ * Fast 2D Sprite Scaler with Transparency Skipping
+ *
+ * Scales an uncompressed 2D sprite directly into the destination buffer with
+ * Bresenham stepping in both axes, skipping color index 0.
+ *
+ * @param dest       Destination buffer pointer (top-left of destination rect)
+ * @param dest_pitch Destination stride in bytes (e.g. 320 for screen)
+ * @param src        Source sprite pixel buffer
+ * @param src_w      Source sprite width in pixels
+ * @param src_h      Source sprite height in pixels
+ * @param dst_w      Scaled destination width in pixels
+ * @param dst_h      Scaled destination height in pixels
+ */
+void fast_scale_sprite_trans(uint8_t *dest, size_t dest_pitch,
+                             const uint8_t *src, size_t src_w, size_t src_h,
+                             size_t dst_w, size_t dst_h);
+
 #ifdef __cplusplus
 }
 #endif

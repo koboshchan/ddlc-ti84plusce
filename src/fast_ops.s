@@ -13,6 +13,12 @@
 	.global	_fast_row_shift
 	.type	_fast_row_shift, @function
 
+	.global	_fast_scale_row_trans
+	.type	_fast_scale_row_trans, @function
+
+	.global	_fast_scale_sprite_trans
+	.type	_fast_scale_sprite_trans, @function
+
 ; ===========================================================================
 ; void fast_cg_upscale_2x(uint8_t *dest, const uint8_t *src)
 ;
@@ -250,3 +256,240 @@ _fast_row_shift:
 	pop	iy
 	pop	ix
 	ret
+
+; ===========================================================================
+; void fast_scale_row_trans(uint8_t *dest, const uint8_t *src_row, size_t count,
+;                           unsigned int acc_x, unsigned int step_x, unsigned int div_x)
+;
+; Parameters on stack:
+;   (SP + 3):  dest
+;   (SP + 6):  src_row
+;   (SP + 9):  count
+;   (SP + 12): acc_x
+;   (SP + 15): step_x
+;   (SP + 18): div_x
+; ===========================================================================
+_fast_scale_row_trans:
+	push	ix
+	push	iy
+
+	ld	iy, 0
+	add	iy, sp
+
+	ld	bc, (iy + 15)		; BC = count
+	ld	a, b
+	or	a, c
+	jr	z, .row_done
+
+	ld	de, (iy + 9)		; DE = dest
+	ld	hl, (iy + 12)		; HL = src_row
+
+	exx
+	ld	hl, (iy + 18)		; HL' = acc_x
+	ld	bc, (iy + 21)		; BC' = step_x
+	ld	de, (iy + 24)		; DE' = div_x
+	exx
+
+	call	.row_scaler_core
+
+.row_done:
+	pop	iy
+	pop	ix
+	ret
+
+; Internal row scaler core:
+; Inputs:
+;   DE  = dest
+;   HL  = src_row
+;   BC  = count
+;   HL' = acc_x
+;   BC' = step_x
+;   DE' = div_x
+.row_scaler_core:
+	ld	a, b
+	or	a, a
+	jr	z, .short_row
+
+	; First chunk: 256 pixels
+	ld	b, 0
+.loop256:
+	ld	a, (hl)
+	or	a, a
+	jr	z, .skip256
+	ld	(de), a
+.skip256:
+	inc	de
+	exx
+	add	hl, bc
+	or	a, a
+	sbc	hl, de
+	jr	nc, .step256
+	add	hl, de
+	exx
+	djnz	.loop256
+	jr	.after256
+.step256:
+	exx
+	inc	hl
+	djnz	.loop256
+
+.after256:
+	ld	a, c
+	or	a, a
+	ret	z
+	ld	b, a
+	jr	.loop_rem
+
+.short_row:
+	ld	a, c
+	or	a, a
+	ret	z
+	ld	b, a
+
+.loop_rem:
+	ld	a, (hl)
+	or	a, a
+	jr	z, .skip_rem
+	ld	(de), a
+.skip_rem:
+	inc	de
+	exx
+	add	hl, bc
+	or	a, a
+	sbc	hl, de
+	jr	nc, .step_rem
+	add	hl, de
+	exx
+	djnz	.loop_rem
+	ret
+
+.step_rem:
+	exx
+	inc	hl
+	djnz	.loop_rem
+	ret
+
+; ===========================================================================
+; void fast_scale_sprite_trans(uint8_t *dest, size_t dest_pitch,
+;                              const uint8_t *src, size_t src_w, size_t src_h,
+;                              size_t dst_w, size_t dst_h)
+;
+; Parameters on stack:
+;   (SP + 3):  dest
+;   (SP + 6):  dest_pitch
+;   (SP + 9):  src
+;   (SP + 12): src_w
+;   (SP + 15): src_h
+;   (SP + 18): dst_w
+;   (SP + 21): dst_h
+; ===========================================================================
+_fast_scale_sprite_trans:
+	push	ix
+	push	iy
+
+	ld	iy, 0
+	add	iy, sp
+
+	; Check if dst_w == 0 or dst_h == 0 or src_w == 0 or src_h == 0
+	ld	bc, (iy + 18)		; src_w
+	ld	a, b
+	or	a, c
+	jp	z, .sprite_done
+
+	ld	bc, (iy + 21)		; src_h
+	ld	a, b
+	or	a, c
+	jp	z, .sprite_done
+
+	ld	bc, (iy + 24)		; dst_w
+	ld	a, b
+	or	a, c
+	jp	z, .sprite_done
+
+	ld	bc, (iy + 27)		; dst_h
+	ld	a, b
+	or	a, c
+	jp	z, .sprite_done
+
+	; Allocate local variables on stack:
+	;   SP - 3: cur_dest
+	;   SP - 6: cur_src
+	;   SP - 9: acc_y
+	;   SP - 12: y_counter
+	ld	hl, (iy + 9)		; dest
+	push	hl			; (iy - 3) = cur_dest
+	ld	hl, (iy + 15)		; src
+	push	hl			; (iy - 6) = cur_src
+
+	; acc_y = dst_h / 2
+	ld	hl, (iy + 27)		; dst_h
+	srl	h
+	rr	l
+	push	hl			; (iy - 9) = acc_y
+
+	ld	hl, (iy + 27)		; dst_h
+	push	hl			; (iy - 12) = y_counter
+
+.sprite_row_loop:
+	; Set up row scaler inputs:
+	ld	de, (iy - 3)		; DE = cur_dest
+	ld	hl, (iy - 6)		; HL = cur_src
+	ld	bc, (iy + 24)		; BC = dst_w (count)
+
+	exx
+	; acc_x = dst_w / 2
+	ld	hl, (iy + 24)		; dst_w
+	srl	h
+	rr	l			; HL' = init_acc_x
+	ld	bc, (iy + 18)		; BC' = src_w (step_x)
+	ld	de, (iy + 24)		; DE' = dst_w (div_x)
+	exx
+
+	call	.row_scaler_core
+
+	; Advance cur_dest by dest_pitch
+	ld	hl, (iy - 3)
+	ld	bc, (iy + 12)		; dest_pitch
+	add	hl, bc
+	ld	(iy - 3), hl
+
+	; Step acc_y += src_h
+	ld	hl, (iy - 9)		; acc_y
+	ld	bc, (iy + 21)		; src_h
+	add	hl, bc
+	ld	de, (iy + 27)		; dst_h
+
+.acc_y_loop:
+	or	a, a
+	sbc	hl, de			; acc_y - dst_h
+	jr	c, .acc_y_done
+	; Advance cur_src by src_w
+	push	hl			; save acc_y
+	ld	hl, (iy - 6)		; cur_src
+	ld	bc, (iy + 18)		; src_w
+	add	hl, bc
+	ld	(iy - 6), hl		; save new cur_src
+	pop	hl			; restore acc_y
+	jr	.acc_y_loop
+
+.acc_y_done:
+	add	hl, de			; restore acc_y
+	ld	(iy - 9), hl		; save new acc_y
+
+	; Decrement y_counter
+	ld	hl, (iy - 12)
+	dec	hl
+	ld	(iy - 12), hl
+	ld	a, h
+	or	a, l
+	jr	nz, .sprite_row_loop
+
+	ld	hl, 12
+	add	hl, sp
+	ld	sp, hl
+
+.sprite_done:
+	pop	iy
+	pop	ix
+	ret
+

@@ -191,6 +191,15 @@ bool assets_zoom_prepare(uint16_t id);
 bool assets_draw_sprite_zoomed(uint16_t id, int center_x, int feet_y);
 
 /**
+ * Like assets_draw_sprite(), but continuously scaled by @p scale_permille
+ * (e.g. 1000 = 1.00x, 1050 = 1.05x), anchored at (@p center_x, @p feet_y).
+ *
+ * Uses the eZ80 assembly scaler to render directly to gfx_vbuffer without
+ * intermediate buffers or extra sprite storage.
+ */
+bool assets_draw_sprite_scaled(uint16_t id, int center_x, int feet_y, unsigned int scale_permille);
+
+/**
  * Frees every cached scaled bitmap. Called automatically by
  * assets_load_chunk() (the cache must not stand in the way of the largest
  * allocation this program makes); exposed for any other caller that is about
