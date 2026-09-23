@@ -1394,11 +1394,11 @@ static void run_help_screen(void)
 
 static char player_name[NAME_MAX_LEN + 1] = "you";
 
-/* Replaces the first "[player]" in @p s with the saved name. compile_script
+/* Replaces all occurrences of "[player]" in @p s with the saved name. compile_script
  * has no opcode for real-time text substitution (that would mean suspending
  * mid-line for a value only known at runtime), so this happens here instead,
- * each time a line is fetched -- see name.h. Confirmed no dialogue line in
- * ch0 uses "[player]" more than once, so only the first match is handled. */
+ * each time a line is fetched -- see name.h. Iterates through all matches so
+ * lines like "[player], [player]!" are completely substituted. */
 static const char *substitute_player_name(const char *s)
 {
     static char buf[256];
@@ -1408,19 +1408,33 @@ static const char *substitute_player_name(const char *s)
         return s; /* common case: no substitution, zero-copy */
     }
 
-    size_t prefix_len = (size_t)(tag - s);
     size_t name_len = strlen(player_name);
-    size_t suffix_len = strlen(tag + 8); /* strlen("[player]") == 8 */
+    size_t tag_len = 8; /* strlen("[player]") */
+    size_t out_len = 0;
+    const char *p = s;
 
-    if (prefix_len + name_len + suffix_len >= sizeof(buf)) {
-        return s; /* would overflow the scratch buffer -- shouldn't happen
-                    * given the longest known line (170 chars) plus a name,
-                    * but degrade to the literal tag rather than corrupt */
+    while (p && *p) {
+        const char *next_tag = strstr(p, "[player]");
+        if (!next_tag) {
+            size_t rem = strlen(p);
+            if (out_len + rem >= sizeof(buf)) {
+                return s; /* overflow protection */
+            }
+            memcpy(buf + out_len, p, rem);
+            out_len += rem;
+            break;
+        }
+        size_t chunk_len = (size_t)(next_tag - p);
+        if (out_len + chunk_len + name_len >= sizeof(buf)) {
+            return s; /* overflow protection */
+        }
+        memcpy(buf + out_len, p, chunk_len);
+        out_len += chunk_len;
+        memcpy(buf + out_len, player_name, name_len);
+        out_len += name_len;
+        p = next_tag + tag_len;
     }
-
-    memcpy(buf, s, prefix_len);
-    memcpy(buf + prefix_len, player_name, name_len);
-    memcpy(buf + prefix_len + name_len, tag + 8, suffix_len + 1); /* +NUL */
+    buf[out_len] = '\0';
     return buf;
 }
 
@@ -1457,11 +1471,13 @@ static const char *speaker_display_name(const vn_vm_t *vm, uint8_t speaker)
     return (name != NULL && name[0] != '\0') ? name : fallback[speaker];
 }
 
-/* Replaces the first "[gtext]"/"[s_name]"/"[m_name]"/"[ntext]" in @p s with
- * vm->glitch_buf's current content -- the same "[player]" idiom
+/* Replaces glitch-tag placeholders ("[gtext]", "[s_name]", "[m_name]",
+ * "[ntext]") in @p s with whatever random corrupt bytes OP_GLITCHTEXT last
+ * placed into vm->glitch_buf. Same runtime-substitution reasoning as
  * substitute_player_name() already handles, generalized to a small fixed
- * set of tag names. DDLC's real script assigns the corrupted text to a
- * different local variable per call site (gtext/s_name/m_name/ntext), but
+ * tag set and iterated across all matches in the line.
+ *
+ * All four tags share the same underlying random corrupt string because
  * every one of them is always immediately interpolated and never read any
  * other way (confirmed across every real call site -- see
  * _match_glitchtext_call's own comment), and only one is ever "live" for a
@@ -1472,29 +1488,55 @@ static const char *substitute_glitch_text(const vn_vm_t *vm, const char *s)
     static const char *const tags[] = { "[gtext]", "[s_name]", "[m_name]", "[ntext]" };
     static char buf[256];
 
+    bool has_tag = false;
     for (size_t i = 0; i < sizeof(tags) / sizeof(tags[0]); i++) {
-        const char *tag = strstr(s, tags[i]);
-        if (!tag) {
-            continue;
+        if (strstr(s, tags[i])) {
+            has_tag = true;
+            break;
         }
-
-        size_t tag_len = strlen(tags[i]);
-        size_t prefix_len = (size_t)(tag - s);
-        size_t glitch_len = strlen(vm->glitch_buf);
-        size_t suffix_len = strlen(tag + tag_len);
-
-        if (prefix_len + glitch_len + suffix_len >= sizeof(buf)) {
-            return s; /* would overflow the scratch buffer -- degrade to the
-                        * literal tag rather than corrupt, see
-                        * substitute_player_name()'s own comment */
-        }
-
-        memcpy(buf, s, prefix_len);
-        memcpy(buf + prefix_len, vm->glitch_buf, glitch_len);
-        memcpy(buf + prefix_len + glitch_len, tag + tag_len, suffix_len + 1); /* +NUL */
-        return buf;
     }
-    return s; /* common case: no substitution, zero-copy */
+    if (!has_tag) {
+        return s; /* common case: no substitution, zero-copy */
+    }
+
+    size_t glitch_len = strlen(vm->glitch_buf);
+    size_t out_len = 0;
+    const char *p = s;
+
+    while (p && *p) {
+        const char *earliest_match = NULL;
+        size_t match_tag_len = 0;
+
+        for (size_t i = 0; i < sizeof(tags) / sizeof(tags[0]); i++) {
+            const char *m = strstr(p, tags[i]);
+            if (m && (!earliest_match || m < earliest_match)) {
+                earliest_match = m;
+                match_tag_len = strlen(tags[i]);
+            }
+        }
+
+        if (!earliest_match) {
+            size_t rem = strlen(p);
+            if (out_len + rem >= sizeof(buf)) {
+                return s;
+            }
+            memcpy(buf + out_len, p, rem);
+            out_len += rem;
+            break;
+        }
+
+        size_t chunk_len = (size_t)(earliest_match - p);
+        if (out_len + chunk_len + glitch_len >= sizeof(buf)) {
+            return s;
+        }
+        memcpy(buf + out_len, p, chunk_len);
+        out_len += chunk_len;
+        memcpy(buf + out_len, vm->glitch_buf, glitch_len);
+        out_len += glitch_len;
+        p = earliest_match + match_tag_len;
+    }
+    buf[out_len] = '\0';
+    return buf;
 }
 
 static const char *host_string(void *ctx, uint16_t index)
