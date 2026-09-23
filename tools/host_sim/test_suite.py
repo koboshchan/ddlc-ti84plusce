@@ -411,6 +411,19 @@ def run_all_tests() -> list[TestResult]:
     )
     results.append(r)
 
+    # 2.5 Act 4 with Monika restored ("Please stop playing with my heart")
+    if "ch40" in chapters:
+        r = run_sim(
+            "Act 4 Monika restored (stop playing with my heart)",
+            pc=chapters["ch40"],
+            absent=[],
+            vars_set={9: 4},
+            expected_status="finished",
+            expected_deleted=["monika"],
+            min_lines=280,
+        )
+        results.append(r)
+
     # -------------------------------------------------------------
     # Suite 3: Individual Chapters from DCHJMP
     # -------------------------------------------------------------

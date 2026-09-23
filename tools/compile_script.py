@@ -1887,6 +1887,20 @@ class Compiler:
             self.asm.label(done_label)
             return True
 
+        act4_monika = _match_act4_monika_back_check(stmt)
+        if act4_monika is not None:
+            char_index, flag_var, message = act4_monika
+            flag_slot = self._var_slot(flag_var)
+            skip_label = self._gensym("monika_back_skip")
+            missing_label = self._gensym("monika_missing")
+            self.asm.if_(flag_slot, vnasm.CMP_NE, 0, skip_label)
+            self.asm.char_check(char_index, missing_label)
+            self.asm.narrate(message)
+            self.asm.set(flag_slot, 1)
+            self.asm.label(missing_label)
+            self.asm.label(skip_label)
+            return True
+
         if (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
                 and _ident_name(stmt.value.func) == "pause"):
             # DDLC's own pause(seconds) helper (a thin renpy.pause()
@@ -3062,6 +3076,56 @@ def _match_playthrough_char_flag_check(stmt) -> tuple[int, str] | None:
         return None
 
     return (char_index, set_stmt.targets[0].id)
+
+
+def _match_act4_monika_back_check(stmt) -> tuple[int, str, str] | None:
+    """(character_index, flag_var_name, message) if @p stmt is script-ch40.rpyc:24's own
+    if not persistent.monika_back:
+        try:
+            renpy.file("../characters/monika.chr")
+            renpy.call_screen("dialog", message="...", ok_action=Return())
+            persistent.monika_back = True
+        except:
+            pass
+    idiom, checking if Monika's file was restored in Act 4."""
+    if not (isinstance(stmt, ast.If) and isinstance(stmt.test, ast.UnaryOp)
+            and isinstance(stmt.test.op, ast.Not)):
+        return None
+    flag_var = _ident_name(stmt.test.operand)
+    if not flag_var or not flag_var.startswith("persistent."):
+        return None
+    if len(stmt.body) != 1 or not isinstance(stmt.body[0], ast.Try) or stmt.orelse:
+        return None
+    try_stmt = stmt.body[0]
+    if len(try_stmt.body) < 2 or not try_stmt.handlers:
+        return None
+
+    file_check = try_stmt.body[0]
+    if not (isinstance(file_check, ast.Expr) and isinstance(file_check.value, ast.Call)
+            and _ident_name(file_check.value.func) == "renpy.file"
+            and len(file_check.value.args) == 1):
+        return None
+    path = _const_scalar(file_check.value.args[0])
+    if not isinstance(path, str):
+        return None
+    m = re.fullmatch(r"(?:\.\./)?characters/(\w+)\.chr", path)
+    if m is None or m.group(1) not in TAG_TO_CHAR:
+        return None
+    char_index = TAG_TO_CHAR[m.group(1)]
+
+    message = None
+    for s in try_stmt.body[1:]:
+        if (isinstance(s, ast.Expr) and isinstance(s.value, ast.Call)
+                and _ident_name(s.value.func) == "renpy.call_screen"):
+            for kw in s.value.keywords:
+                if kw.arg == "message":
+                    val = _const_scalar(kw.value)
+                    if isinstance(val, str):
+                        message = val
+                        break
+    if message is None:
+        return None
+    return (char_index, flag_var, message)
 
 
 def _match_glitchtext_call(node) -> tuple[int, int] | None:
