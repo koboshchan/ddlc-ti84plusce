@@ -838,12 +838,9 @@ static void run_debug_asm_test(void)
 
                 for (;;) {
                     /* 1. Hardware fast_cg_upscale_2x: 160x90 -> 320x180 background */
+                    render_backdrop(COL_BOX_FILL);
                     if (pattern) {
                         fast_cg_upscale_2x((uint8_t *)gfx_vbuffer, pattern);
-                        gfx_SetColor(COL_BOX_FILL);
-                        gfx_FillRectangle_NoClip(0, 180, SCREEN_W, SCREEN_H - 180);
-                    } else {
-                        render_backdrop(COL_BOX_FILL);
                     }
 
                     /* 2. Bouncing sprite rendered via fast_rect_blit */

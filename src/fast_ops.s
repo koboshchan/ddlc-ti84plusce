@@ -36,9 +36,8 @@ _fast_cg_upscale_2x:
 	pop	ix
 	add	ix, bc
 
-	; Reserve stack slot for row counter (90 rows)
-	ld	a, 90
-	push	af
+	; Use IYL as row counter (90 rows -> 180 scanlines)
+	ld	iyl, 90
 
 .cg_row_loop:
 	ld	b, 160			; 160 pixels per row
@@ -68,13 +67,10 @@ _fast_cg_upscale_2x:
 	ld	bc, 320
 	add	ix, bc			; IX = start of next row 1
 
-	; Decrement row counter on stack
-	ld	iy, 0
-	add	iy, sp
-	dec	(iy + 0)
+	; Decrement row counter in IYL
+	dec	iyl
 	jr	nz, .cg_row_loop
 
-	pop	af			; Cleanup local stack variable
 	pop	iy
 	pop	ix
 	ret
@@ -113,7 +109,6 @@ _fast_rect_blit:
 	jr	z, .rect_done
 
 .rect_loop:
-	push	af
 	push	hl
 	push	de
 	ld	bc, (iy + 21)		; BC = w
@@ -131,7 +126,6 @@ _fast_rect_blit:
 	ld	bc, (iy + 18)		; src_pitch
 	add	hl, bc
 
-	pop	af
 	dec	a
 	jr	nz, .rect_loop
 
