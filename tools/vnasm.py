@@ -40,6 +40,8 @@ OP_CHAR_CHECK = 0x19
 OP_CHAR_DELETE = 0x1A
 OP_QUIT = 0x1B
 OP_PAUSE_LONG = 0x1C
+OP_MENU_COND = 0x1D
+OP_POEM_VIEW = 0x1E
 
 CMP_EQ, CMP_NE, CMP_LT, CMP_LE, CMP_GT, CMP_GE = range(6)
 TRANS_CUT, TRANS_FADE = 0, 1
@@ -224,6 +226,24 @@ class Assembler:
         for text, target in options:
             self._u16(self.string(text))
             self._ref(target)
+
+    def menu_cond(self, options: list[tuple[str, str, list[tuple[int, int, int]]]]) -> None:
+        """@options is a list of (choice text, target label, [(var_slot, cmp_op, val), ...])."""
+        self._u8(OP_MENU_COND)
+        self._u8(len(options))
+        for text, target, conds in options:
+            self._u8(len(conds))
+            for var, cmp_op, val in conds:
+                self._u8(var)
+                self._u8(cmp_op)
+                self._i16(val)
+            self._u16(self.string(text))
+            self._ref(target)
+
+    def poem_view(self, poem_id: int) -> None:
+        """Renders the poem on full-screen notebook paper until dismissed."""
+        self._u8(OP_POEM_VIEW)
+        self._u8(poem_id)
 
     def jump(self, label: str) -> None:
         self._u8(OP_JUMP)

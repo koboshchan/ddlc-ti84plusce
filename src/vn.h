@@ -176,21 +176,13 @@ enum vn_op {
                           * name entry, instead of actually exiting). */
 
     OP_PAUSE_LONG = 0x1C, /* ms:u32 -- same wait-up-to-@p ms-or-a-click
-                          * behavior as OP_PAUSE, just with room for a delay
-                          * over OP_PAUSE's own 65.535s ceiling (a plain
-                          * u16). The one real use: splash.rpyc's
-                          * `s_kill_early` ending shows its closing "Now
-                          * everyone can be happy." line only after the
-                          * player's been idle on the monochrome CG for a
-                          * real 10 minutes (600 seconds) -- an ATL `pause
-                          * 600` on the Text() displayable itself, not a
-                          * script-level statement this compiler would
-                          * otherwise ever see (see compile_script.py's
-                          * _match_delayed_reveal_text()). Simplified from
-                          * the real ATL's own 60-second fade-in to an
-                          * instant reveal once the wait ends -- same
-                          * "approximate, don't just drop it" call as the
-                          * zoom/dizzy ATL simplifications elsewhere. */
+                           * behavior as OP_PAUSE, just with room for a delay
+                           * over OP_PAUSE's own 65.535s ceiling (a plain
+                           * u16). */
+    OP_MENU_COND  = 0x1D, /* count:u8, per option: (cond_count:u8, (var:u8, cmp:u8, val:i16)*cond_count, text:u16, tgt:u24)
+                           * Conditional menu choices: only options whose variable conditions evaluate
+                           * to true are presented to the player. */
+    OP_POEM_VIEW  = 0x1E, /* poem_id:u8 -- renders character poem on notebook paper until dismissed */
 };
 
 /** Comparison selectors for OP_IF. */
@@ -491,6 +483,7 @@ typedef struct {
      * existing behavior when this callback isn't wired up).
      */
     void (*request_quit)(void *ctx);
+    void (*show_poem)(void *ctx, uint8_t poem_id);
 
     void *ctx;
 } vn_host_t;

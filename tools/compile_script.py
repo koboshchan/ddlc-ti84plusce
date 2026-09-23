@@ -234,6 +234,14 @@ _CMP_MAP = {
     ast.Gt: vnasm.CMP_GT, ast.GtE: vnasm.CMP_GE,
 }
 
+_POEM_NAMES = [
+    "poem_s1", "poem_s2", "poem_s3",
+    "poem_n1", "poem_n2", "poem_n2b", "poem_n3", "poem_n3b", "poem_n23",
+    "poem_y1", "poem_y2", "poem_y3", "poem_y3b", "poem_y22", "poem_y23",
+    "poem_m1", "poem_m21", "poem_m2", "poem_m22", "poem_m3", "poem_m4",
+]
+_POEM_NAME_TO_ID = {name: i for i, name in enumerate(_POEM_NAMES)}
+
 # The complement of each comparator -- e.g. NOT(x == v) == (x != v). Used to
 # compile a "jump if false" edge (needed for short-circuit and/or) out of
 # OP_IF, which only has a "jump if true" form -- see _emit_condition().
@@ -573,14 +581,26 @@ class Compiler:
                 self.last_pos[char] = pos
                 self.last_flags[char] = flags
                 return pos, flags
-        persisted_flags = self.last_flags.get(char, 0) & ~vnasm.VN_FLAG_HOP
+        persisted_flags = self.last_flags.get(char, 0)
         return self.last_pos.get(char, vnasm.POS_CENTER), persisted_flags
+
+    def _next_node(self):
+        if hasattr(self, "_block_nodes") and hasattr(self, "_block_idx"):
+            if self._block_idx + 1 < len(self._block_nodes):
+                return self._block_nodes[self._block_idx + 1]
+        return None
 
     # -- block emission ---------------------------------------------------------
 
     def emit_block(self, nodes, fname: str) -> None:
-        for node in nodes or []:
+        prev_nodes = getattr(self, "_block_nodes", None)
+        prev_idx = getattr(self, "_block_idx", None)
+        self._block_nodes = nodes or []
+        for idx, node in enumerate(self._block_nodes):
+            self._block_idx = idx
             self.emit_node(node, fname)
+        self._block_nodes = prev_nodes
+        self._block_idx = prev_idx
 
     def emit_node(self, node, fname: str) -> None:
         k = kind(node)
@@ -638,6 +658,10 @@ class Compiler:
             self.asm.ret()
             return
 
+        if name == "showpoem":
+            self.asm.ret()
+            return
+
         if name == "splashscreen":
             # DDLC's real `label splashscreen` (splash.rpyc) runs all the
             # way through the title screen's own entrance (`Show intro`)
@@ -692,7 +716,11 @@ class Compiler:
         chunks land in self._extra_chunks for compile_file_chunked() to
         collect after this label returns.
         """
-        for node in nodes or []:
+        prev_nodes = getattr(self, "_block_nodes", None)
+        prev_idx = getattr(self, "_block_idx", None)
+        self._block_nodes = nodes or []
+        for idx, node in enumerate(self._block_nodes):
+            self._block_idx = idx
             size = len(self.asm.code) + sum(len(s.encode("utf-8")) for s in self.asm.strings)
             if size > budget:
                 self._flush_pending_scene(vnasm.TRANS_CUT)
@@ -702,6 +730,8 @@ class Compiler:
                 self.asm.label(split_label)
                 self._extra_chunks.append(self.asm)
             self.emit_node(node, fname)
+        self._block_nodes = prev_nodes
+        self._block_idx = prev_idx
 
     def _emit_Say(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)
@@ -758,6 +788,8 @@ class Compiler:
                 self.visible_chars.add(char)
 
         self.asm.say(speaker, text)
+        for c in list(self.last_flags.keys()):
+            self.last_flags[c] &= ~vnasm.VN_FLAG_HOP
 
     # The real default warning DDLC's splash.rpyc shows over `splash_warning`
     # (its own `splash_message_default` literal, confirmed by decompiling
@@ -954,6 +986,22 @@ class Compiler:
             return
 
         if len(imgname) == 1:
+            # Check if this bare transform show (e.g. `show sayori at h11` or `show sayori at t11`)
+            # is immediately followed by a Say statement for the same character with say-attributes.
+            # If so, the Say statement will resolve the new sprite and emit the unified OP_SHOW.
+            # Deferring here avoids emitting an intermediate OP_SHOW that flashes the old sprite
+            # and gets instantly clobbered/overridden.
+            next_node = self._next_node()
+            if next_node is not None and kind(next_node) == "Say":
+                next_tag = CODE_TO_TAG.get(next_node.who) if isinstance(next_node.who, str) else None
+                if next_tag == imgname[0] and getattr(next_node, "attributes", None):
+                    at_list = node.imspec[3] if len(node.imspec) > 3 else None
+                    pos, flags = self._resolve_anim(char, at_list)
+                    self.last_pos[char] = pos
+                    self.last_flags[char] = flags
+                    self.visible_chars.add(char)
+                    return
+
             # Bare "show natsuki": keep whatever this character is currently
             # wearing. Confirmed there's no Image def for a bare character
             # name to fall back on, so this only works if we've already
@@ -1180,6 +1228,21 @@ class Compiler:
             self._emit_appeal_increment(winner_slot)
             self._emit_eyes_check()
             return
+        if node.label == "showpoem":
+            info = getattr(node, "arguments", None)
+            args = list(info.arguments) if info is not None and info.arguments else []
+            poem_name = None
+            for kw, val_src in args:
+                if kw is None:
+                    poem_name = val_src.strip()
+                    break
+                elif kw == "poem":
+                    poem_name = val_src.strip()
+                    break
+            if poem_name and poem_name in _POEM_NAME_TO_ID:
+                poem_id = _POEM_NAME_TO_ID[poem_name]
+                self.asm.poem_view(poem_id)
+                return
         params = self.label_params.get(node.label)
         if params:
             self._emit_call_args(node, params, fname)
@@ -2087,30 +2150,91 @@ class Compiler:
             self.asm.label(next_label)
         self.asm.label(end_label)
 
+    def _parse_menu_condition(self, cond_str: str | None) -> list[tuple[int, int, int]] | None:
+        """Parses a menu condition string into a list of (var_slot, cmp_op, val) clauses (all ANDed).
+        Returns [] for True/unconditional.
+        Returns None if unsupported.
+        """
+        if not cond_str or cond_str == "True":
+            return []
+        expr = _parse_condition_expr(cond_str)
+        if expr is None:
+            return None
+
+        # Flatten AND operations
+        if isinstance(expr, ast.BoolOp) and isinstance(expr.op, ast.And):
+            sub_exprs = expr.values
+        else:
+            sub_exprs = [expr]
+
+        clauses = []
+        for sub in sub_exprs:
+            # not var -> var == 0
+            if isinstance(sub, ast.UnaryOp) and isinstance(sub.op, ast.Not):
+                if isinstance(sub.operand, (ast.Name, ast.Attribute, ast.Subscript)):
+                    var_name = _ident_name(sub.operand)
+                    clauses.append((self._var_slot(var_name), vnasm.CMP_EQ, 0))
+                    continue
+                return None
+            # bare var -> var != 0
+            if isinstance(sub, (ast.Name, ast.Attribute, ast.Subscript)):
+                var_name = _ident_name(sub)
+                clauses.append((self._var_slot(var_name), vnasm.CMP_NE, 0))
+                continue
+            # Compare: var == val, var != val, etc.
+            if isinstance(sub, ast.Compare) and len(sub.ops) == 1 and len(sub.comparators) == 1:
+                cmp_type = type(sub.ops[0])
+                if cmp_type in _CMP_MAP and isinstance(sub.left, (ast.Name, ast.Attribute, ast.Subscript)):
+                    var_name = _ident_name(sub.left)
+                    val = self._const_operand(sub.comparators[0])
+                    if val is not None:
+                        clauses.append((self._var_slot(var_name), _CMP_MAP[cmp_type], val))
+                        continue
+                return None
+            return None
+
+        return clauses
+
     def _emit_Menu(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)
         rows = []
+        has_conditions = False
         for item in node.items or []:
             if len(item) == 3:
-                caption, _condition, block = item
+                caption, condition, block = item
             elif len(item) == 2:
                 caption, block = item
+                condition = None
             else:
                 continue
             if not isinstance(caption, str):
                 continue
             if block:
-                rows.append((_strip_text_tags(caption), block))
+                cond_clauses = self._parse_menu_condition(condition)
+                if cond_clauses is None:
+                    self._skip(node, fname, f"unsupported menu condition: {condition!r}")
+                    cond_clauses = []
+                if cond_clauses:
+                    has_conditions = True
+                rows.append((_strip_text_tags(caption), block, cond_clauses))
             else:
                 # A caption-only entry (no block at all) -- Ren'Py's own way
-                # of attaching narration text to a Menu, e.g. splash.rpyc's
-                # age/content-consent screen: a long consent paragraph
-                # followed by one real choice, "I agree.". Not a selectable
-                # option -- narrate it so it stays on screen instead of
-                # silently vanishing (host_menu() shows scene->text behind
-                # the choice list, same as any other narration -- see its
-                # own comment in main.c).
-                self.asm.narrate(_strip_text_tags(caption))
+                # of attaching narration text to a Menu.
+                stripped_caption = _strip_text_tags(caption)
+                if stripped_caption == "[menutext]":
+                    # Dynamic menu prompt based on poemsread
+                    lbl_first = self._gensym("menu_first")
+                    lbl_end = self._gensym("menu_first_end")
+                    self.asm.if_(self._var_slot("poemsread"), vnasm.CMP_EQ, 0, lbl_first)
+                    self.asm.narrate("Who should I show my poem to next?")
+                    self.asm.jump(lbl_end)
+                    self.asm.label(lbl_first)
+                    self.asm.narrate("Who should I show my poem to first?")
+                    self.asm.label(lbl_end)
+                elif stripped_caption.startswith("[") and stripped_caption.endswith("]") and stripped_caption != "[gtext]":
+                    pass
+                else:
+                    self.asm.narrate(stripped_caption)
 
         if not rows:
             self._skip(node, fname, "Menu with no selectable items")
@@ -2118,9 +2242,12 @@ class Compiler:
 
         end_label = self._gensym("menu_end")
         branch_labels = [self._gensym("menu_opt") for _ in rows]
-        self.asm.menu([(caption, lbl) for (caption, _), lbl in zip(rows, branch_labels)])
+        if has_conditions:
+            self.asm.menu_cond([(caption, lbl, conds) for (caption, _, conds), lbl in zip(rows, branch_labels)])
+        else:
+            self.asm.menu([(caption, lbl) for (caption, _, _), lbl in zip(rows, branch_labels)])
 
-        for (_, block), lbl in zip(rows, branch_labels):
+        for (_, block, _), lbl in zip(rows, branch_labels):
             self.asm.label(lbl)
             self.emit_block(block, fname)
             self.asm.jump(end_label)

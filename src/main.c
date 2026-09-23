@@ -1417,6 +1417,12 @@ static void host_request_quit(void *ctx)
     quit_requested = true;
 }
 
+static void host_show_poem(void *ctx, uint8_t poem_id)
+{
+    (void)ctx;
+    poem_view(poem_id);
+}
+
 /* .ctx is set to &vm once, in main(), after vm exists -- host_say needs it
  * to reach the pause menu (see wait_for_advance). */
 static vn_host_t host = {
@@ -1433,6 +1439,7 @@ static vn_host_t host = {
     .char_present  = host_char_present,
     .char_delete   = host_char_delete,
     .request_quit  = host_request_quit,
+    .show_poem     = host_show_poem,
     .ctx        = NULL,
 };
 
