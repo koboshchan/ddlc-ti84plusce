@@ -26,6 +26,7 @@
 #include "assets.h"
 #include "cgpack.h"
 #include "render.h"
+#include "fast_ops.h"
 
 #include <compression.h>
 #include <fileioc.h>
@@ -814,17 +815,8 @@ static gfx_sprite_t *zoom_cache_fill(uint16_t id)
     int ay = 0;
 
     for (uint8_t y = 0; y < zh; y++) {
-        int sx = 0;
-        int ax = 0;
-
-        for (uint8_t x = 0; x < zw; x++) {
-            *dst++ = srow[sx];
-            ax += ZOOM_DEN;
-            if (ax >= ZOOM_NUM) {
-                ax -= ZOOM_NUM;
-                sx++;
-            }
-        }
+        fast_zoom_row(dst, srow, zw);
+        dst += zw;
 
         ay += ZOOM_DEN;
         if (ay >= ZOOM_NUM) {
@@ -1106,15 +1098,7 @@ bool assets_scene(uint8_t id, uint8_t *dest)
     zx0_Decompress(cg_scratch, data + offset);
     ti_Close(handle);
 
-    for (uint32_t sy = 0; sy < SCENE_CG_SRC_H; sy++) {
-        uint8_t row[SCENE_CG_SRC_W * 2];
-        const uint8_t *srow = cg_scratch + sy * SCENE_CG_SRC_W;
-        for (uint32_t sx = 0; sx < SCENE_CG_SRC_W; sx++) {
-            row[sx * 2] = row[sx * 2 + 1] = srow[sx];
-        }
-        memcpy(dest + (size_t)(sy * 2) * SCREEN_W, row, sizeof(row));
-        memcpy(dest + (size_t)(sy * 2 + 1) * SCREEN_W, row, sizeof(row));
-    }
+    fast_cg_upscale_2x(dest, cg_scratch);
     return true;
 }
 

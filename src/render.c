@@ -8,6 +8,7 @@
 #include "render.h"
 #include "save.h"
 #include "text.h"
+#include "fast_ops.h"
 
 #include <fontlibc.h>
 #include <graphx.h>
@@ -272,23 +273,21 @@ static int zoom_fallback_offset(uint8_t character, bool zoomed, unsigned t)
 {
     static bool     was_zoomed[VN_MAX_CHARS];
     static unsigned changed_at[VN_MAX_CHARS];
+    static int      from_off[VN_MAX_CHARS];
+    static int      to_off[VN_MAX_CHARS];
 
-    int old_rest = was_zoomed[character] ? -SPEAK_POP_PX : 0;
     if (zoomed != was_zoomed[character]) {
+        from_off[character]   = was_zoomed[character] ? -SPEAK_POP_PX : 0;
+        to_off[character]     = zoomed ? -SPEAK_POP_PX : 0;
         was_zoomed[character] = zoomed;
         changed_at[character] = t;
     }
-    int new_rest = zoomed ? -SPEAK_POP_PX : 0;
     if (t - changed_at[character] < SPEAK_POP_MS) {
         anim_moving = true;
     }
 
-    /* ease() decays `amp` toward 0 as `t` runs from the change to
-     * change+dur, so amp = old_rest - new_rest lands exactly on old_rest at
-     * t=changed_at and new_rest once the ease finishes, whichever direction
-     * this particular transition runs. */
-    return new_rest + ease(ease_remain, old_rest - new_rest, t,
-                           changed_at[character], SPEAK_POP_MS);
+    return to_off[character] + ease(ease_remain, from_off[character] - to_off[character],
+                                    t, changed_at[character], SPEAK_POP_MS);
 }
 
 /* The real one-shot hop: DDLC's `hop`/`hopfocus` ATL eases yoffset to -20
@@ -299,7 +298,7 @@ static int zoom_fallback_offset(uint8_t character, bool zoomed, unsigned t)
  * down-then-up shape; no new curve is needed. HOP_PX is DDLC's real 20
  * Ren'Py px scaled by this engine's existing 0.25 canvas-to-screen ratio,
  * matching SPEAK_POP_PX's own convention. */
-#define HOP_PX  5
+#define HOP_PX  6
 #define HOP_MS 200
 
 static int hop_offset(uint8_t character, uint8_t show_seq, unsigned t)
@@ -348,43 +347,32 @@ static int hop_offset(uint8_t character, uint8_t show_seq, unsigned t)
  * value and duration are both picked from `sinking` rather than being
  * fixed. Called unconditionally every frame, same reasoning as
  * zoom_fallback_offset(): the eased transition has to keep tracking
- * correctly even across frames where the value goes unused.
- *
- * SINK_DOWN_MS is 300, not DDLC's real 500 -- a deliberate departure from
- * 1:1 timing fidelity, playtester-reported and diagnosed (not guessed):
- * hop's own 200ms covers the identical 5px range and reads smooth, but
- * sink's original 500ms (2.5x longer for the *same* pixel range) visibly
- * juddered on real hardware. This engine's achievable redraw rate is fixed
- * regardless of an animation's own duration, so stretching the same few
- * discrete pixel steps over more real time just means each step lingers
- * on screen longer before advancing -- slow motion needs a *higher*
- * sample rate to look smooth than fast motion does, which this hardware
- * doesn't have headroom for. 300ms keeps sink noticeably slower/more
- * weighty than hop (preserving some of the real "droop" feel over an
- * identical bounce) while cutting the per-step linger enough to read as
- * smooth rather than stepped. */
-#define SINK_PX      5
-#define SINK_DOWN_MS 300
-#define SINK_UP_MS   150
+ * correctly even across frames where the value goes unused. */
+#define SINK_PX      6
+#define SINK_DOWN_MS 350
+#define SINK_UP_MS   220
 
 static int sink_offset(uint8_t character, bool sinking, unsigned t)
 {
     static bool     was_sinking[VN_MAX_CHARS];
     static unsigned changed_at[VN_MAX_CHARS];
+    static int      from_off[VN_MAX_CHARS];
+    static int      to_off[VN_MAX_CHARS];
+    static unsigned dur_ms[VN_MAX_CHARS];
 
-    int old_rest = was_sinking[character] ? SINK_PX : 0;
     if (sinking != was_sinking[character]) {
+        from_off[character]    = was_sinking[character] ? SINK_PX : 0;
+        to_off[character]      = sinking ? SINK_PX : 0;
+        dur_ms[character]      = sinking ? SINK_DOWN_MS : SINK_UP_MS;
         was_sinking[character] = sinking;
-        changed_at[character] = t;
+        changed_at[character]  = t;
     }
-    int new_rest = sinking ? SINK_PX : 0;
-    unsigned dur = sinking ? SINK_DOWN_MS : SINK_UP_MS;
-    if (t - changed_at[character] < dur) {
+    if (t - changed_at[character] < dur_ms[character]) {
         anim_moving = true;
     }
 
-    return new_rest + ease(ease_remain, old_rest - new_rest, t,
-                           changed_at[character], dur);
+    return to_off[character] + ease(ease_remain, from_off[character] - to_off[character],
+                                    t, changed_at[character], dur_ms[character]);
 }
 
 static void draw_background(uint8_t bg)
@@ -614,14 +602,14 @@ static bool actor_rect(const vn_actor_t *a, int *rx, int *ry, int *rw, int *rh)
 
 static void plate_blit(bool save)
 {
-    for (int r = 0; r < plate_h; r++) {
-        uint8_t *fb = (uint8_t *)gfx_vbuffer + (size_t)(plate_y + r) * SCREEN_W + plate_x;
-        uint8_t *st = plate + (size_t)r * plate_w;
-        if (save) {
-            memcpy(st, fb, (size_t)plate_w);
-        } else {
-            memcpy(fb, st, (size_t)plate_w);
-        }
+    if (save) {
+        fast_rect_blit(plate, (size_t)plate_w,
+                       (uint8_t *)gfx_vbuffer + (size_t)plate_y * SCREEN_W + plate_x, SCREEN_W,
+                       (size_t)plate_w, (size_t)plate_h);
+    } else {
+        fast_rect_blit((uint8_t *)gfx_vbuffer + (size_t)plate_y * SCREEN_W + plate_x, SCREEN_W,
+                       plate, (size_t)plate_w,
+                       (size_t)plate_w, (size_t)plate_h);
     }
 }
 
@@ -762,20 +750,13 @@ static void apply_tear(const vn_scene_t *scene, unsigned t)
         if (y1 > SCENE_H) {
             y1 = SCENE_H;
         }
+        static uint8_t tear_scratch[SCREEN_W];
         for (int y = y0; y < y1; y++) {
             uint8_t *row = (uint8_t *)gfx_vbuffer + (size_t)y * SCREEN_W;
-            uint8_t  tmp[SCREEN_W];
-            memcpy(tmp, row, SCREEN_W);
-            /* row[x] = tmp[(x - off_wrapped) mod SCREEN_W], done as two
-             * contiguous block copies instead of a 320-iteration
-             * scalar/branch loop -- off_wrapped is already in
-             * [0, SCREEN_W), so the wrap point is exactly one split, no
-             * per-pixel branching needed either. */
             if (off_wrapped == 0) {
                 continue;
             }
-            memcpy(row, tmp + (SCREEN_W - off_wrapped), off_wrapped);
-            memcpy(row + off_wrapped, tmp, SCREEN_W - off_wrapped);
+            fast_row_shift(row, tear_scratch, (size_t)off_wrapped);
         }
     }
 }
@@ -821,8 +802,9 @@ void render_scene(const vn_scene_t *scene)
      * menu overlay) rather than one central per-frame driver like the title
      * screen has, so zoom_fallback_offset()/hop_offset() sample the clock
      * themselves here rather than threading a @p t parameter through every
-     * one of those call sites. */
-    unsigned t = (unsigned)(clock() * 1000UL / CLOCKS_PER_SEC);
+     * one of those call sites. 64-bit multiply prevents clock() * 1000 from
+     * overflowing 32-bit arithmetic after ~131 seconds of device uptime. */
+    unsigned t = (unsigned)(((uint64_t)clock() * 1000ULL) / CLOCKS_PER_SEC);
 
     /* Capturing the plate needs the actor's rear neighbours already drawn
      * and the actor itself not yet -- so it happens mid-loop, at the slot
@@ -888,7 +870,7 @@ static void render_scene_moving(const vn_scene_t *scene)
     }
     plate_blit(false);
 
-    unsigned t = (unsigned)(clock() * 1000UL / CLOCKS_PER_SEC);
+    unsigned t = (unsigned)(((uint64_t)clock() * 1000ULL) / CLOCKS_PER_SEC);
     anim_moving = false;
 
     for (int i = plate_slot; i < VN_MAX_CHARS; i++) {
@@ -962,10 +944,9 @@ void render_scene_lazy(const vn_scene_t *scene)
  * to skip. */
 static void blit_raw(int x, int y, const uint8_t *src, int w, int h)
 {
-    for (int r = 0; r < h; r++) {
-        uint8_t *fb = (uint8_t *)gfx_vbuffer + (size_t)(y + r) * SCREEN_W + x;
-        memcpy(fb, src + (size_t)r * w, w);
-    }
+    fast_rect_blit((uint8_t *)gfx_vbuffer + (size_t)y * SCREEN_W + x, SCREEN_W,
+                   src, (size_t)w,
+                   (size_t)w, (size_t)h);
 }
 
 void render_box(const vn_scene_t *scene, const char *speaker,
@@ -1061,12 +1042,12 @@ void render_box(const vn_scene_t *scene, const char *speaker,
         if (have_namebox) {
             const int nb_x = pad, nb_y = BOX_Y - NAMEBOX_H + 4;
             blit_raw(nb_x, nb_y, namebox_px, NAMEBOX_W, NAMEBOX_H);
-            /* +2, not +4: tuned for graphx's old ~7px-tall built-in font --
-             * RifficFree-Bold's real cell height (12px, see set_font()'s
-             * comment) sat almost flush against NAMEBOX_H's bottom edge at
-             * that same offset, reading as the name text crowding too low
-             * in the box. */
-            print_slice_outlined(speaker, strlen(speaker), nb_x + 8, nb_y + 2,
+            int name_w = (int)string_width(speaker);
+            int name_x = nb_x + (NAMEBOX_W - name_w) / 2;
+            if (name_x < nb_x + 2) {
+                name_x = nb_x + 2;
+            }
+            print_slice_outlined(speaker, strlen(speaker), name_x, nb_y + 2,
                                  COL_WHITE, COL_NAME);
             y = nb_y + NAMEBOX_H + 2;
         } else {
