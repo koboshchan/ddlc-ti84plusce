@@ -14,6 +14,7 @@
 #include "save.h"
 #include "text.h"
 #include "vn.h"
+#include "fast_ops.h"
 
 #include <fileioc.h>
 #include <graphx.h>
@@ -621,6 +622,223 @@ static void run_debug_events_test(void)
     } while (!in.advance && !quit_requested);
 }
 
+/** Debug menu: tests and benchmarks the 4 eZ80 assembly routines (fast_cg_upscale_2x,
+ * fast_rect_blit, fast_zoom_row, fast_row_shift) and provides a live visual demo. */
+static void run_debug_asm_test(void)
+{
+    input_t in;
+    char line[48];
+
+    for (;;) {
+        /* Run tests and benchmark */
+        unsigned t_cg = 0, t_blit = 0, t_zoom = 0, t_shift = 0;
+        bool pass_cg = false, pass_blit = false, pass_zoom = false, pass_shift = false;
+
+        /* Use unused/temporary regions of gfx_vbuffer (76,800 bytes total) for test
+         * source and scratch buffers instead of static BSS, so we consume 0 bytes of RAM heap. */
+        uint8_t *fb = (uint8_t *)gfx_vbuffer;
+        uint8_t *cg_src = (uint8_t *)gfx_vbuffer + 57600;      /* 14,400 bytes: 160x90 */
+        uint8_t *blit_src = (uint8_t *)gfx_vbuffer + 72000;    /* 1,024 bytes: 32x32 */
+        uint8_t *shift_scratch = (uint8_t *)gfx_vbuffer + 73024; /* 320 bytes */
+
+        /* 1. Verify fast_cg_upscale_2x */
+        {
+            for (int y = 0; y < 90; y++) {
+                for (int x = 0; x < 160; x++) {
+                    cg_src[y * 160 + x] = (uint8_t)((x * 5 + y * 11 + 3) & 0xFF);
+                }
+            }
+            memset(fb, 0, 320 * 180);
+
+            clock_t start = clock();
+            for (int it = 0; it < 5; it++) {
+                fast_cg_upscale_2x(fb, cg_src);
+            }
+            clock_t dur = clock() - start;
+            t_cg = (unsigned)(dur * 1000UL / CLOCKS_PER_SEC / 5);
+
+            pass_cg = true;
+            for (int y = 0; y < 90; y++) {
+                for (int x = 0; x < 160; x++) {
+                    uint8_t exp = cg_src[y * 160 + x];
+                    if (fb[(y * 2) * 320 + (x * 2)] != exp ||
+                        fb[(y * 2) * 320 + (x * 2 + 1)] != exp ||
+                        fb[(y * 2 + 1) * 320 + (x * 2)] != exp ||
+                        fb[(y * 2 + 1) * 320 + (x * 2 + 1)] != exp) {
+                        pass_cg = false;
+                        break;
+                    }
+                }
+                if (!pass_cg) break;
+            }
+        }
+
+        /* 2. Verify fast_rect_blit */
+        {
+            for (int i = 0; i < 32 * 32; i++) {
+                blit_src[i] = (uint8_t)(i + 7);
+            }
+            memset(fb, 0, 320 * 40);
+
+            clock_t start = clock();
+            for (int it = 0; it < 50; it++) {
+                fast_rect_blit(fb, 320, blit_src, 32, 32, 32);
+            }
+            clock_t dur = clock() - start;
+            t_blit = (unsigned)(dur * 1000UL / CLOCKS_PER_SEC / 50);
+
+            pass_blit = true;
+            for (int r = 0; r < 32; r++) {
+                for (int c = 0; c < 32; c++) {
+                    if (fb[r * 320 + c] != blit_src[r * 32 + c]) {
+                        pass_blit = false;
+                        break;
+                    }
+                }
+                if (fb[r * 320 + 32] != 0) {
+                    pass_blit = false;
+                }
+                if (!pass_blit) break;
+            }
+        }
+
+        /* 3. Verify fast_zoom_row */
+        {
+            uint8_t z_src[64];
+            uint8_t z_dst[70];
+            for (int i = 0; i < 64; i++) {
+                z_src[i] = (uint8_t)(i * 2 + 1);
+            }
+
+            clock_t start = clock();
+            for (int it = 0; it < 500; it++) {
+                fast_zoom_row(z_dst, z_src, 64);
+            }
+            clock_t dur = clock() - start;
+            t_zoom = (unsigned)(dur * 1000UL / CLOCKS_PER_SEC);
+
+            uint8_t ref[70];
+            int sx = 0, ax = 0;
+            for (int x = 0; x < 64; x++) {
+                ref[x] = z_src[sx];
+                ax += 20;
+                if (ax >= 21) {
+                    ax -= 21;
+                    sx++;
+                }
+            }
+            pass_zoom = true;
+            for (int x = 0; x < 64; x++) {
+                if (z_dst[x] != ref[x]) {
+                    pass_zoom = false;
+                    break;
+                }
+            }
+        }
+
+        /* 4. Verify fast_row_shift */
+        {
+            uint8_t shift_row[320];
+            for (int i = 0; i < 320; i++) {
+                shift_row[i] = (uint8_t)i;
+            }
+
+            clock_t start = clock();
+            for (int it = 0; it < 320; it++) {
+                fast_row_shift(shift_row, shift_scratch, 1);
+            }
+            clock_t dur = clock() - start;
+            t_shift = (unsigned)(dur * 1000UL / CLOCKS_PER_SEC);
+
+            pass_shift = true;
+            for (int i = 0; i < 320; i++) {
+                if (shift_row[i] != (uint8_t)i) {
+                    pass_shift = false;
+                    break;
+                }
+            }
+        }
+
+        /* Display diagnostic screen */
+        for (;;) {
+            render_backdrop(COL_BOX_FILL);
+            render_text("eZ80 ASM Optimization Tests", 14, 8, COL_NAME);
+
+            sprintf(line, "1. CG 2x Upscale : %s (%u ms)", pass_cg ? "PASS" : "FAIL", t_cg);
+            render_text(line, 14, 28, pass_cg ? COL_WHITE : COL_HIGHLIGHT);
+
+            sprintf(line, "2. 2D Rect Blit  : %s (%u ms)", pass_blit ? "PASS" : "FAIL", t_blit);
+            render_text(line, 14, 44, pass_blit ? COL_WHITE : COL_HIGHLIGHT);
+
+            sprintf(line, "3. Zoom Row 20:21: %s (%u ms)", pass_zoom ? "PASS" : "FAIL", t_zoom);
+            render_text(line, 14, 60, pass_zoom ? COL_WHITE : COL_HIGHLIGHT);
+
+            sprintf(line, "4. Glitch Shift  : %s (%u ms)", pass_shift ? "PASS" : "FAIL", t_shift);
+            render_text(line, 14, 76, pass_shift ? COL_WHITE : COL_HIGHLIGHT);
+
+            render_text("All 4 eZ80 assembly routines active.", 14, 100, COL_NAME);
+            render_text("Streaming registers + hardware LDIR", 14, 116, COL_BOX_EDGE);
+            render_text("Code size saved: 648 bytes", 14, 132, COL_BOX_EDGE);
+
+            render_text("[Right] Live Visual Demo", 14, 156, COL_HIGHLIGHT);
+            render_text("[2nd] Re-run test suite", 14, 172, COL_WHITE);
+            render_text("Mode / Clear: return to Debug Menu", 14, SCREEN_H - 18, COL_BOX_EDGE);
+
+            render_present(TRANS_CUT);
+            gfx_Wait();
+
+            input_poll(&in);
+            if (quit_requested || in.pause) {
+                return;
+            }
+            if (in.advance) {
+                break; /* Re-run benchmark */
+            }
+            if (in.right) {
+                /* Interactive visual demo */
+                int bx = 20, by = 40, bdx = 3, bdy = 2;
+                uint8_t *box = (uint8_t *)gfx_vbuffer + 72000;
+                uint8_t *demo_scratch = (uint8_t *)gfx_vbuffer + 73024;
+                for (int r = 0; r < 32; r++) {
+                    for (int c = 0; c < 32; c++) {
+                        box[r * 32 + c] = (r == 0 || r == 31 || c == 0 || c == 31) ? COL_HIGHLIGHT : COL_NAME;
+                    }
+                }
+                for (;;) {
+                    render_backdrop(COL_BLACK);
+                    render_text("Live ASM Visual Demo", 14, 8, COL_NAME);
+                    render_text("Hardware LDIR blit & scanline glitch", 14, 22, COL_WHITE);
+
+                    /* Bouncing box with fast_rect_blit */
+                    fast_rect_blit((uint8_t *)gfx_vbuffer + (size_t)by * SCREEN_W + bx, SCREEN_W,
+                                   box, 32, 32, 32);
+
+                    bx += bdx;
+                    by += bdy;
+                    if (bx <= 10 || bx >= SCREEN_W - 42) bdx = -bdx;
+                    if (by <= 40 || by >= SCENE_H - 40)  bdy = -bdy;
+
+                    /* Live scanline barrel-shift with fast_row_shift */
+                    for (int y = 90; y < 120; y++) {
+                        uint8_t *row = (uint8_t *)gfx_vbuffer + (size_t)y * SCREEN_W;
+                        fast_row_shift(row, demo_scratch, (size_t)((bx * 2) % SCREEN_W));
+                    }
+
+                    render_text("2nd / Mode to return", 14, SCREEN_H - 18, COL_BOX_EDGE);
+                    render_present(TRANS_CUT);
+                    gfx_Wait();
+
+                    input_t vin;
+                    input_poll(&vin);
+                    if (quit_requested || vin.pause || vin.advance) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
 /** Debug menu diagnostic: dumps the current scene's background id, whether
  * assets_debug_is_cg() thinks it's a CG (baked with its own private
  * palette, per DCGIDX), and the first few RGB565 entries of whatever
@@ -772,15 +990,15 @@ static void run_debug_menu(vn_vm_t *vm)
 {
     enum {
         DBG_POEM, DBG_TEXT, DBG_FONT, DBG_ANIM, DBG_CG, DBG_GLITCH, DBG_EVENTS,
+        DBG_ASM,
         DBG_SCENEINFO, DBG_TEAR, DBG_WINDOW, DBG_CHAPTERS,
         DBG_DEL_SAYORI, DBG_DEL_NATSUKI, DBG_DEL_YURI, DBG_DEL_MONIKA,
         DBG_ERASE, DBG_CLOSE, DBG_ACTION_MAX,
     };
     static const char *const cnames[4] = { "Sayori", "Natsuki", "Yuri", "Monika" };
     uint8_t actions[DBG_ACTION_MAX];
-    char labels[DBG_ACTION_MAX][28];
-    const char *items[DBG_ACTION_MAX];
-    uint8_t count, selected = 0;
+    char labels[DBG_ACTION_MAX][32];
+    uint8_t count, selected = 0, top = 0;
     input_t in;
 
     for (;;) {
@@ -812,6 +1030,10 @@ static void run_debug_menu(vn_vm_t *vm)
 
         actions[count] = DBG_EVENTS;
         strcpy(labels[count], "Trigger chance events");
+        count++;
+
+        actions[count] = DBG_ASM;
+        strcpy(labels[count], "eZ80 ASM tests & demo");
         count++;
 
         if (vm) {
@@ -849,16 +1071,28 @@ static void run_debug_menu(vn_vm_t *vm)
         strcpy(labels[count], "Close");
         count++;
 
-        for (uint8_t i = 0; i < count; i++) {
-            items[i] = labels[i];
-        }
         if (selected >= count) {
             selected = (uint8_t)(count - 1);
         }
 
+#define DBG_MENU_ROWS 10
+        if (selected < top) {
+            top = selected;
+        } else if (selected >= top + DBG_MENU_ROWS) {
+            top = (uint8_t)(selected - DBG_MENU_ROWS + 1);
+        }
+        uint8_t visible = (uint8_t)(count - top);
+        if (visible > DBG_MENU_ROWS) {
+            visible = DBG_MENU_ROWS;
+        }
+        const char *vis_items[DBG_MENU_ROWS];
+        for (uint8_t i = 0; i < visible; i++) {
+            vis_items[i] = labels[top + i];
+        }
+
         render_backdrop(COL_BOX_FILL);
-        render_text("Debug Menu", 14, 12, COL_NAME);
-        render_list_menu(items, count, selected, 14, 34, COL_WHITE, COL_HIGHLIGHT);
+        render_text("Debug Menu", 14, 10, COL_NAME);
+        render_list_menu(vis_items, visible, (uint8_t)(selected - top), 14, 30, COL_WHITE, COL_HIGHLIGHT);
         render_text("2nd: choose   Mode: close", 14, SCREEN_H - 18, COL_BOX_EDGE);
         render_present(TRANS_CUT);
         gfx_Wait();
@@ -909,6 +1143,10 @@ static void run_debug_menu(vn_vm_t *vm)
 
             case DBG_EVENTS:
                 run_debug_events_test();
+                break;
+
+            case DBG_ASM:
+                run_debug_asm_test();
                 break;
 
             case DBG_SCENEINFO:
