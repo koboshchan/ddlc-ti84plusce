@@ -634,71 +634,74 @@ static void run_debug_asm_test(void)
         unsigned t_cg = 0, t_blit = 0, t_zoom = 0, t_shift = 0;
         bool pass_cg = false, pass_blit = false, pass_zoom = false, pass_shift = false;
 
-        /* Use unused/temporary regions of gfx_vbuffer (76,800 bytes total) for test
-         * source and scratch buffers instead of static BSS, so we consume 0 bytes of RAM heap. */
-        uint8_t *fb = (uint8_t *)gfx_vbuffer;
-        uint8_t *cg_src = (uint8_t *)gfx_vbuffer + 57600;      /* 14,400 bytes: 160x90 */
-        uint8_t *blit_src = (uint8_t *)gfx_vbuffer + 72000;    /* 1,024 bytes: 32x32 */
-        uint8_t *shift_scratch = (uint8_t *)gfx_vbuffer + 73024; /* 320 bytes */
-
         /* 1. Verify fast_cg_upscale_2x */
         {
-            for (int y = 0; y < 90; y++) {
-                for (int x = 0; x < 160; x++) {
-                    cg_src[y * 160 + x] = (uint8_t)((x * 5 + y * 11 + 3) & 0xFF);
-                }
-            }
-            memset(fb, 0, 320 * 180);
-
-            clock_t start = clock();
-            for (int it = 0; it < 5; it++) {
-                fast_cg_upscale_2x(fb, cg_src);
-            }
-            clock_t dur = clock() - start;
-            t_cg = (unsigned)(dur * 1000UL / CLOCKS_PER_SEC / 5);
-
-            pass_cg = true;
-            for (int y = 0; y < 90; y++) {
-                for (int x = 0; x < 160; x++) {
-                    uint8_t exp = cg_src[y * 160 + x];
-                    if (fb[(y * 2) * 320 + (x * 2)] != exp ||
-                        fb[(y * 2) * 320 + (x * 2 + 1)] != exp ||
-                        fb[(y * 2 + 1) * 320 + (x * 2)] != exp ||
-                        fb[(y * 2 + 1) * 320 + (x * 2 + 1)] != exp) {
-                        pass_cg = false;
-                        break;
+            uint8_t *cg_src = malloc(160 * 90);
+            if (cg_src) {
+                for (int y = 0; y < 90; y++) {
+                    for (int x = 0; x < 160; x++) {
+                        cg_src[y * 160 + x] = (uint8_t)((x * 5 + y * 11 + 3) & 0xFF);
                     }
                 }
-                if (!pass_cg) break;
+                uint8_t *fb = (uint8_t *)gfx_vbuffer;
+                memset(fb, 0, 320 * 180);
+
+                clock_t start = clock();
+                for (int it = 0; it < 5; it++) {
+                    fast_cg_upscale_2x(fb, cg_src);
+                }
+                clock_t dur = clock() - start;
+                t_cg = (unsigned)(dur * 1000UL / CLOCKS_PER_SEC / 5);
+
+                pass_cg = true;
+                for (int y = 0; y < 90; y++) {
+                    for (int x = 0; x < 160; x++) {
+                        uint8_t exp = cg_src[y * 160 + x];
+                        if (fb[(y * 2) * 320 + (x * 2)] != exp ||
+                            fb[(y * 2) * 320 + (x * 2 + 1)] != exp ||
+                            fb[(y * 2 + 1) * 320 + (x * 2)] != exp ||
+                            fb[(y * 2 + 1) * 320 + (x * 2 + 1)] != exp) {
+                            pass_cg = false;
+                            break;
+                        }
+                    }
+                    if (!pass_cg) break;
+                }
+                free(cg_src);
             }
         }
 
         /* 2. Verify fast_rect_blit */
         {
-            for (int i = 0; i < 32 * 32; i++) {
-                blit_src[i] = (uint8_t)(i + 7);
-            }
-            memset(fb, 0, 320 * 40);
+            uint8_t *blit_src = malloc(32 * 32);
+            if (blit_src) {
+                for (int i = 0; i < 32 * 32; i++) {
+                    blit_src[i] = (uint8_t)(i + 7);
+                }
+                uint8_t *fb = (uint8_t *)gfx_vbuffer;
+                memset(fb, 0, 320 * 40);
 
-            clock_t start = clock();
-            for (int it = 0; it < 50; it++) {
-                fast_rect_blit(fb, 320, blit_src, 32, 32, 32);
-            }
-            clock_t dur = clock() - start;
-            t_blit = (unsigned)(dur * 1000UL / CLOCKS_PER_SEC / 50);
+                clock_t start = clock();
+                for (int it = 0; it < 50; it++) {
+                    fast_rect_blit(fb, 320, blit_src, 32, 32, 32);
+                }
+                clock_t dur = clock() - start;
+                t_blit = (unsigned)(dur * 1000UL / CLOCKS_PER_SEC / 50);
 
-            pass_blit = true;
-            for (int r = 0; r < 32; r++) {
-                for (int c = 0; c < 32; c++) {
-                    if (fb[r * 320 + c] != blit_src[r * 32 + c]) {
-                        pass_blit = false;
-                        break;
+                pass_blit = true;
+                for (int r = 0; r < 32; r++) {
+                    for (int c = 0; c < 32; c++) {
+                        if (fb[r * 320 + c] != blit_src[r * 32 + c]) {
+                            pass_blit = false;
+                            break;
+                        }
                     }
+                    if (fb[r * 320 + 32] != 0) {
+                        pass_blit = false;
+                    }
+                    if (!pass_blit) break;
                 }
-                if (fb[r * 320 + 32] != 0) {
-                    pass_blit = false;
-                }
-                if (!pass_blit) break;
+                free(blit_src);
             }
         }
 
@@ -739,23 +742,27 @@ static void run_debug_asm_test(void)
         /* 4. Verify fast_row_shift */
         {
             uint8_t shift_row[320];
-            for (int i = 0; i < 320; i++) {
-                shift_row[i] = (uint8_t)i;
-            }
-
-            clock_t start = clock();
-            for (int it = 0; it < 320; it++) {
-                fast_row_shift(shift_row, shift_scratch, 1);
-            }
-            clock_t dur = clock() - start;
-            t_shift = (unsigned)(dur * 1000UL / CLOCKS_PER_SEC);
-
-            pass_shift = true;
-            for (int i = 0; i < 320; i++) {
-                if (shift_row[i] != (uint8_t)i) {
-                    pass_shift = false;
-                    break;
+            uint8_t *shift_scratch = malloc(320);
+            if (shift_scratch) {
+                for (int i = 0; i < 320; i++) {
+                    shift_row[i] = (uint8_t)i;
                 }
+
+                clock_t start = clock();
+                for (int it = 0; it < 320; it++) {
+                    fast_row_shift(shift_row, shift_scratch, 1);
+                }
+                clock_t dur = clock() - start;
+                t_shift = (unsigned)(dur * 1000UL / CLOCKS_PER_SEC);
+
+                pass_shift = true;
+                for (int i = 0; i < 320; i++) {
+                    if (shift_row[i] != (uint8_t)i) {
+                        pass_shift = false;
+                        break;
+                    }
+                }
+                free(shift_scratch);
             }
         }
 
@@ -796,35 +803,75 @@ static void run_debug_asm_test(void)
             }
             if (in.right) {
                 /* Interactive visual demo */
-                int bx = 20, by = 40, bdx = 3, bdy = 2;
-                uint8_t *box = (uint8_t *)gfx_vbuffer + 72000;
-                uint8_t *demo_scratch = (uint8_t *)gfx_vbuffer + 73024;
-                for (int r = 0; r < 32; r++) {
-                    for (int c = 0; c < 32; c++) {
-                        box[r * 32 + c] = (r == 0 || r == 31 || c == 0 || c == 31) ? COL_HIGHLIGHT : COL_NAME;
+                uint8_t *pattern = malloc(160 * 90);
+                uint8_t *box = malloc(32 * 32);
+                uint8_t *demo_scratch = malloc(SCREEN_W);
+
+                if (pattern) {
+                    for (int y = 0; y < 90; y++) {
+                        for (int x = 0; x < 160; x++) {
+                            int cx = (x > 80 ? 160 - x : x) / 8;
+                            int cy = (y > 45 ? 90 - y : y) / 5;
+                            pattern[y * 160 + x] = ((cx + cy) % 2 == 0) ? COL_BOX_FILL : COL_BOX_EDGE;
+                        }
                     }
                 }
-                for (;;) {
-                    render_backdrop(COL_BLACK);
-                    render_text("Live ASM Visual Demo", 14, 8, COL_NAME);
-                    render_text("Hardware LDIR blit & scanline glitch", 14, 22, COL_WHITE);
 
-                    /* Bouncing box with fast_rect_blit */
-                    fast_rect_blit((uint8_t *)gfx_vbuffer + (size_t)by * SCREEN_W + bx, SCREEN_W,
-                                   box, 32, 32, 32);
+                if (box) {
+                    for (int r = 0; r < 32; r++) {
+                        for (int c = 0; c < 32; c++) {
+                            if (r == 0 || r == 31 || c == 0 || c == 31) {
+                                box[r * 32 + c] = COL_HIGHLIGHT; /* Yellow border */
+                            } else if (r == 1 || r == 30 || c == 1 || c == 30) {
+                                box[r * 32 + c] = COL_WHITE;     /* White inner border */
+                            } else if ((r / 4 + c / 4) % 2 == 0) {
+                                box[r * 32 + c] = COL_NAME;      /* Pink checker */
+                            } else {
+                                box[r * 32 + c] = COL_BOX_EDGE;  /* Purple fill */
+                            }
+                        }
+                    }
+                }
+
+                int bx = 20, by = 40, bdx = 3, bdy = 2;
+                char info[48];
+
+                for (;;) {
+                    /* 1. Hardware fast_cg_upscale_2x: 160x90 -> 320x180 background */
+                    if (pattern) {
+                        fast_cg_upscale_2x((uint8_t *)gfx_vbuffer, pattern);
+                        gfx_SetColor(COL_BOX_FILL);
+                        gfx_FillRectangle_NoClip(0, 180, SCREEN_W, SCREEN_H - 180);
+                    } else {
+                        render_backdrop(COL_BOX_FILL);
+                    }
+
+                    /* 2. Bouncing sprite rendered via fast_rect_blit */
+                    if (box) {
+                        fast_rect_blit((uint8_t *)gfx_vbuffer + (size_t)by * SCREEN_W + bx, SCREEN_W,
+                                       box, 32, 32, 32);
+                    }
+
+                    /* 3. Real-time scanline barrel-shift glitch via fast_row_shift */
+                    if (demo_scratch) {
+                        for (int gy = 70; gy < 110; gy++) {
+                            uint8_t *row = (uint8_t *)gfx_vbuffer + (size_t)gy * SCREEN_W;
+                            size_t shift = (size_t)((bx * 2 + (gy - 70) * 3) % SCREEN_W);
+                            fast_row_shift(row, demo_scratch, shift);
+                        }
+                    }
 
                     bx += bdx;
                     by += bdy;
                     if (bx <= 10 || bx >= SCREEN_W - 42) bdx = -bdx;
-                    if (by <= 40 || by >= SCENE_H - 40)  bdy = -bdy;
+                    if (by <= 10 || by >= 140)           bdy = -bdy;
 
-                    /* Live scanline barrel-shift with fast_row_shift */
-                    for (int y = 90; y < 120; y++) {
-                        uint8_t *row = (uint8_t *)gfx_vbuffer + (size_t)y * SCREEN_W;
-                        fast_row_shift(row, demo_scratch, (size_t)((bx * 2) % SCREEN_W));
-                    }
+                    /* Info overlay at bottom */
+                    render_text("eZ80 Live ASM Demonstration", 14, 186, COL_NAME);
+                    sprintf(info, "Sprite: (%d, %d) | LDIR blit 32x32", bx, by);
+                    render_text(info, 14, 202, COL_WHITE);
+                    render_text("Scanlines 70-110: glitch barrel-shift | Mode: exit", 14, 218, COL_HIGHLIGHT);
 
-                    render_text("2nd / Mode to return", 14, SCREEN_H - 18, COL_BOX_EDGE);
                     render_present(TRANS_CUT);
                     gfx_Wait();
 
@@ -834,6 +881,10 @@ static void run_debug_asm_test(void)
                         break;
                     }
                 }
+
+                free(pattern);
+                free(box);
+                free(demo_scratch);
             }
         }
     }
