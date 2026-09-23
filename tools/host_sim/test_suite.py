@@ -566,6 +566,70 @@ def run_all_tests() -> list[TestResult]:
             error_message="" if all_present else "Missing canonical Act 2 splash messages in src/main.c"
         ))
 
+    # 4.8 Dialogue Dynamic Variable Tag Completeness
+    if main_c_path.is_file():
+        required_tags = [
+            "player", "currentuser", "basedir", "ch2_winner", "ch4_name",
+            "currentname", "unfairto", "gtext", "s_name", "m_name", "ntext"
+        ]
+        tags_ok = all(tag in main_c for tag in required_tags)
+        vn_h = (ROOT / "src" / "vn.h").read_text(encoding="utf-8")
+        slots_ok = all(slot in vn_h for slot in [
+            "VN_CH2_WINNER_VAR", "VN_CH4_NAME_VAR", "VN_CURRENTNAME_VAR", "VN_UNFAIRTO_VAR"
+        ])
+        passed = tags_ok and slots_ok
+        results.append(TestResult(
+            name="Dialogue variable tag substitution (10 canonical bracket tags)",
+            passed=passed,
+            status="finished" if passed else "error",
+            chunk=0,
+            pc=0,
+            lines=len(required_tags),
+            menus=0,
+            quit_requested=False,
+            deleted=[],
+            warnings=[],
+            error_message="" if passed else "Missing bracket variable substitution tags or VN slots"
+        ))
+
+    # 4.9 Mutually Exclusive CG Expression Layers
+    manifest_path = BUILD / "manifest.json"
+    if manifest_path.is_file():
+        import json
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        exclusive_groups = [
+            {"n_cg1_exp1", "n_cg1_exp2", "n_cg1_exp3", "n_cg1_exp4", "n_cg1_exp5"},
+            {"n_cg1_base", "n_cg1b"},
+            {"n_cg2_exp1", "n_cg2_exp2"},
+            {"n_cg3_exp1", "n_cg3_exp2"},
+            {"y_cg1_exp1", "y_cg1_exp2", "y_cg1_exp3"},
+            {"y_cg2_exp1", "y_cg2_exp2", "y_cg2_exp3"},
+            {"s_cg2_base1", "s_cg2_base2"},
+            {"s_cg2_exp1", "s_cg2_exp2"},
+        ]
+        conflicts = []
+        for sc in manifest.get("scenes", []):
+            imgname = sc.get("imgname", [])
+            if isinstance(imgname, list):
+                layers = set(imgname)
+                for grp in exclusive_groups:
+                    common = layers.intersection(grp)
+                    if len(common) > 1:
+                        conflicts.append(f"{sc.get('file')}: {common}")
+        results.append(TestResult(
+            name="Mutually exclusive CG expression layer validation",
+            passed=len(conflicts) == 0,
+            status="finished" if len(conflicts) == 0 else "error",
+            chunk=0,
+            pc=0,
+            lines=len(manifest.get("scenes", [])),
+            menus=0,
+            quit_requested=False,
+            deleted=[],
+            warnings=conflicts,
+            error_message="" if len(conflicts) == 0 else f"{len(conflicts)} CG scenes contain conflicting layers"
+        ))
+
     return results
 
 
