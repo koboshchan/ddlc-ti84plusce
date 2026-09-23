@@ -292,3 +292,149 @@ uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal)
     if (y_appeal) *y_appeal = (int16_t)totals[2];
     return winner;
 }
+
+#include "poem_data.h"
+#include <fontlibc.h>
+
+#define POEM_VIEW_MAX_LINES 128
+#define POEM_PAGE_LINES     13
+#define POEM_TEXT_X         32
+#define POEM_TEXT_MAX_W     256
+#define POEM_TEXT_Y0        38
+#define POEM_LINE_H         13
+
+typedef struct {
+    const char *start;
+    uint16_t    len;
+} poem_line_slice_t;
+
+void poem_view(uint8_t poem_id)
+{
+    if (poem_id >= sizeof(g_poems) / sizeof(g_poems[0])) {
+        return;
+    }
+    const poem_entry_t *poem = &g_poems[poem_id];
+
+    /* Split and word-wrap poem text into lines */
+    poem_line_slice_t lines[POEM_VIEW_MAX_LINES];
+    uint16_t total_lines = 0;
+
+    const char *p = poem->text;
+    while (*p && total_lines < POEM_VIEW_MAX_LINES) {
+        const char *nl = strchr(p, '\n');
+        size_t par_len = nl ? (size_t)(nl - p) : strlen(p);
+
+        if (par_len == 0) {
+            lines[total_lines].start = p;
+            lines[total_lines].len = 0;
+            total_lines++;
+        } else {
+            size_t pos = 0;
+            while (pos < par_len && total_lines < POEM_VIEW_MAX_LINES) {
+                while (pos < par_len && p[pos] == ' ') {
+                    pos++;
+                }
+                if (pos >= par_len) {
+                    break;
+                }
+
+                size_t line_start = pos;
+                size_t last_break = pos;
+                size_t line_len = 0;
+                unsigned cur_w = 0;
+
+                while (pos < par_len) {
+                    if (p[pos] == ' ') {
+                        last_break = pos;
+                    }
+                    uint8_t c = (uint8_t)p[pos];
+                    unsigned gw = (c >= 32 && c <= 126) ? fontlib_GetGlyphWidth(c) : 6;
+                    if (cur_w + gw > POEM_TEXT_MAX_W && pos > line_start) {
+                        if (last_break > line_start) {
+                            line_len = last_break - line_start;
+                            pos = last_break + 1;
+                        } else {
+                            line_len = pos - line_start;
+                        }
+                        break;
+                    }
+                    cur_w += gw;
+                    pos++;
+                }
+                if (pos >= par_len && line_len == 0) {
+                    line_len = par_len - line_start;
+                }
+                lines[total_lines].start = p + line_start;
+                lines[total_lines].len = (uint16_t)line_len;
+                total_lines++;
+            }
+        }
+        p = nl ? nl + 1 : p + par_len;
+    }
+
+    uint16_t scroll = 0;
+
+    while (!quit_requested) {
+        draw_background();
+
+        /* Draw Title */
+        if (poem->title && poem->title[0]) {
+            render_text(poem->title, POEM_TEXT_X, 18, COL_NAME);
+        }
+
+        /* Draw visible lines */
+        for (uint8_t i = 0; i < POEM_PAGE_LINES; i++) {
+            uint16_t l_idx = scroll + i;
+            if (l_idx >= total_lines) break;
+            if (lines[l_idx].len > 0) {
+                char buf[96];
+                size_t l = lines[l_idx].len < sizeof(buf) - 1 ? lines[l_idx].len : sizeof(buf) - 1;
+                memcpy(buf, lines[l_idx].start, l);
+                buf[l] = '\0';
+                render_text(buf, POEM_TEXT_X, POEM_TEXT_Y0 + i * POEM_LINE_H, COL_BLACK);
+            }
+        }
+
+        /* Draw bottom prompt */
+        bool has_more = (scroll + POEM_PAGE_LINES < total_lines);
+        if (has_more) {
+            render_text("v 2nd / Down for more", SCREEN_W - 145, SCREEN_H - 18, COL_NAME);
+        } else {
+            render_text("2nd / Enter to dismiss", SCREEN_W - 145, SCREEN_H - 18, COL_NAME);
+        }
+
+        render_present(TRANS_CUT);
+        gfx_Wait();
+
+        poem_input_t in;
+        poem_poll(&in);
+        if (in.quit) {
+            break;
+        }
+        if (in.down) {
+            if (has_more) {
+                scroll += POEM_PAGE_LINES - 2;
+                if (scroll + POEM_PAGE_LINES > total_lines) {
+                    scroll = total_lines > POEM_PAGE_LINES ? total_lines - POEM_PAGE_LINES : 0;
+                }
+            }
+        }
+        if (in.up) {
+            if (scroll > POEM_PAGE_LINES - 2) {
+                scroll -= POEM_PAGE_LINES - 2;
+            } else {
+                scroll = 0;
+            }
+        }
+        if (in.advance) {
+            if (has_more) {
+                scroll += POEM_PAGE_LINES - 2;
+                if (scroll + POEM_PAGE_LINES > total_lines) {
+                    scroll = total_lines > POEM_PAGE_LINES ? total_lines - POEM_PAGE_LINES : 0;
+                }
+            } else {
+                break;
+            }
+        }
+    }
+}

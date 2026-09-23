@@ -28,4 +28,10 @@
  */
 uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal);
 
+/**
+ * Renders the in-game poem @p poem_id on full-screen notebook paper,
+ * handling multi-page scrolling and waiting for dismissal.
+ */
+void poem_view(uint8_t poem_id);
+
 #endif /* POEM_H */

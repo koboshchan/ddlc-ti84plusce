@@ -11,6 +11,8 @@ ARCHIVED = YES
 CFLAGS = -Wall -Wextra -Oz
 CXXFLAGS = -Wall -Wextra -Oz
 
+.PHONY: build
+
 # CEdev's stock BSSHEAP_HIGH (0xD13FD8) budgets the *combined* .bss + heap
 # region -- the linker script places .bss starting at BSSHEAP_LOW and grows
 # it upward, so the actual heap is only whatever's left below BSSHEAP_HIGH.
