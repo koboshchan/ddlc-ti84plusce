@@ -336,6 +336,10 @@ static bool run_pause_menu(vn_vm_t *vm)
  * story to trigger them.
  * ------------------------------------------------------------------------ */
 
+static char player_name[NAME_MAX_LEN + 1] = "you";
+static const char *speaker_display_name(const vn_vm_t *vm, uint8_t speaker);
+static const char *substitute_dialogue_tags(const vn_vm_t *vm, const char *s);
+
 /** Runs the real poem minigame screen (the same src/poem.c code a `call
  * poem` site drives) and shows its result -- winner plus every character's
  * cumulative appeal total, the same values a chapter-indexed `call poem`
@@ -411,6 +415,132 @@ static void run_debug_text_test(void)
     } while (!in.advance && !quit_requested);
 }
 
+/**
+ * Debug menu: verifies dynamic dialogue tag substitution ([player], [currentuser],
+ * [basedir], [ch2_winner], [ch4_name], [currentname], [unfairto], [gtext], etc.)
+ * both via automated self-test assertions and an interactive live dialogue box viewer
+ * with speaker plates and wrapped text.
+ */
+static void run_debug_tags_test(vn_vm_t *vm)
+{
+    typedef struct {
+        const char *speaker_name;
+        uint8_t     speaker_id;
+        const char *raw_text;
+        const char *tag_label;
+    } tag_test_t;
+
+    static const tag_test_t test_cases[] = {
+        { "Sayori", 0, "Hi [player]! Glad you made it to the club!", "[player]" },
+        { "Monika", 3, "I know you are listening, [currentuser]...", "[currentuser]" },
+        { "Monika", 3, "Check your [basedir]/characters folder.", "[basedir]" },
+        { "Monika", 3, "Looks like [ch2_winner] won your heart today!", "[ch2_winner]" },
+        { "Monika", 3, "I was spending time with [ch4_name].", "[ch4_name]" },
+        { "Monika", 3, "Choosing [currentname] would be unfair to [unfairto].", "[currentname]+[unfairto]" },
+        { "Monika", 3, "Wait, what happened? [gtext] -- is that [s_name]?", "[gtext]+[s_name]" },
+        { "Yuri",   2, "Welcome [player]! [unknown_tag] is kept intact.", "Preserve [unknown_tag]" }
+    };
+    const uint8_t num_cases = (uint8_t)(sizeof(test_cases) / sizeof(test_cases[0]));
+
+    /* If vm is NULL (e.g. debug menu accessed from title screen before game start),
+     * use a static fallback VM so tag evaluation and glitch buffer are valid. */
+    static vn_vm_t fallback_vm;
+    vn_vm_t *active_vm = vm;
+    char saved_glitch[VN_GLITCH_MAX + 1];
+    memset(saved_glitch, 0, sizeof(saved_glitch));
+
+    if (!active_vm) {
+        memset(&fallback_vm, 0, sizeof(fallback_vm));
+        strcpy(fallback_vm.glitch_buf, "bbbbbb");
+        active_vm = &fallback_vm;
+    } else {
+        strncpy(saved_glitch, active_vm->glitch_buf, sizeof(saved_glitch) - 1);
+        if (active_vm->glitch_buf[0] == '\0') {
+            strcpy(active_vm->glitch_buf, "bbbbbb");
+        }
+    }
+
+    /* Automated self-test pass */
+    uint8_t self_test_passed = 0;
+    for (uint8_t i = 0; i < num_cases; i++) {
+        const char *sub = substitute_dialogue_tags(active_vm, test_cases[i].raw_text);
+        bool ok = false;
+        if (i == 0) {
+            ok = (strstr(sub, player_name) != NULL && strstr(sub, "[player]") == NULL);
+        } else if (i == 1) {
+            ok = (strstr(sub, player_name) != NULL && strstr(sub, "[currentuser]") == NULL);
+        } else if (i == 2) {
+            ok = (strstr(sub, "DDLC") != NULL && strstr(sub, "[basedir]") == NULL);
+        } else if (i == 3) {
+            ok = (strstr(sub, "[ch2_winner]") == NULL);
+        } else if (i == 4) {
+            ok = (strstr(sub, "[ch4_name]") == NULL);
+        } else if (i == 5) {
+            ok = (strstr(sub, "[currentname]") == NULL && strstr(sub, "[unfairto]") == NULL);
+        } else if (i == 6) {
+            ok = (strstr(sub, "[gtext]") == NULL && strstr(sub, "[s_name]") == NULL);
+        } else if (i == 7) {
+            ok = (strstr(sub, "[player]") == NULL && strstr(sub, "[unknown_tag]") != NULL);
+        }
+        if (ok) self_test_passed++;
+    }
+
+    uint8_t cur = 0;
+    input_t in;
+    char line[48];
+
+    vn_scene_t scene;
+    memset(&scene, 0, sizeof(scene));
+    scene.background = VN_NO_SPRITE;
+    scene.window_hidden = false;
+
+    for (;;) {
+        const tag_test_t *tc = &test_cases[cur];
+        const char *substituted = substitute_dialogue_tags(active_vm, tc->raw_text);
+        const char *speaker = speaker_display_name(active_vm, tc->speaker_id);
+
+        render_backdrop(COL_BOX_FILL);
+
+        /* Diagnostic / test harness header */
+        render_text("Dialogue Tag Substitution Test", 10, 8, COL_NAME);
+        sprintf(line, "Self-Test: %u/%u PASSED", self_test_passed, num_cases);
+        render_text(line, 10, 24, (self_test_passed == num_cases) ? COL_HIGHLIGHT : COL_WHITE);
+
+        sprintf(line, "Case [%u/%u]: %s", cur + 1, num_cases, tc->tag_label);
+        render_text(line, 10, 42, COL_WHITE);
+
+        render_text("Raw template:", 10, 60, COL_BOX_EDGE);
+        render_text(tc->raw_text, 10, 74, COL_BOX_EDGE);
+
+        render_text("Substituted output:", 10, 96, COL_WHITE);
+        render_text(substituted, 10, 110, COL_HIGHLIGHT);
+
+        render_text("Left/Right: case  2nd: next  Mode: back", 10, 150, COL_BOX_EDGE);
+
+        /* Live rendered dialogue box with nameplate and wrapped text */
+        render_box(&scene, speaker, substituted, SIZE_MAX);
+
+        render_present(TRANS_CUT);
+        gfx_Wait();
+
+        input_poll(&in);
+        if (quit_requested || in.pause) {
+            break;
+        }
+        if (in.left) {
+            cur = (cur == 0) ? (uint8_t)(num_cases - 1) : (uint8_t)(cur - 1);
+        }
+        if (in.right || in.advance) {
+            cur = (uint8_t)((cur + 1) % num_cases);
+        }
+    }
+
+    if (vm && saved_glitch[0]) {
+        strncpy(vm->glitch_buf, saved_glitch, sizeof(vm->glitch_buf));
+    }
+    render_invalidate_scene();
+}
+
 /* Debug menu's text-font test -- see render_debug_font_test()'s own doc
  * comment in render.c for what it actually checks. */
 static void run_debug_font_test(void)
@@ -445,9 +575,11 @@ static void run_debug_anim_test(void)
         "ZOOM (speaking pop)", "HOP (one-shot bounce)", "SINK (drift + hold)",
     };
     vn_scene_t scene;
-    uint16_t   sprite    = 0;
-    uint8_t    anim      = 0;
-    bool       is_active = false;
+    uint16_t   sprite     = 0;
+    uint8_t    anim       = 0;
+    bool       is_active  = false;
+    uint8_t    zoom_mode  = 0; /* 0: REST, 1: ZOOMED, 2: AUTO-PULSE */
+    clock_t    last_pulse = 0;
     input_t in;
     char line[48];
 
@@ -466,6 +598,13 @@ static void run_debug_anim_test(void)
         scene.actors[0].character = 0;
         scene.actors[0].sprite    = sprite;
         if (anim == 0) {
+            if (zoom_mode == 2) {
+                clock_t now = clock();
+                if (now - last_pulse > (CLOCKS_PER_SEC / 2)) {
+                    is_active = !is_active;
+                    last_pulse = now;
+                }
+            }
             scene.actors[0].flags = is_active ? VN_FLAG_ZOOM : 0;
         } else if (anim == 1) {
             scene.actors[0].flags = is_active ? VN_FLAG_HOP : 0;
@@ -480,8 +619,12 @@ static void run_debug_anim_test(void)
         render_text(line, 8, 4, COL_WHITE);
 
         if (anim == 0) {
-            sprintf(line, "State: %s (press 2nd to toggle)", is_active ? "1.05x ZOOMED" : "1.00x REST");
-            render_text(line, 8, 20, is_active ? COL_HIGHLIGHT : COL_NAME);
+            static const char *const z_labels[3] = {
+                "1.00x REST", "1.05x ZOOMED", "AUTO-PULSE (60 FPS)"
+            };
+            sprintf(line, "State: %s (press 2nd to cycle)", z_labels[zoom_mode]);
+            render_text(line, 8, 20, zoom_mode > 0 ? COL_HIGHLIGHT : COL_NAME);
+            render_text("eZ80 fast_scale_row_trans + plate blit", 8, 34, COL_BOX_EDGE);
         } else if (anim == 1) {
             render_text("Press 2nd to trigger HOP bounce", 8, 20, COL_HIGHLIGHT);
         } else {
@@ -501,11 +644,13 @@ static void run_debug_anim_test(void)
         if (in.up) {
             anim = (uint8_t)((anim + 1) % 3);
             is_active = false;
+            zoom_mode = 0;
             render_invalidate_scene();
         }
         if (in.down) {
             anim = (uint8_t)((anim + 2) % 3);
             is_active = false;
+            zoom_mode = 0;
             render_invalidate_scene();
         }
         if (in.left && sprite > 0) {
@@ -517,7 +662,11 @@ static void run_debug_anim_test(void)
             render_invalidate_scene();
         }
         if (in.advance) {
-            if (anim == 1) {
+            if (anim == 0) {
+                zoom_mode = (uint8_t)((zoom_mode + 1) % 3);
+                is_active = (zoom_mode != 0);
+                last_pulse = clock();
+            } else if (anim == 1) {
                 scene.actors[0].show_seq++;
                 is_active = true;
             } else {
@@ -572,6 +721,94 @@ static void run_debug_cg_test(void)
         }
         if (in.right) {
             bg++;
+        }
+    }
+}
+
+/** Debug menu: interactive browser for composite CG scenes with facial expression
+ * overlays, alternate base poses, and additive detail layers across all character
+ * families (s_cg2, n_cg3, n_cg2, n_cg1, y_cg1, y_cg2, y_cg3). Verifies private
+ * DCGPAL palettes, seamless composition, and absence of black box backgrounds. */
+static void run_debug_layered_cg_test(void)
+{
+    typedef struct {
+        uint8_t     id;
+        const char *family;
+        const char *desc;
+        const char *layers;
+    } layered_cg_t;
+
+    static const layered_cg_t cgs[] = {
+        { 70,  "Sayori CG2", "base1 + exp2 (blushing)", "s_cg2_base1 + exp2" },
+        { 71,  "Sayori CG2", "base1 + exp1 (smiling)", "s_cg2_base1 + exp1" },
+        { 72,  "Sayori CG2", "exp1 + forehead bump", "s_cg2_base1 + exp1 + exp3" },
+        { 73,  "Sayori CG2", "base2 + exp2 (holding head)", "s_cg2_base2 + exp2" },
+        { 75,  "Sayori CG2", "base2 + bump mark", "s_cg2_base2 + exp3" },
+        { 76,  "Sayori CG2", "base2 + smile + bump", "s_cg2_base2 + exp1 + exp3" },
+        { 11,  "Natsuki CG3", "base reading on floor", "n_cg3_base" },
+        { 12,  "Natsuki CG3", "base + exp1 looking up", "n_cg3_base + exp1" },
+        { 13,  "Natsuki CG3", "exp1 + cupcake detail", "n_cg3_base + exp1 + cake" },
+        { 14,  "Natsuki CG3", "base + exp2 smiling", "n_cg3_base + exp2" },
+        { 83,  "Natsuki CG2", "bg + base closet manga", "n_cg2_bg + base" },
+        { 84,  "Natsuki CG2", "bg + base + exp1 surprised", "n_cg2_bg + base + exp1" },
+        { 85,  "Natsuki CG2", "bg + base + exp2 smiling", "n_cg2_bg + base + exp2" },
+        { 78,  "Natsuki CG1", "bg + base manga wall", "n_cg1_bg + base" },
+        { 81,  "Natsuki CG1", "bg + base + exp1 pout", "n_cg1_bg + base + exp1" },
+        { 79,  "Natsuki CG1", "bg + base + exp2 irritated", "n_cg1_bg + base + exp2" },
+        { 80,  "Natsuki CG1", "bg + base + exp3 open mouth", "n_cg1_bg + base + exp3" },
+        { 101, "Natsuki CG1", "bg + base + exp4 curious", "n_cg1_bg + base + exp4" },
+        { 102, "Natsuki CG1", "bg + base + exp5 happy", "n_cg1_bg + base + exp5" },
+        { 103, "Natsuki CG1", "bg + n_cg1b alternate pose", "n_cg1_bg + n_cg1b" },
+        { 86,  "Yuri CG1",   "base reading on floor", "y_cg1_base" },
+        { 87,  "Yuri CG1",   "base + exp1 shy", "y_cg1_base + exp1" },
+        { 88,  "Yuri CG1",   "base + exp2 blushing", "y_cg1_base + exp2" },
+        { 104, "Yuri CG1",   "base + exp3 intense", "y_cg1_base + exp3" },
+        { 90,  "Yuri CG2",   "bg + base closet tea", "y_cg2_bg + base" },
+        { 91,  "Yuri CG2",   "bg + base + details (cups)", "y_cg2_bg + base + details" },
+        { 92,  "Yuri CG2",   "details + nochoc", "y_cg2_bg + base + det + nochoc" },
+        { 98,  "Yuri CG2",   "details + exp2 + dust", "details + exp2 + dust1-4" },
+        { 99,  "Yuri CG2",   "details + exp3 + dust", "details + exp3 + dust1-4" },
+        { 100, "Yuri CG2",   "details + nochoc + exp3", "det + nochoc + exp3 + dust" },
+        { 17,  "Yuri CG3",   "base + exp1 chocolates", "y_cg3_base + exp1" },
+    };
+    const uint8_t count = (uint8_t)(sizeof(cgs) / sizeof(cgs[0]));
+    uint8_t cur = 0;
+    input_t in;
+    char line[48];
+
+    for (;;) {
+        const layered_cg_t *entry = &cgs[cur];
+        uint8_t id = entry->id;
+
+        render_apply_palette(assets_scene_palette(id));
+        render_debug_bg_preview(id);
+
+        /* CG info drawn in the lower letterbox area */
+        sprintf(line, "Layered CG [%u/%u] (ID %u)", cur + 1, count, id);
+        render_text(line, 8, SCENE_H + 4, COL_NAME);
+
+        sprintf(line, "%s: %s", entry->family, entry->desc);
+        render_text(line, 8, SCENE_H + 18, COL_WHITE);
+
+        sprintf(line, "Layers: %s", entry->layers);
+        render_text(line, 8, SCENE_H + 32, COL_HIGHLIGHT);
+
+        render_text("Left/Right: browse  Mode: back", 8, SCREEN_H - 12, COL_BOX_EDGE);
+
+        render_present(TRANS_CUT);
+        gfx_Wait();
+
+        input_poll(&in);
+        if (quit_requested || in.pause) {
+            render_apply_palette(assets_scene_palette(VN_NO_SPRITE));
+            render_invalidate_scene();
+            return;
+        }
+        if (in.left) {
+            cur = (cur == 0) ? (uint8_t)(count - 1) : (uint8_t)(cur - 1);
+        }
+        if (in.right || in.advance) {
+            cur = (uint8_t)((cur + 1) % count);
         }
     }
 }
@@ -1136,8 +1373,8 @@ static bool run_debug_chapter_menu(vn_vm_t *vm)
 static void run_debug_menu(vn_vm_t *vm)
 {
     enum {
-        DBG_POEM, DBG_TEXT, DBG_FONT, DBG_ANIM, DBG_CG, DBG_GLITCH, DBG_EVENTS,
-        DBG_ASM,
+        DBG_POEM, DBG_TEXT, DBG_TAGS, DBG_FONT, DBG_ANIM, DBG_CG, DBG_LAYERED_CG,
+        DBG_GLITCH, DBG_EVENTS, DBG_ASM,
         DBG_SCENEINFO, DBG_TEAR, DBG_WINDOW, DBG_CHAPTERS,
         DBG_DEL_SAYORI, DBG_DEL_NATSUKI, DBG_DEL_YURI, DBG_DEL_MONIKA,
         DBG_ERASE, DBG_CLOSE, DBG_ACTION_MAX,
@@ -1159,16 +1396,24 @@ static void run_debug_menu(vn_vm_t *vm)
         strcpy(labels[count], "Dialogue text render test");
         count++;
 
+        actions[count] = DBG_TAGS;
+        strcpy(labels[count], "Dialogue [x] tags test");
+        count++;
+
         actions[count] = DBG_FONT;
         strcpy(labels[count], "Text font test");
         count++;
 
         actions[count] = DBG_ANIM;
-        strcpy(labels[count], "Animation test");
+        strcpy(labels[count], "Animation & zoom test");
         count++;
 
         actions[count] = DBG_CG;
         strcpy(labels[count], "External CG test");
+        count++;
+
+        actions[count] = DBG_LAYERED_CG;
+        strcpy(labels[count], "Layered CGs with overlays");
         count++;
 
         actions[count] = DBG_GLITCH;
@@ -1272,6 +1517,10 @@ static void run_debug_menu(vn_vm_t *vm)
                 run_debug_text_test();
                 break;
 
+            case DBG_TAGS:
+                run_debug_tags_test(vm);
+                break;
+
             case DBG_FONT:
                 run_debug_font_test();
                 break;
@@ -1282,6 +1531,10 @@ static void run_debug_menu(vn_vm_t *vm)
 
             case DBG_CG:
                 run_debug_cg_test();
+                break;
+
+            case DBG_LAYERED_CG:
+                run_debug_layered_cg_test();
                 break;
 
             case DBG_GLITCH:
@@ -1491,8 +1744,6 @@ static void run_help_screen(void)
  * VM host callbacks
  * ------------------------------------------------------------------------ */
 
-static char player_name[NAME_MAX_LEN + 1] = "you";
-
 /* The name to show on the dialogue box's plate for @p speaker, or NULL for
  * narration.
  *
@@ -1522,7 +1773,7 @@ static const char *speaker_display_name(const vn_vm_t *vm, uint8_t speaker)
         return NULL;
     }
 
-    const char *name = assets_var_string(vm->vars[VN_NAME_VAR(speaker)]);
+    const char *name = vm ? assets_var_string(vm->vars[VN_NAME_VAR(speaker)]) : NULL;
     return (name != NULL && name[0] != '\0') ? name : fallback[speaker];
 }
 
