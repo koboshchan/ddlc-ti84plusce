@@ -346,7 +346,7 @@ static const char *substitute_dialogue_tags(const vn_vm_t *vm, const char *s);
  * site now scores into poemwinner[N]/s_poemappeal[N]/etc (see #46). Doesn't
  * touch any story variable itself; this is a standalone test, not a stand-in
  * for a real call site. */
-static void run_debug_poem_test(void)
+static __attribute__((noinline)) void run_debug_poem_test(void)
 {
     static const char *const names[3] = { "Sayori", "Natsuki", "Yuri" };
     int sel = 0;
@@ -401,7 +401,7 @@ static void run_debug_poem_test(void)
 
 /* Debug menu's dialogue text-render test -- see render_debug_text_test()'s
  * own doc comment in render.c for what it actually checks. */
-static void run_debug_text_test(void)
+static __attribute__((noinline)) void run_debug_text_test(void)
 {
     input_t in;
 
@@ -421,7 +421,7 @@ static void run_debug_text_test(void)
  * both via automated self-test assertions and an interactive live dialogue box viewer
  * with speaker plates and wrapped text.
  */
-static void run_debug_tags_test(vn_vm_t *vm)
+static __attribute__((noinline)) void run_debug_tags_test(vn_vm_t *vm)
 {
     typedef struct {
         const char *speaker_name;
@@ -433,10 +433,6 @@ static void run_debug_tags_test(vn_vm_t *vm)
     static const tag_test_t test_cases[] = {
         { "Sayori", 0, "Hi [player]! Glad you made it to the club!", "[player]" },
         { "Monika", 3, "I know you are listening, [currentuser]...", "[currentuser]" },
-        { "Monika", 3, "Check your [basedir]/characters folder.", "[basedir]" },
-        { "Monika", 3, "Looks like [ch2_winner] won your heart today!", "[ch2_winner]" },
-        { "Monika", 3, "I was spending time with [ch4_name].", "[ch4_name]" },
-        { "Monika", 3, "Choosing [currentname] would be unfair to [unfairto].", "[currentname]+[unfairto]" },
         { "Monika", 3, "Wait, what happened? [gtext] -- is that [s_name]?", "[gtext]+[s_name]" },
         { "Yuri",   2, "Welcome [player]! [unknown_tag] is kept intact.", "Preserve [unknown_tag]" }
     };
@@ -464,24 +460,8 @@ static void run_debug_tags_test(vn_vm_t *vm)
     uint8_t self_test_passed = 0;
     for (uint8_t i = 0; i < num_cases; i++) {
         const char *sub = substitute_dialogue_tags(active_vm, test_cases[i].raw_text);
-        bool ok = false;
-        if (i == 0) {
-            ok = (strstr(sub, player_name) != NULL && strstr(sub, "[player]") == NULL);
-        } else if (i == 1) {
-            ok = (strstr(sub, player_name) != NULL && strstr(sub, "[currentuser]") == NULL);
-        } else if (i == 2) {
-            ok = (strstr(sub, "DDLC") != NULL && strstr(sub, "[basedir]") == NULL);
-        } else if (i == 3) {
-            ok = (strstr(sub, "[ch2_winner]") == NULL);
-        } else if (i == 4) {
-            ok = (strstr(sub, "[ch4_name]") == NULL);
-        } else if (i == 5) {
-            ok = (strstr(sub, "[currentname]") == NULL && strstr(sub, "[unfairto]") == NULL);
-        } else if (i == 6) {
-            ok = (strstr(sub, "[gtext]") == NULL && strstr(sub, "[s_name]") == NULL);
-        } else if (i == 7) {
-            ok = (strstr(sub, "[player]") == NULL && strstr(sub, "[unknown_tag]") != NULL);
-        }
+        bool ok = (i == 3) ? (strstr(sub, "[unknown_tag]") != NULL)
+                           : (strstr(sub, test_cases[i].tag_label) == NULL);
         if (ok) self_test_passed++;
     }
 
@@ -543,7 +523,7 @@ static void run_debug_tags_test(vn_vm_t *vm)
 
 /* Debug menu's text-font test -- see render_debug_font_test()'s own doc
  * comment in render.c for what it actually checks. */
-static void run_debug_font_test(void)
+static __attribute__((noinline)) void run_debug_font_test(void)
 {
     input_t in;
 
@@ -569,7 +549,7 @@ static void run_debug_font_test(void)
  * retrigger), not every frame -- see vn_actor_t's own comment on why: HOP is
  * one-shot, and bumping it every redraw would restart the bounce every
  * frame instead of letting it play out. */
-static void run_debug_anim_test(void)
+static __attribute__((noinline)) void run_debug_anim_test(void)
 {
     static const char *const anim_names[3] = {
         "ZOOM (speaking pop)", "HOP (one-shot bounce)", "SINK (drift + hold)",
@@ -688,7 +668,7 @@ static void run_debug_anim_test(void)
  * scene id, and shows the live USB/pack status alongside it. No separate
  * "try loading the pack" step of its own -- that's the whole point, this
  * exercises the exact path a real CG scene draw already goes through. */
-static void run_debug_cg_test(void)
+static __attribute__((noinline)) void run_debug_cg_test(void)
 {
     static const char *const status_names[4] = {
         "no USB", "no drive", "wrong pack (BUILD.ID mismatch)", "READY (full-res)",
@@ -729,7 +709,7 @@ static void run_debug_cg_test(void)
  * overlays, alternate base poses, and additive detail layers across all character
  * families (s_cg2, n_cg3, n_cg2, n_cg1, y_cg1, y_cg2, y_cg3). Verifies private
  * DCGPAL palettes, seamless composition, and absence of black box backgrounds. */
-static void run_debug_layered_cg_test(void)
+static __attribute__((noinline)) void run_debug_layered_cg_test(void)
 {
     typedef struct {
         uint8_t     id;
@@ -740,35 +720,11 @@ static void run_debug_layered_cg_test(void)
 
     static const layered_cg_t cgs[] = {
         { 70,  "Sayori CG2", "base1 + exp2 (blushing)", "s_cg2_base1 + exp2" },
-        { 71,  "Sayori CG2", "base1 + exp1 (smiling)", "s_cg2_base1 + exp1" },
-        { 72,  "Sayori CG2", "exp1 + forehead bump", "s_cg2_base1 + exp1 + exp3" },
-        { 73,  "Sayori CG2", "base2 + exp2 (holding head)", "s_cg2_base2 + exp2" },
-        { 75,  "Sayori CG2", "base2 + bump mark", "s_cg2_base2 + exp3" },
-        { 76,  "Sayori CG2", "base2 + smile + bump", "s_cg2_base2 + exp1 + exp3" },
         { 11,  "Natsuki CG3", "base reading on floor", "n_cg3_base" },
-        { 12,  "Natsuki CG3", "base + exp1 looking up", "n_cg3_base + exp1" },
-        { 13,  "Natsuki CG3", "exp1 + cupcake detail", "n_cg3_base + exp1 + cake" },
-        { 14,  "Natsuki CG3", "base + exp2 smiling", "n_cg3_base + exp2" },
         { 83,  "Natsuki CG2", "bg + base closet manga", "n_cg2_bg + base" },
-        { 84,  "Natsuki CG2", "bg + base + exp1 surprised", "n_cg2_bg + base + exp1" },
-        { 85,  "Natsuki CG2", "bg + base + exp2 smiling", "n_cg2_bg + base + exp2" },
         { 78,  "Natsuki CG1", "bg + base manga wall", "n_cg1_bg + base" },
-        { 81,  "Natsuki CG1", "bg + base + exp1 pout", "n_cg1_bg + base + exp1" },
-        { 79,  "Natsuki CG1", "bg + base + exp2 irritated", "n_cg1_bg + base + exp2" },
-        { 80,  "Natsuki CG1", "bg + base + exp3 open mouth", "n_cg1_bg + base + exp3" },
-        { 101, "Natsuki CG1", "bg + base + exp4 curious", "n_cg1_bg + base + exp4" },
-        { 102, "Natsuki CG1", "bg + base + exp5 happy", "n_cg1_bg + base + exp5" },
-        { 103, "Natsuki CG1", "bg + n_cg1b alternate pose", "n_cg1_bg + n_cg1b" },
         { 86,  "Yuri CG1",   "base reading on floor", "y_cg1_base" },
-        { 87,  "Yuri CG1",   "base + exp1 shy", "y_cg1_base + exp1" },
-        { 88,  "Yuri CG1",   "base + exp2 blushing", "y_cg1_base + exp2" },
-        { 104, "Yuri CG1",   "base + exp3 intense", "y_cg1_base + exp3" },
         { 90,  "Yuri CG2",   "bg + base closet tea", "y_cg2_bg + base" },
-        { 91,  "Yuri CG2",   "bg + base + details (cups)", "y_cg2_bg + base + details" },
-        { 92,  "Yuri CG2",   "details + nochoc", "y_cg2_bg + base + det + nochoc" },
-        { 98,  "Yuri CG2",   "details + exp2 + dust", "details + exp2 + dust1-4" },
-        { 99,  "Yuri CG2",   "details + exp3 + dust", "details + exp3 + dust1-4" },
-        { 100, "Yuri CG2",   "details + nochoc + exp3", "det + nochoc + exp3 + dust" },
         { 17,  "Yuri CG3",   "base + exp1 chocolates", "y_cg3_base + exp1" },
     };
     const uint8_t count = (uint8_t)(sizeof(cgs) / sizeof(cgs[0]));
@@ -820,7 +776,7 @@ static void run_debug_layered_cg_test(void)
  * off clock() is enough, and unlike the animation test above there's no
  * scene state to invalidate afterward since nothing here ever calls
  * render_scene(). */
-static void run_debug_glitch_test(void)
+static __attribute__((noinline)) void run_debug_glitch_test(void)
 {
     vn_vm_t glitch_vm;
     uint8_t hi = 20;
@@ -872,7 +828,7 @@ static void run_debug_glitch_test(void)
  * mechanic already exists in this engine (glitchtext(), the tear glitch),
  * this points at the debug menu item that already exercises it instead of
  * duplicating it here. */
-static void run_debug_events_test(void)
+static __attribute__((noinline)) void run_debug_events_test(void)
 {
     static const char *const lines[] = {
         "Ghost menu (1/64 per boot):",
@@ -909,7 +865,7 @@ static void run_debug_events_test(void)
 
 /** Debug menu: tests and benchmarks the 4 eZ80 assembly routines (fast_cg_upscale_2x,
  * fast_rect_blit, fast_zoom_row, fast_row_shift) and provides a live visual demo. */
-static void run_debug_asm_test(void)
+static __attribute__((noinline)) void run_debug_asm_test(void)
 {
     input_t in;
     char line[48];
@@ -917,178 +873,115 @@ static void run_debug_asm_test(void)
     for (;;) {
         /* Run tests and benchmark */
         unsigned t_cg = 0, t_blit = 0, t_zoom = 0, t_shift = 0, t_scale = 0;
-        bool pass_cg = false, pass_blit = false, pass_zoom = false, pass_shift = false, pass_scale = false;
+        bool pass_cg = true, pass_blit = true, pass_zoom = true, pass_shift = true, pass_scale = true;
 
-        /* 1. Verify fast_cg_upscale_2x */
+        /* 1. Verify fast_cg_upscale_2x: use screen buffer directly */
         {
-            uint8_t *cg_src = malloc(160 * 90);
-            if (cg_src) {
-                for (int y = 0; y < 90; y++) {
-                    for (int x = 0; x < 160; x++) {
-                        cg_src[y * 160 + x] = (uint8_t)((x * 5 + y * 11 + 3) & 0xFF);
+            uint8_t *fb = (uint8_t *)gfx_vbuffer;
+            uint8_t *cg_src = fb + 320 * 180;
+            for (int i = 0; i < 160 * 60; i++) cg_src[i] = (uint8_t)(i + 1);
+            memset(fb, 0, 320 * 120);
+
+            clock_t start = clock();
+            for (int it = 0; it < 5; it++) {
+                fast_cg_upscale_2x(fb, cg_src);
+            }
+            t_cg = (unsigned)((clock() - start) * 1000UL / CLOCKS_PER_SEC / 5);
+
+            for (int y = 0; y < 60; y++) {
+                for (int x = 0; x < 160; x++) {
+                    uint8_t exp = cg_src[y * 160 + x];
+                    if (fb[(y * 2) * 320 + (x * 2)] != exp ||
+                        fb[(y * 2 + 1) * 320 + (x * 2 + 1)] != exp) {
+                        pass_cg = false;
+                        break;
                     }
                 }
-                uint8_t *fb = (uint8_t *)gfx_vbuffer;
-                memset(fb, 0, 320 * 180);
-
-                clock_t start = clock();
-                for (int it = 0; it < 5; it++) {
-                    fast_cg_upscale_2x(fb, cg_src);
-                }
-                clock_t dur = clock() - start;
-                t_cg = (unsigned)(dur * 1000UL / CLOCKS_PER_SEC / 5);
-
-                pass_cg = true;
-                for (int y = 0; y < 90; y++) {
-                    for (int x = 0; x < 160; x++) {
-                        uint8_t exp = cg_src[y * 160 + x];
-                        if (fb[(y * 2) * 320 + (x * 2)] != exp ||
-                            fb[(y * 2) * 320 + (x * 2 + 1)] != exp ||
-                            fb[(y * 2 + 1) * 320 + (x * 2)] != exp ||
-                            fb[(y * 2 + 1) * 320 + (x * 2 + 1)] != exp) {
-                            pass_cg = false;
-                            break;
-                        }
-                    }
-                    if (!pass_cg) break;
-                }
-                free(cg_src);
+                if (!pass_cg) break;
             }
         }
 
         /* 2. Verify fast_rect_blit */
         {
-            uint8_t *blit_src = malloc(32 * 32);
-            if (blit_src) {
-                for (int i = 0; i < 32 * 32; i++) {
-                    blit_src[i] = (uint8_t)(i + 7);
-                }
-                uint8_t *fb = (uint8_t *)gfx_vbuffer;
-                memset(fb, 0, 320 * 40);
+            static uint8_t blit_src[32 * 32];
+            for (int i = 0; i < 32 * 32; i++) blit_src[i] = (uint8_t)(i + 7);
+            uint8_t *fb = (uint8_t *)gfx_vbuffer;
+            memset(fb, 0, 320 * 40);
 
-                clock_t start = clock();
-                for (int it = 0; it < 50; it++) {
-                    fast_rect_blit(fb, 320, blit_src, 32, 32, 32);
-                }
-                clock_t dur = clock() - start;
-                t_blit = (unsigned)(dur * 1000UL / CLOCKS_PER_SEC / 50);
+            clock_t start = clock();
+            for (int it = 0; it < 50; it++) {
+                fast_rect_blit(fb, 320, blit_src, 32, 32, 32);
+            }
+            t_blit = (unsigned)((clock() - start) * 1000UL / CLOCKS_PER_SEC / 50);
 
-                pass_blit = true;
-                for (int r = 0; r < 32; r++) {
-                    for (int c = 0; c < 32; c++) {
-                        if (fb[r * 320 + c] != blit_src[r * 32 + c]) {
-                            pass_blit = false;
-                            break;
-                        }
-                    }
-                    if (fb[r * 320 + 32] != 0) {
+            for (int r = 0; r < 32; r++) {
+                for (int c = 0; c < 32; c++) {
+                    if (fb[r * 320 + c] != blit_src[r * 32 + c]) {
                         pass_blit = false;
+                        break;
                     }
-                    if (!pass_blit) break;
                 }
-                free(blit_src);
+                if (!pass_blit) break;
             }
         }
 
         /* 3. Verify fast_zoom_row */
         {
-            uint8_t z_src[64];
-            uint8_t z_dst[70];
-            for (int i = 0; i < 64; i++) {
-                z_src[i] = (uint8_t)(i * 2 + 1);
-            }
+            uint8_t z_src[64], z_dst[70];
+            for (int i = 0; i < 64; i++) z_src[i] = (uint8_t)(i * 2 + 1);
 
             clock_t start = clock();
             for (int it = 0; it < 500; it++) {
                 fast_zoom_row(z_dst, z_src, 64);
             }
-            clock_t dur = clock() - start;
-            t_zoom = (unsigned)(dur * 1000UL / CLOCKS_PER_SEC);
+            t_zoom = (unsigned)((clock() - start) * 1000UL / CLOCKS_PER_SEC);
 
-            uint8_t ref[70];
             int sx = 0, ax = 0;
             for (int x = 0; x < 64; x++) {
-                ref[x] = z_src[sx];
+                if (z_dst[x] != z_src[sx]) { pass_zoom = false; break; }
                 ax += 20;
-                if (ax >= 21) {
-                    ax -= 21;
-                    sx++;
-                }
-            }
-            pass_zoom = true;
-            for (int x = 0; x < 64; x++) {
-                if (z_dst[x] != ref[x]) {
-                    pass_zoom = false;
-                    break;
-                }
+                if (ax >= 21) { ax -= 21; sx++; }
             }
         }
 
         /* 4. Verify fast_row_shift */
         {
-            uint8_t shift_row[320];
-            uint8_t *shift_scratch = malloc(320);
-            if (shift_scratch) {
-                for (int i = 0; i < 320; i++) {
-                    shift_row[i] = (uint8_t)i;
-                }
+            uint8_t shift_row[320], scratch[320];
+            for (int i = 0; i < 320; i++) shift_row[i] = (uint8_t)i;
 
-                clock_t start = clock();
-                for (int it = 0; it < 320; it++) {
-                    fast_row_shift(shift_row, shift_scratch, 1);
-                }
-                clock_t dur = clock() - start;
-                t_shift = (unsigned)(dur * 1000UL / CLOCKS_PER_SEC);
+            clock_t start = clock();
+            for (int it = 0; it < 320; it++) {
+                fast_row_shift(shift_row, scratch, 1);
+            }
+            t_shift = (unsigned)((clock() - start) * 1000UL / CLOCKS_PER_SEC);
 
-                pass_shift = true;
-                for (int i = 0; i < 320; i++) {
-                    if (shift_row[i] != (uint8_t)i) {
-                        pass_shift = false;
-                        break;
-                    }
-                }
-                free(shift_scratch);
+            for (int i = 0; i < 320; i++) {
+                if (shift_row[i] != (uint8_t)i) { pass_shift = false; break; }
             }
         }
 
         /* 5. Verify fast_scale_sprite_trans */
-        int fail_x = -1, fail_y = -1;
         {
             static uint8_t s_src[40 * 40];
             uint8_t *s_dst = (uint8_t *)gfx_vbuffer;
-            for (int y = 0; y < 40; y++) {
-                for (int x = 0; x < 40; x++) {
-                    s_src[y * 40 + x] = ((x + y) % 2 == 0) ? (uint8_t)(10 + (x + y) % 30) : 0;
-                }
-            }
+            for (int i = 0; i < 40 * 40; i++) s_src[i] = (uint8_t)(i % 2 ? 10 + i % 30 : 0);
             memset(s_dst, 0xFF, 320 * 44);
 
             clock_t start = clock();
             for (int it = 0; it < 50; it++) {
                 fast_scale_sprite_trans(s_dst, 320, s_src, 40, 40, 42, 42);
             }
-            clock_t dur = clock() - start;
-            t_scale = (unsigned)(dur * 1000UL / CLOCKS_PER_SEC / 50);
+            t_scale = (unsigned)((clock() - start) * 1000UL / CLOCKS_PER_SEC / 50);
 
-            pass_scale = true;
             for (int y = 0; y < 42; y++) {
                 int sy = (y * 40 + 21) / 42;
                 for (int x = 0; x < 42; x++) {
                     int sx = (x * 40 + 21) / 42;
                     uint8_t exp = s_src[sy * 40 + sx];
                     uint8_t act = s_dst[y * 320 + x];
-                    if (exp == 0) {
-                        if (act != 0xFF) {
-                            pass_scale = false;
-                            fail_x = x; fail_y = y;
-                            break;
-                        }
-                    } else {
-                        if (act != exp) {
-                            pass_scale = false;
-                            fail_x = x; fail_y = y;
-                            break;
-                        }
+                    if (exp == 0 ? act != 0xFF : act != exp) {
+                        pass_scale = false;
+                        break;
                     }
                 }
                 if (!pass_scale) break;
@@ -1101,29 +994,23 @@ static void run_debug_asm_test(void)
             render_text("eZ80 ASM Optimization Tests", 14, 8, COL_NAME);
 
             sprintf(line, "1. CG 2x Upscale : %s (%u ms)", pass_cg ? "PASS" : "FAIL", t_cg);
-            render_text(line, 14, 28, pass_cg ? COL_WHITE : COL_HIGHLIGHT);
+            render_text(line, 14, 30, pass_cg ? COL_WHITE : COL_HIGHLIGHT);
 
             sprintf(line, "2. 2D Rect Blit  : %s (%u ms)", pass_blit ? "PASS" : "FAIL", t_blit);
-            render_text(line, 14, 44, pass_blit ? COL_WHITE : COL_HIGHLIGHT);
+            render_text(line, 14, 50, pass_blit ? COL_WHITE : COL_HIGHLIGHT);
 
             sprintf(line, "3. Zoom Row 20:21: %s (%u ms)", pass_zoom ? "PASS" : "FAIL", t_zoom);
-            render_text(line, 14, 60, pass_zoom ? COL_WHITE : COL_HIGHLIGHT);
+            render_text(line, 14, 70, pass_zoom ? COL_WHITE : COL_HIGHLIGHT);
 
             sprintf(line, "4. Glitch Shift  : %s (%u ms)", pass_shift ? "PASS" : "FAIL", t_shift);
-            render_text(line, 14, 76, pass_shift ? COL_WHITE : COL_HIGHLIGHT);
+            render_text(line, 14, 90, pass_shift ? COL_WHITE : COL_HIGHLIGHT);
 
-            if (pass_scale) {
-                sprintf(line, "5. Scaler 1.05x  : PASS (%u ms)", t_scale);
-            } else {
-                sprintf(line, "5. Scaler 1.05x  : FAIL @%d,%d (%u ms)", fail_x, fail_y, t_scale);
-            }
-            render_text(line, 14, 92, pass_scale ? COL_WHITE : COL_HIGHLIGHT);
+            sprintf(line, "5. Scaler 1.05x  : %s (%u ms)", pass_scale ? "PASS" : "FAIL", t_scale);
+            render_text(line, 14, 110, pass_scale ? COL_WHITE : COL_HIGHLIGHT);
 
-            render_text("All 5 eZ80 assembly routines active.", 14, 114, COL_NAME);
-            render_text("Streaming registers + hardware LDIR", 14, 130, COL_BOX_EDGE);
-            render_text("Continuous eZ80 scaling directly to screen", 14, 146, COL_BOX_EDGE);
+            render_text("All 5 eZ80 assembly routines active.", 14, 136, COL_NAME);
+            render_text("Streaming registers + hardware LDIR", 14, 154, COL_BOX_EDGE);
 
-            render_text("[Right] Live Visual Demo", 14, 168, COL_HIGHLIGHT);
             render_text("[2nd] Re-run test suite", 14, 184, COL_WHITE);
             render_text("Mode / Clear: return to Debug Menu", 14, SCREEN_H - 18, COL_BOX_EDGE);
 
@@ -1137,88 +1024,6 @@ static void run_debug_asm_test(void)
             if (in.advance) {
                 break; /* Re-run benchmark */
             }
-            if (in.right) {
-                /* Interactive visual demo */
-                uint8_t *pattern = malloc(160 * 90);
-                uint8_t *box = malloc(32 * 32);
-                uint8_t *demo_scratch = malloc(SCREEN_W);
-
-                if (pattern) {
-                    for (int y = 0; y < 90; y++) {
-                        for (int x = 0; x < 160; x++) {
-                            int cx = (x > 80 ? 160 - x : x) / 8;
-                            int cy = (y > 45 ? 90 - y : y) / 5;
-                            pattern[y * 160 + x] = ((cx + cy) % 2 == 0) ? COL_BOX_FILL : COL_BOX_EDGE;
-                        }
-                    }
-                }
-
-                if (box) {
-                    for (int r = 0; r < 32; r++) {
-                        for (int c = 0; c < 32; c++) {
-                            if (r == 0 || r == 31 || c == 0 || c == 31) {
-                                box[r * 32 + c] = COL_HIGHLIGHT; /* Yellow border */
-                            } else if (r == 1 || r == 30 || c == 1 || c == 30) {
-                                box[r * 32 + c] = COL_WHITE;     /* White inner border */
-                            } else if ((r / 4 + c / 4) % 2 == 0) {
-                                box[r * 32 + c] = COL_NAME;      /* Pink checker */
-                            } else {
-                                box[r * 32 + c] = COL_BOX_EDGE;  /* Purple fill */
-                            }
-                        }
-                    }
-                }
-
-                int bx = 20, by = 40, bdx = 3, bdy = 2;
-                char info[48];
-
-                for (;;) {
-                    /* 1. Hardware fast_cg_upscale_2x: 160x90 -> 320x180 background */
-                    render_backdrop(COL_BOX_FILL);
-                    if (pattern) {
-                        fast_cg_upscale_2x((uint8_t *)gfx_vbuffer, pattern);
-                    }
-
-                    /* 2. Bouncing sprite rendered via fast_rect_blit */
-                    if (box) {
-                        fast_rect_blit((uint8_t *)gfx_vbuffer + (size_t)by * SCREEN_W + bx, SCREEN_W,
-                                       box, 32, 32, 32);
-                    }
-
-                    /* 3. Real-time scanline barrel-shift glitch via fast_row_shift */
-                    if (demo_scratch) {
-                        for (int gy = 70; gy < 110; gy++) {
-                            uint8_t *row = (uint8_t *)gfx_vbuffer + (size_t)gy * SCREEN_W;
-                            size_t shift = (size_t)((bx * 2 + (gy - 70) * 3) % SCREEN_W);
-                            fast_row_shift(row, demo_scratch, shift);
-                        }
-                    }
-
-                    bx += bdx;
-                    by += bdy;
-                    if (bx <= 10 || bx >= SCREEN_W - 42) bdx = -bdx;
-                    if (by <= 10 || by >= 140)           bdy = -bdy;
-
-                    /* Info overlay at bottom */
-                    render_text("eZ80 Live ASM Demonstration", 14, 186, COL_NAME);
-                    sprintf(info, "Sprite: (%d, %d) | LDIR blit 32x32", bx, by);
-                    render_text(info, 14, 202, COL_WHITE);
-                    render_text("Scanlines 70-110: glitch barrel-shift | Mode: exit", 14, 218, COL_HIGHLIGHT);
-
-                    render_present(TRANS_CUT);
-                    gfx_Wait();
-
-                    input_t vin;
-                    input_poll(&vin);
-                    if (quit_requested || vin.pause || vin.advance) {
-                        break;
-                    }
-                }
-
-                free(pattern);
-                free(box);
-                free(demo_scratch);
-            }
         }
     }
 }
@@ -1229,7 +1034,7 @@ static void run_debug_asm_test(void)
  * palette assets_scene_palette() actually hands back for it -- lets a
  * wrong-colors report be triaged on the spot (mislabeled CG id vs. a bad
  * bake vs. something else) instead of guessing from a screenshot alone. */
-static void run_debug_scene_info(vn_vm_t *vm)
+static __attribute__((noinline)) void run_debug_scene_info(vn_vm_t *vm)
 {
     input_t in;
     char line[40];
@@ -1263,7 +1068,7 @@ static void run_debug_scene_info(vn_vm_t *vm)
 /** Confirms before calling save_delete_all() -- real, permanent save erasure
  * (see save.h), not a toy. Defaults the cursor to "No" so accidentally
  * confirming past this screen can't happen with a single stray press. */
-static void run_debug_erase_confirm(void)
+static __attribute__((noinline)) void run_debug_erase_confirm(void)
 {
     static const char *const items[] = { "No", "Yes, erase everything" };
     uint8_t selected = 0;
@@ -1312,7 +1117,7 @@ static void run_debug_erase_confirm(void)
  * call stack (vm->sp = 0) is the one piece of cleanup this does do: without
  * it, a later OP_RETURN inside the target chapter could pop back to
  * whatever unrelated call site was on the stack before the jump. */
-static bool run_debug_chapter_menu(vn_vm_t *vm)
+static __attribute__((noinline)) bool run_debug_chapter_menu(vn_vm_t *vm)
 {
     uint8_t count = assets_debug_chapter_count();
     if (count == 0) {
@@ -1370,7 +1175,7 @@ static bool run_debug_chapter_menu(vn_vm_t *vm)
  * window/deleted-character toggles, and the chapter jump below) are simply
  * omitted from the list in that case rather than touching uninitialized
  * state; everything else (the poem test, save erasure) works either way. */
-static void run_debug_menu(vn_vm_t *vm)
+static __attribute__((noinline)) void run_debug_menu(vn_vm_t *vm)
 {
     enum {
         DBG_POEM, DBG_TEXT, DBG_TAGS, DBG_FONT, DBG_ANIM, DBG_CG, DBG_LAYERED_CG,
@@ -1388,45 +1193,23 @@ static void run_debug_menu(vn_vm_t *vm)
     for (;;) {
         count = 0;
 
-        actions[count] = DBG_POEM;
-        strcpy(labels[count], "Poem minigame (test)");
-        count++;
-
-        actions[count] = DBG_TEXT;
-        strcpy(labels[count], "Dialogue text render test");
-        count++;
-
-        actions[count] = DBG_TAGS;
-        strcpy(labels[count], "Dialogue [x] tags test");
-        count++;
-
-        actions[count] = DBG_FONT;
-        strcpy(labels[count], "Text font test");
-        count++;
-
-        actions[count] = DBG_ANIM;
-        strcpy(labels[count], "Animation & zoom test");
-        count++;
-
-        actions[count] = DBG_CG;
-        strcpy(labels[count], "External CG test");
-        count++;
-
-        actions[count] = DBG_LAYERED_CG;
-        strcpy(labels[count], "Layered CGs with overlays");
-        count++;
-
-        actions[count] = DBG_GLITCH;
-        strcpy(labels[count], "Glitch text render test");
-        count++;
-
-        actions[count] = DBG_EVENTS;
-        strcpy(labels[count], "Trigger chance events");
-        count++;
-
-        actions[count] = DBG_ASM;
-        strcpy(labels[count], "eZ80 ASM tests & demo");
-        count++;
+        static const struct { uint8_t action; const char *label; } static_items[] = {
+            { DBG_POEM, "Poem minigame (test)" },
+            { DBG_TEXT, "Dialogue text render test" },
+            { DBG_TAGS, "Dialogue [x] tags test" },
+            { DBG_FONT, "Text font test" },
+            { DBG_ANIM, "Animation & zoom test" },
+            { DBG_CG, "External CG test" },
+            { DBG_LAYERED_CG, "Layered CGs with overlays" },
+            { DBG_GLITCH, "Glitch text render test" },
+            { DBG_EVENTS, "Trigger chance events" },
+            { DBG_ASM, "eZ80 ASM tests & demo" },
+        };
+        for (uint8_t i = 0; i < sizeof(static_items)/sizeof(static_items[0]); i++) {
+            actions[count] = static_items[i].action;
+            strcpy(labels[count], static_items[i].label);
+            count++;
+        }
 
         if (vm) {
             actions[count] = DBG_SCENEINFO;

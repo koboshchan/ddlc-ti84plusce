@@ -27,6 +27,7 @@
 #include "cgpack.h"
 #include "render.h"
 #include "fast_ops.h"
+#include "text.h"
 
 #include <compression.h>
 #include <fileioc.h>

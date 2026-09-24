@@ -47,4 +47,20 @@ void text_wrap(text_layout_t *out, const char *str, unsigned max_width,
 void text_clamp(text_layout_t *layout, const text_layout_t *full,
                 size_t visible);
 
+#include <stdarg.h>
+
+int mini_vsnprintf(char *out, size_t max, const char *fmt, va_list ap);
+int mini_snprintf(char *out, size_t max, const char *fmt, ...);
+int mini_sprintf(char *out, const char *fmt, ...);
+
+#ifdef sprintf
+#undef sprintf
+#endif
+#define sprintf mini_sprintf
+
+#ifdef snprintf
+#undef snprintf
+#endif
+#define snprintf mini_snprintf
+
 #endif /* TEXT_H */

@@ -5,6 +5,7 @@
 
 #include "save.h"
 #include "assets.h"
+#include "text.h"
 
 #include <fileioc.h>
 

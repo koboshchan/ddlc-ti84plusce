@@ -21,6 +21,7 @@
 
 #include "assets.h"
 #include "render.h"
+#include "text.h"
 
 #include <stdio.h>
 #include <string.h>

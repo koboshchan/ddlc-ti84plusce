@@ -574,6 +574,33 @@ def do_poem_words(raw_dir: Path) -> bytes | None:
     return bytes(out)
 
 
+def do_poem_texts(tools_dir: Path) -> bytes | None:
+    catalog_path = tools_dir / "poem_catalog.json"
+    if not catalog_path.is_file():
+        return None
+    with open(catalog_path, "r", encoding="utf-8") as f:
+        poems = json.load(f)
+    count = len(poems)
+    header_size = 2 + count * 2
+    offset_table = []
+    records = bytearray()
+    for entry in poems:
+        offset_table.append(header_size + len(records))
+        author_bytes = entry["author"].encode("utf-8")[:7] + b"\x00"
+        author_field = author_bytes.ljust(8, b"\x00")
+        title_bytes = entry["title"].encode("utf-8")[:31] + b"\x00"
+        title_field = title_bytes.ljust(32, b"\x00")
+        text_bytes = entry["text"].encode("utf-8") + b"\x00"
+        text_len = len(text_bytes) - 1
+        record = author_field + title_field + struct.pack("<H", text_len) + text_bytes
+        records.extend(record)
+    out = bytearray(struct.pack("<H", count))
+    for off in offset_table:
+        out.extend(struct.pack("<H", off))
+    out.extend(records)
+    return bytes(out)
+
+
 def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
                chunk_paths: list[Path], entry_chunk: int, entry_offset: int,
                compiler: Compiler, splash_pc: tuple[int, int] | None = None) -> list[Path]:
@@ -670,6 +697,10 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
     poem_words = do_poem_words(raw_dir)
     if poem_words is not None:
         appvars.append(write_appvar(poem_words, "DPOEM", appvar_dir))
+
+    poem_texts = do_poem_texts(Path(__file__).parent)
+    if poem_texts is not None:
+        appvars.append(write_appvar(poem_texts, "DPOEMT", appvar_dir))
 
     # Uncompressed, unlike DSCR chunks/DSCN scenes -- tried zx0 here once
     # (to help close an archive-budget overage that turned out to really be

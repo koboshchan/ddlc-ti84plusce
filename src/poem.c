@@ -7,6 +7,7 @@
 
 #include "assets.h"
 #include "render.h"
+#include "text.h"
 
 #include <fileioc.h>
 #include <graphx.h>
@@ -428,7 +429,6 @@ uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal, int16_
     return winner;
 }
 
-#include "poem_data.h"
 #include <fontlibc.h>
 
 #define POEM_VIEW_MAX_LINES 128
@@ -439,16 +439,31 @@ uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal, int16_
 #define POEM_LINE_H         13
 
 typedef struct {
+    char author[8];
+    char title[32];
+    uint16_t text_len;
+    char text[];
+} dpoem_entry_t;
+
+typedef struct {
     const char *start;
     uint16_t    len;
 } poem_line_slice_t;
 
 void poem_view(uint8_t poem_id)
 {
-    if (poem_id >= sizeof(g_poems) / sizeof(g_poems[0])) {
+    uint8_t handle = ti_Open("DPOEMT", "r");
+    if (!handle) {
         return;
     }
-    const poem_entry_t *poem = &g_poems[poem_id];
+    const uint8_t *data = ti_GetDataPtr(handle);
+    uint16_t count = *(const uint16_t *)data;
+    if (poem_id >= count) {
+        ti_Close(handle);
+        return;
+    }
+    const uint16_t *offsets = (const uint16_t *)(data + 2);
+    const dpoem_entry_t *poem = (const dpoem_entry_t *)(data + offsets[poem_id]);
 
     /* Split and word-wrap poem text into lines */
     poem_line_slice_t lines[POEM_VIEW_MAX_LINES];
@@ -513,7 +528,7 @@ void poem_view(uint8_t poem_id)
         draw_background(false);
 
         /* Draw Title */
-        if (poem->title && poem->title[0]) {
+        if (poem->title[0]) {
             render_text(poem->title, POEM_TEXT_X, 18, COL_NAME);
         }
 
@@ -572,4 +587,5 @@ void poem_view(uint8_t poem_id)
             }
         }
     }
+    ti_Close(handle);
 }

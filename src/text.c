@@ -94,3 +94,119 @@ void text_clamp(text_layout_t *layout, const text_layout_t *full,
         visible -= len;
     }
 }
+
+int mini_vsnprintf(char *out, size_t max, const char *fmt, va_list ap)
+{
+    if (!out || max == 0) return 0;
+    size_t written = 0;
+    const char *p = fmt;
+
+    while (*p && written + 1 < max) {
+        if (*p != '%') {
+            out[written++] = *p++;
+            continue;
+        }
+        p++; // skip '%'
+        if (*p == '%') {
+            out[written++] = *p++;
+            continue;
+        }
+
+        int width = 0;
+        char pad = ' ';
+        if (*p == '0') {
+            pad = '0';
+            p++;
+        }
+        while (*p >= '0' && *p <= '9') {
+            width = width * 10 + (*p - '0');
+            p++;
+        }
+
+        if (*p == 's') {
+            p++;
+            const char *s = va_arg(ap, const char *);
+            if (!s) s = "(null)";
+            while (*s && written + 1 < max) {
+                out[written++] = *s++;
+            }
+        } else if (*p == 'd') {
+            p++;
+            int val = va_arg(ap, int);
+            unsigned uval;
+            if (val < 0) {
+                if (written + 1 < max) out[written++] = '-';
+                uval = (unsigned)(-val);
+            } else {
+                uval = (unsigned)val;
+            }
+            char buf[12];
+            int bi = 0;
+            do {
+                buf[bi++] = (char)('0' + (uval % 10));
+                uval /= 10;
+            } while (uval > 0 && bi < 12);
+            while (bi < width && bi < 12 && pad == '0') {
+                buf[bi++] = '0';
+            }
+            while (bi > 0 && written + 1 < max) {
+                out[written++] = buf[--bi];
+            }
+        } else if (*p == 'u') {
+            p++;
+            unsigned uval = va_arg(ap, unsigned);
+            char buf[12];
+            int bi = 0;
+            do {
+                buf[bi++] = (char)('0' + (uval % 10));
+                uval /= 10;
+            } while (uval > 0 && bi < 12);
+            while (bi < width && bi < 12 && pad == '0') {
+                buf[bi++] = '0';
+            }
+            while (bi > 0 && written + 1 < max) {
+                out[written++] = buf[--bi];
+            }
+        } else if (*p == 'x' || *p == 'X') {
+            char base = (*p == 'X') ? 'A' : 'a';
+            p++;
+            unsigned uval = va_arg(ap, unsigned);
+            char buf[12];
+            int bi = 0;
+            do {
+                unsigned rem = uval & 0xF;
+                buf[bi++] = (rem < 10) ? (char)('0' + rem) : (char)(base + rem - 10);
+                uval >>= 4;
+            } while (uval > 0 && bi < 12);
+            while (bi < width && bi < 12 && pad == '0') {
+                buf[bi++] = '0';
+            }
+            while (bi > 0 && written + 1 < max) {
+                out[written++] = buf[--bi];
+            }
+        } else {
+            if (written + 1 < max) out[written++] = *p++;
+        }
+    }
+
+    out[written] = '\0';
+    return (int)written;
+}
+
+int mini_snprintf(char *out, size_t max, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    int ret = mini_vsnprintf(out, max, fmt, ap);
+    va_end(ap);
+    return ret;
+}
+
+int mini_sprintf(char *out, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    int ret = mini_vsnprintf(out, 65535, fmt, ap);
+    va_end(ap);
+    return ret;
+}

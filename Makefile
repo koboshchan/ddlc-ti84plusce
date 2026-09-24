@@ -5,11 +5,14 @@
 NAME = DDLC
 ICON = icon.png
 DESCRIPTION = "Doki Doki Literature Club (fan port)"
-COMPRESSED = YES
+COMPRESSED = NO
 ARCHIVED = YES
 
 CFLAGS = -Wall -Wextra -Oz
 CXXFLAGS = -Wall -Wextra -Oz
+
+HAS_PRINTF = NO
+HAS_LIBCXX = NO
 
 .PHONY: build
 
