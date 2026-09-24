@@ -88,11 +88,14 @@ void render_end(void)
 #define FONT_DEFAULT 0
 #define FONT_NAME    1
 
+static fontlib_font_t *active_font = NULL;
+
 static void set_font(uint8_t index)
 {
     fontlib_font_t *f = fontlib_GetFontByIndex("DFONTS", index);
     if (f) {
         fontlib_SetFont(f, 0);
+        active_font = f;
     }
 }
 
@@ -104,6 +107,9 @@ static void set_font(uint8_t index)
 static unsigned measure(void *ctx, const char *str, size_t len)
 {
     (void)ctx;
+    if (!active_font) {
+        return (unsigned)len * 8;
+    }
 
     unsigned w = 0;
     for (size_t i = 0; i < len; i++) {
@@ -117,6 +123,10 @@ static unsigned measure(void *ctx, const char *str, size_t len)
 
 static unsigned string_width(const char *s)
 {
+    if (!active_font || !s) {
+        return s ? (unsigned)strlen(s) * 8 : 0;
+    }
+
     unsigned w = 0;
     for (const char *p = s; *p; p++) {
         uint8_t c = (uint8_t)*p;
@@ -132,7 +142,7 @@ static unsigned string_width(const char *s)
  * guards prevent unsigned 24-bit integer wrap into arbitrary memory in fontlib. */
 static void print_slice(const char *str, size_t len, int x, int y)
 {
-    if (x < 0 || x >= SCREEN_W || y < 0 || y >= SCREEN_H) {
+    if (!active_font || x < 0 || x >= SCREEN_W || y < 0 || y >= SCREEN_H) {
         return;
     }
     char buf[256];
@@ -1247,7 +1257,7 @@ void render_backdrop(uint8_t color)
 
 void render_text(const char *s, int x, int y, uint8_t color)
 {
-    if (!s || x < 0 || x >= SCREEN_W || y < 0 || y >= SCREEN_H) {
+    if (!active_font || !s || x < 0 || x >= SCREEN_W || y < 0 || y >= SCREEN_H) {
         return;
     }
     fontlib_SetForegroundColor(color);
@@ -1268,6 +1278,9 @@ void render_text_centered(const char *s, int y, uint8_t color)
 void render_list_menu(const char *const *items, uint8_t count, uint8_t selected,
                       int x, int y, uint8_t normal_color, uint8_t selected_color)
 {
+    if (!active_font) {
+        return;
+    }
     const int line_h = 16;
 
     for (uint8_t i = 0; i < count; i++) {

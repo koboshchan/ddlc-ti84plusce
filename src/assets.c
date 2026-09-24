@@ -367,6 +367,12 @@ assets_status_t assets_init(void)
     }
     free(ver);
 
+    uint8_t font_h = ti_Open("DFONTS", "r");
+    if (!font_h) {
+        return ASSETS_ERR_FONTS;
+    }
+    ti_Close(font_h);
+
     return ASSETS_OK;
 }
 
@@ -396,6 +402,7 @@ const char *assets_status_str(assets_status_t status)
         case ASSETS_ERR_SPRITE_LUT:        return "DSPRLUT missing/unreadable";
         case ASSETS_ERR_SCENE_LUT:         return "DSCNLUT missing/unreadable";
         case ASSETS_ERR_PALETTE:           return "DPALGAME missing/unreadable";
+        case ASSETS_ERR_FONTS:             return "DFONTS missing/unreadable";
         default:                           return "unknown";
     }
 }

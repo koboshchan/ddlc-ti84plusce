@@ -40,6 +40,7 @@ typedef enum {
     ASSETS_ERR_SPRITE_LUT,      /* DSPRLUT missing/unreadable */
     ASSETS_ERR_SCENE_LUT,       /* DSCNLUT missing/unreadable */
     ASSETS_ERR_PALETTE,         /* DPALGAME missing/unreadable */
+    ASSETS_ERR_FONTS,           /* DFONTS missing/unreadable */
 } assets_status_t;
 
 /**
