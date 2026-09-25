@@ -1459,6 +1459,7 @@ void render_title_screen(uint8_t selected, unsigned t)
 #define FADE_STEPS   16
 #define FADE_HOLD_MS 250  /* DDLC's Pause() between the two dissolves */
 
+static uint16_t current_palette[256];
 static uint16_t fade_saved[256];
 
 static void fade_apply(uint8_t amount)
@@ -1476,7 +1477,7 @@ static void fade_apply(uint8_t amount)
  * a handful of back-to-back palette writes with no visible time passing. */
 void render_fade_out(void)
 {
-    memcpy(fade_saved, gfx_palette, sizeof(fade_saved));
+    memcpy(fade_saved, current_palette, sizeof(fade_saved));
 
     for (unsigned s = 1; s <= FADE_STEPS; s++) {
         fade_apply((uint8_t)(255 - s * 255 / FADE_STEPS));
@@ -1493,15 +1494,19 @@ void render_fade_in(void)
     }
     /* Restore exactly rather than trusting gfx_Darken(c, 255) to round-trip. */
     memcpy(gfx_palette, fade_saved, sizeof(fade_saved));
+    memcpy(current_palette, fade_saved, sizeof(current_palette));
 }
 
 void render_apply_palette(const uint16_t *palette)
 {
-    memcpy(gfx_palette, palette, 256 * sizeof(uint16_t));
+    memcpy(current_palette, palette, sizeof(current_palette));
+    memcpy(fade_saved, palette, sizeof(fade_saved));
+    memcpy(gfx_palette, palette, sizeof(current_palette));
 }
 
 void render_fade_retarget(const uint16_t *palette)
 {
+    memcpy(current_palette, palette, sizeof(current_palette));
     memcpy(fade_saved, palette, sizeof(fade_saved));
     fade_apply(0); /* re-hold at full black under the new palette's values */
 }

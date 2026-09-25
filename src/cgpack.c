@@ -108,6 +108,8 @@ static void try_mount(void)
 }
 
 static usb_error_t cgpack_usb_event(usb_event_t event, void *event_data,
+                                    usb_callback_data_t *data) __attribute__((unused));
+static usb_error_t cgpack_usb_event(usb_event_t event, void *event_data,
                                     usb_callback_data_t *data)
 {
     (void)data;
@@ -144,7 +146,11 @@ static usb_error_t cgpack_usb_event(usb_event_t event, void *event_data,
 
 void cgpack_init(void)
 {
-    usb_ready = usb_Init(cgpack_usb_event, NULL, NULL, USB_DEFAULT_INIT_FLAGS) == USB_SUCCESS;
+    /* Disabled: BSSHEAP_HIGH (0xD1987E) extends into the OS heap area (0xD13FD8..),
+     * which conflicts with usbdrvce's USB_USE_OS_HEAP buffer requirements and
+     * corrupts C heap memory. Full-res USB CG pack is optional; built-in
+     * half-res CGs in DSCN* are always used safely instead. */
+    usb_ready = false;
 }
 
 void cgpack_end(void)

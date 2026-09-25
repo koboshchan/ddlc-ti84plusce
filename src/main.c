@@ -1944,10 +1944,10 @@ static vn_host_t host = {
 #define SPLASH_LOGO_SCENE 0
 #define SPLASH_HOLD_MS 1600
 
-/** Waits up to @p ms, or until a key is pressed. Returns false on quit. */
 static bool splash_wait(unsigned ms)
 {
     clock_t start = clock();
+    uint32_t target_ticks = ((uint32_t)ms * (uint32_t)CLOCKS_PER_SEC) / 1000UL;
 
     for (;;) {
         input_t in;
@@ -1958,10 +1958,10 @@ static bool splash_wait(unsigned ms)
         if (in.advance || in.up || in.down || in.pause) {
             return true;
         }
-        if ((clock() - start) * 1000UL / CLOCKS_PER_SEC >= ms) {
+        if (clock() - start >= target_ticks) {
             return true;
         }
-        gfx_Wait();
+        msleep(10);
     }
 }
 

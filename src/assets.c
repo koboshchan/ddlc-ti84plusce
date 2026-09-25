@@ -331,7 +331,7 @@ assets_status_t assets_init(void)
     if (!pal) {
         return ASSETS_ERR_PALETTE;
     }
-    memcpy(gfx_palette, pal, sizeof(game_palette));
+    render_apply_palette((const uint16_t *)pal);
     memcpy(game_palette, pal, sizeof(game_palette));
     free(pal);
 
@@ -391,7 +391,7 @@ void assets_use_title_palette(bool on)
     if (on && !title_palette_ok) {
         return; /* no title palette shipped -- leave the game one in place */
     }
-    memcpy(gfx_palette, on ? title_palette : game_palette, sizeof(game_palette));
+    render_apply_palette(on ? title_palette : game_palette);
 }
 
 const char *assets_status_str(assets_status_t status)
