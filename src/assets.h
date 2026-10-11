@@ -210,7 +210,8 @@ void assets_zoom_cache_clear(void);
 
 /**
  * Copies background/CG @p id's raw 320x180 palette-index pixels directly
- * into @p dest (typically the graphx draw buffer). Returns false
+ * into @p dest, which must hold the whole 320x240 framebuffer: the unused
+ * bottom 60 rows temporarily hold non-overlapping CG decode scratch. Returns false
  * if @p id is out of range or its AppVar is missing.
  */
 bool assets_scene(uint8_t id, uint8_t *dest);

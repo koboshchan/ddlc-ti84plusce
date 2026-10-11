@@ -531,36 +531,36 @@ void poem_view(uint8_t poem_id)
     while (!quit_requested) {
         bool has_more = (scroll + POEM_PAGE_LINES < total_lines);
         if (dirty) {
-        draw_background(false);
+            draw_background(false);
 
-        /* Draw Title */
-        if (poem->title[0]) {
-            render_text(poem->title, POEM_TEXT_X, 18, COL_NAME);
-        }
-
-        /* Draw visible lines */
-        for (uint8_t i = 0; i < POEM_PAGE_LINES; i++) {
-            uint16_t l_idx = scroll + i;
-            if (l_idx >= total_lines) break;
-            if (lines[l_idx].len > 0) {
-                char buf[96];
-                size_t l = lines[l_idx].len < sizeof(buf) - 1 ? lines[l_idx].len : sizeof(buf) - 1;
-                memcpy(buf, lines[l_idx].start, l);
-                buf[l] = '\0';
-                render_text(buf, POEM_TEXT_X, POEM_TEXT_Y0 + i * POEM_LINE_H, COL_BLACK);
+            /* Draw Title */
+            if (poem->title[0]) {
+                render_text(poem->title, POEM_TEXT_X, 18, COL_NAME);
             }
-        }
 
-        /* Draw bottom prompt */
-        if (has_more) {
-            render_text("v 2nd / Down for more", SCREEN_W - 145, SCREEN_H - 18, COL_NAME);
-        } else {
-            render_text("2nd / Enter to dismiss", SCREEN_W - 145, SCREEN_H - 18, COL_NAME);
-        }
+            /* Draw visible lines */
+            for (uint8_t i = 0; i < POEM_PAGE_LINES; i++) {
+                uint16_t l_idx = scroll + i;
+                if (l_idx >= total_lines) break;
+                if (lines[l_idx].len > 0) {
+                    char buf[96];
+                    size_t l = lines[l_idx].len < sizeof(buf) - 1 ? lines[l_idx].len : sizeof(buf) - 1;
+                    memcpy(buf, lines[l_idx].start, l);
+                    buf[l] = '\0';
+                    render_text(buf, POEM_TEXT_X, POEM_TEXT_Y0 + i * POEM_LINE_H, COL_BLACK);
+                }
+            }
 
-        render_present(TRANS_CUT);
-        gfx_Wait();
-        dirty = false;
+            /* Draw bottom prompt */
+            if (has_more) {
+                render_text("v 2nd / Down for more", SCREEN_W - 145, SCREEN_H - 18, COL_NAME);
+            } else {
+                render_text("2nd / Enter to dismiss", SCREEN_W - 145, SCREEN_H - 18, COL_NAME);
+            }
+
+            render_present(TRANS_CUT);
+            gfx_Wait();
+            dirty = false;
         }
 
         poem_input_t in;
