@@ -954,14 +954,9 @@ bool assets_title_bg(uint8_t px, uint8_t py, uint8_t *dest)
     return true;
 }
 
-/* The poem minigame's notebook background: full-screen (320x240 = 76800
- * bytes) raw indices, unlike an ordinary scene (see image_resolve.py's
- * poem_background() for why it isn't one). 76800 bytes is over the
- * 65535-byte single-AppVar ceiling, so tools/import_game.py splits it in
- * two at a fixed MAXVARSIZE (65000) boundary rather than through a LUT --
- * there's only ever this one resource, a LUT would be pure overhead.
- * Optional, same as the title assets, so a bundle built before the poem
- * minigame existed still boots. */
+/* The notebook is a single ZX0-compressed full-frame stream in DPOEMBG.
+ * Decode into the caller's graphics buffer; keep no permanent 77KB mirror.
+ * The split raw format remains readable for older bundles. */
 #define POEM_BG_BYTES  (320u * 240u)
 #define POEM_BG_SPLIT  65000u
 
@@ -999,17 +994,8 @@ bool assets_poem_bg(uint8_t *dest)
     return true;
 }
 
-/* The real dialogue box/namebox art (tools/image_resolve.py's
- * ui_box_art()): raw, uncompressed palette indices, same reasoning
- * assets_draw_sprite()'s own comment gives for shipping sprites
- * uncompressed -- render_box() (src/render.c) draws these every typewriter
- * tick, so paying a decompression cost on every single one of those calls
- * would be real, avoidable per-frame work. Both are small enough (19200 and
- * 1224 bytes) that copying them out to a caller buffer once at first use
- * and caching there (render_box()'s own job) is cheap regardless -- see
- * SCENE_BYTES's neighboring comment for why a same-sized copy every
- * render_scene() call already isn't a real cost on this hardware. */
-/* Open/copy/close together: never keep an AppVar pointer across another
+/* The dialogue/name boxes are immutable archived palette indices.
+ * Open/copy/close together: never keep an AppVar pointer across another
  * fileioc call. No 20KB permanent RAM mirror of immutable flash pixels. */
 bool assets_draw_box(bool namebox, uint8_t *dest)
 {
