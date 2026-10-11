@@ -755,14 +755,11 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
             bin_for(manifest["title_bg"]["file"]).read_bytes(), "DTILBG", appvar_dir))
 
     if manifest.get("poem_bg"):
-        # 320x240 raw (76800 bytes) is over the 65535-byte single-AppVar
-        # ceiling -- split at a fixed, MAXVARSIZE-safe boundary rather than
-        # through pack_group()/a LUT (there's only ever this one resource,
-        # a LUT would be pure overhead), matching the split src/assets.c's
-        # assets_poem_bg() expects.
         poem_bg_bytes = bin_for(manifest["poem_bg"]["file"]).read_bytes()
-        appvars.append(write_appvar(poem_bg_bytes[:MAXVARSIZE], "DPOEMBG0", appvar_dir))
-        appvars.append(write_appvar(poem_bg_bytes[MAXVARSIZE:], "DPOEMBG1", appvar_dir))
+        if len(poem_bg_bytes) > MAXVARSIZE:
+            raise ValueError("compressed poem background exceeds one AppVar")
+        appvars.append(write_appvar(poem_bg_bytes, "DPOEMBG", appvar_dir))
+
 
     # The real dialogue box/namebox art (see ImageResolver.ui_box_art()).
     # Both fit comfortably in one AppVar each (320x60 = 19200 bytes,

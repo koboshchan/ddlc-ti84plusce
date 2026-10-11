@@ -967,8 +967,19 @@ bool assets_title_bg(uint8_t px, uint8_t py, uint8_t *dest)
 
 bool assets_poem_bg(uint8_t *dest)
 {
+    uint8_t compressed = ti_Open("DPOEMBG", "r");
+    if (compressed) {
+        zx0_Decompress(dest, ti_GetDataPtr(compressed));
+        ti_Close(compressed);
+        return true;
+    }
+    /* Compatibility with old uncompressed bundles. */
     uint8_t handle0 = ti_Open("DPOEMBG0", "r");
     if (!handle0) {
+        return false;
+    }
+    if (ti_GetSize(handle0) != POEM_BG_SPLIT) {
+        ti_Close(handle0);
         return false;
     }
     memcpy(dest, ti_GetDataPtr(handle0), POEM_BG_SPLIT);
@@ -976,6 +987,10 @@ bool assets_poem_bg(uint8_t *dest)
 
     uint8_t handle1 = ti_Open("DPOEMBG1", "r");
     if (!handle1) {
+        return false;
+    }
+    if (ti_GetSize(handle1) != POEM_BG_BYTES - POEM_BG_SPLIT) {
+        ti_Close(handle1);
         return false;
     }
     memcpy(dest + POEM_BG_SPLIT, ti_GetDataPtr(handle1), POEM_BG_BYTES - POEM_BG_SPLIT);

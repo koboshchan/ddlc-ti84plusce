@@ -368,7 +368,7 @@ matched by `src/assets.c`:
 | `DTILPOS` | Title art layout: `i16 x, y, dx, dy` per id — see "Title screen" |
 | `DTILBG` | The title's 370x50 scrolling background strip — see "Title screen" |
 | `DPALTTL` | The title screen's own 256-entry palette |
-| `DPOEMBG0`, `DPOEMBG1` | The poem minigame's notebook background, full-screen (320x240 = 76800 bytes) raw indices under the shared game palette, split in two at a fixed 65000-byte boundary (over the single-AppVar ceiling; no LUT, just the one resource) — see "Poem minigame" |
+| `DPOEMBG` | ZX0 notebook pixels, decoded to the existing 320x240 graphics buffer on entry and input/state changes. No second full-screen allocation. Old split raw resources remain readable. |
 | `DCGPAL0`, `DCGPAL1`, … + `DCGPLUT` | One 256-entry palette per CG, packed like sprites -- see "Image assets" |
 | `DCGIDX` | Scene id -> `DCGPLUT` index (`0xFF` for a scene with no own palette), one byte per scene in `DSCNLUT` order |
 | `DCGVER` | 4-byte build fingerprint, matched against an external full-res CG pack's `/DDLC/BUILD.ID` -- see "External full-res CG pack" |
