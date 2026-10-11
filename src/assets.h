@@ -316,8 +316,7 @@ bool assets_poem_bg(uint8_t *dest);
  * build without this art, or one where tools/import_game.py's raw DDLC
  * copy didn't have it.
  */
-bool assets_textbox(uint8_t *dest);
-bool assets_namebox(uint8_t *dest);
+bool assets_draw_box(bool namebox, uint8_t *dest);
 
 /**
  * Draws the poem minigame chibi sticker @p id centered at (@p center_x, @p bottom_y)
