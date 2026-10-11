@@ -39,3 +39,5 @@ Build with the CEdev toolchain and the owner's extracted DDLC assets using make 
 ## Story input audit
 
 The actual story run starts from reset RAM and a fresh ROM process, loads the optimized full bundle, launches DDLC, and chooses New Game as kobosh. It does not use the debug-menu QA states. Automation advances with discrete Enter presses only; the emulator key command holds for 80ms then releases, and game input is edge-triggered. No skip feature, hold-to-skip, debug jump, or script/game-state edit is used. Resuming emulator checkpoints resumes this same clean run, not a preexisting progressed save. The separate debug test states above are never loaded into the story run. No skip-triggered restart was necessary.
+
+Headless speed was checked against both --help and headless_cli.cpp. The playthrough uses run, which calls emu_run directly without wall-clock sleeping. It does not use run-realtime, which explicitly sleeps each millisecond. This is the maximum unthrottled equivalent, not a guessed GUI percentage. --run-rate changes the scheduler tick unit, not a wall-clock speed cap, and remains at its millisecond default.
