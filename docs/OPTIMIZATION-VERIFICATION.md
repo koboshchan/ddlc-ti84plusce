@@ -35,3 +35,7 @@ The existing emulator assembly suite passes all five displayed tests. The additi
 Run Python tests with python -m unittest discover -s tests -v. They verify all 95 cardinal masks/advances, the notebook compression directive and converter cache invalidation. Changing converter configuration now invalidates image-cache output, avoiding reuse of a stale uncompressed notebook.
 
 Build with the CEdev toolchain and the owner's extracted DDLC assets using make bundle GAME_DIR=/path/to/game IMPORT_FLAGS=--files=all. The emulator procedure resets RAM, starts from the ROM in a fresh process, sends the bundle, sends clibs.8xg, sends arTIfiCE, runs program A and selects DDLC.
+
+## Story input audit
+
+The actual story run starts from reset RAM and a fresh ROM process, loads the optimized full bundle, launches DDLC, and chooses New Game as kobosh. It does not use the debug-menu QA states. Automation advances with discrete Enter presses only; the emulator key command holds for 80ms then releases, and game input is edge-triggered. No skip feature, hold-to-skip, debug jump, or script/game-state edit is used. Resuming emulator checkpoints resumes this same clean run, not a preexisting progressed save. The separate debug test states above are never loaded into the story run. No skip-triggered restart was necessary.
