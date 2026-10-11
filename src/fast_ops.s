@@ -106,12 +106,21 @@ _fast_rect_blit:
 
 	; Check if h == 0 or w == 0
 	ld	bc, (iy + 21)		; BC = w
-	ld	a, b
-	or	a, c
+	push	hl
+	ld	hl, 0
+	or	a, a
+	sbc	hl, bc
+	pop	hl
 	jr	z, .rect_done
 
-	ld	a, (iy + 24)		; A = h (low byte)
+	ld	ix, (iy + 24)		; full 24-bit height
+	push	hl
+	ld	hl, 0
+	push	ix
+	pop	bc
 	or	a, a
+	sbc	hl, bc
+	pop	hl
 	jr	z, .rect_done
 
 .rect_loop:
@@ -132,7 +141,14 @@ _fast_rect_blit:
 	ld	bc, (iy + 18)		; src_pitch
 	add	hl, bc
 
-	dec	a
+	dec	ix
+	push	hl
+	ld	hl, 0
+	push	ix
+	pop	bc
+	or	a, a
+	sbc	hl, bc
+	pop	hl
 	jr	nz, .rect_loop
 
 .rect_done:
@@ -159,8 +175,11 @@ _fast_zoom_row:
 	ld	hl, (iy + 12)		; HL = src
 	ld	bc, (iy + 15)		; BC = zw
 
-	ld	a, b
-	or	a, c
+	push	hl
+	ld	hl, 0
+	or	a, a
+	sbc	hl, bc
+	pop	hl
 	jr	z, .zoom_done
 
 	xor	a, a
@@ -181,8 +200,11 @@ _fast_zoom_row:
 .zoom_no_adv:
 	ld	ixh, a			; Save ax
 	dec	bc
-	ld	a, b
-	or	a, c
+	push	hl
+	ld	hl, 0
+	or	a, a
+	sbc	hl, bc
+	pop	hl
 	jr	nz, .zoom_loop
 
 .zoom_done:
@@ -206,8 +228,11 @@ _fast_row_shift:
 	add	iy, sp
 
 	ld	bc, (iy + 15)		; BC = off_wrapped
-	ld	a, b
-	or	a, c
+	push	hl
+	ld	hl, 0
+	or	a, a
+	sbc	hl, bc
+	pop	hl
 	jr	z, .shift_done		; If off_wrapped == 0, nothing to do
 
 	; Step 1: Copy 320 bytes from row to scratch
@@ -277,8 +302,11 @@ _fast_scale_row_trans:
 	add	iy, sp
 
 	ld	bc, (iy + 15)		; BC = count
-	ld	a, b
-	or	a, c
+	push	hl
+	ld	hl, 0
+	or	a, a
+	sbc	hl, bc
+	pop	hl
 	jr	z, .row_done
 
 	ld	de, (iy + 9)		; DE = dest
@@ -323,14 +351,17 @@ _fast_scale_row_trans:
 	add	hl, bc
 	or	a, a
 	sbc	hl, de
-	jr	nc, .step256
-	add	hl, de
-	exx
-	djnz	.loop256
-	jr	.after256
+	jr	c, .restore256
 .step256:
 	exx
 	inc	hl
+	exx
+	or	a, a
+	sbc	hl, de
+	jr	nc, .step256
+.restore256:
+	add	hl, de
+	exx
 	djnz	.loop256
 
 .after256:
@@ -357,15 +388,17 @@ _fast_scale_row_trans:
 	add	hl, bc
 	or	a, a
 	sbc	hl, de
-	jr	nc, .step_rem
-	add	hl, de
-	exx
-	djnz	.loop_rem
-	ret
-
+	jr	c, .restore_rem
 .step_rem:
 	exx
 	inc	hl
+	exx
+	or	a, a
+	sbc	hl, de
+	jr	nc, .step_rem
+.restore_rem:
+	add	hl, de
+	exx
 	djnz	.loop_rem
 	ret
 
@@ -392,23 +425,35 @@ _fast_scale_sprite_trans:
 
 	; Check if dst_w == 0 or dst_h == 0 or src_w == 0 or src_h == 0
 	ld	bc, (iy + 18)		; src_w
-	ld	a, b
-	or	a, c
+	push	hl
+	ld	hl, 0
+	or	a, a
+	sbc	hl, bc
+	pop	hl
 	jp	z, .sprite_done
 
 	ld	bc, (iy + 21)		; src_h
-	ld	a, b
-	or	a, c
+	push	hl
+	ld	hl, 0
+	or	a, a
+	sbc	hl, bc
+	pop	hl
 	jp	z, .sprite_done
 
 	ld	bc, (iy + 24)		; dst_w
-	ld	a, b
-	or	a, c
+	push	hl
+	ld	hl, 0
+	or	a, a
+	sbc	hl, bc
+	pop	hl
 	jp	z, .sprite_done
 
 	ld	bc, (iy + 27)		; dst_h
-	ld	a, b
-	or	a, c
+	push	hl
+	ld	hl, 0
+	or	a, a
+	sbc	hl, bc
+	pop	hl
 	jp	z, .sprite_done
 
 	; Allocate local variables on stack:

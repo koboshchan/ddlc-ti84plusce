@@ -170,9 +170,11 @@ static void print_slice_outlined(const char *str, size_t len, int x, int y,
         y + fontlib_GetCurrentFontHeight() + 1 < SCREEN_H) {
         fontlib_font_t *fill_font = active_font;
         fontlib_SetFont(expanded, 0);
+        fontlib_SetItalicSpacingAdjustment(2);
         fontlib_SetForegroundColor(outline);
         print_slice(str, len, x - 1, y - 1);
         fontlib_SetFont(fill_font, 0);
+        fontlib_SetItalicSpacingAdjustment(0);
         fontlib_SetForegroundColor(fill);
         print_slice(str, len, x, y);
         return;
