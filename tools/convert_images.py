@@ -244,14 +244,9 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
 
     if poem_bg_file:
         converts.append({
-            # Full-screen (POEM_BG_SIZE, 320x240), not the scene area's
-            # BG_SIZE -- see image_resolve.py's poem_background(). Flat raw
-            # indices like title_bg below: src/poem.c redraws this every
-            # frame the minigame loop runs (once per input poll, not just on
-            # a state change), so it can't afford a decode step any more
-            # than title/splash's per-frame art can.
+            # Decode directly into the graphics buffer on dirty redraws.
             "name": "poem_bg", "palette": "pal_game", "style": "palette",
-            "dither": 0.4, "width-and-height": False,
+            "dither": 0.4, "width-and-height": False, "compress": "zx0",
             "images": [poem_bg_file],
         })
         outputs_converts.append("poem_bg")

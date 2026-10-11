@@ -331,17 +331,20 @@ uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal, int16_
         }
 
         uint8_t sel_col = 0, sel_row = 0;
+        bool dirty = true;
         for (;;) {
-            draw_round(shown, round, sel_col, sel_row,
+            if (dirty) draw_round(shown, round, sel_col, sel_row,
                        playthrough, chapter,
                        false, false, false, false, false, false,
                        poemgame_glitched);
+            dirty = false;
 
             poem_input_t in;
             poem_poll(&in);
             if (in.quit) {
                 return 0;
             }
+            dirty = in.up || in.down || in.left || in.right;
             if (in.up) {
                 sel_row = sel_row == 0 ? POEM_ROWS - 1 : (uint8_t)(sel_row - 1);
             }
@@ -523,8 +526,11 @@ void poem_view(uint8_t poem_id)
     }
 
     uint16_t scroll = 0;
+    bool dirty = true;
 
     while (!quit_requested) {
+        bool has_more = (scroll + POEM_PAGE_LINES < total_lines);
+        if (dirty) {
         draw_background(false);
 
         /* Draw Title */
@@ -546,7 +552,6 @@ void poem_view(uint8_t poem_id)
         }
 
         /* Draw bottom prompt */
-        bool has_more = (scroll + POEM_PAGE_LINES < total_lines);
         if (has_more) {
             render_text("v 2nd / Down for more", SCREEN_W - 145, SCREEN_H - 18, COL_NAME);
         } else {
@@ -555,12 +560,15 @@ void poem_view(uint8_t poem_id)
 
         render_present(TRANS_CUT);
         gfx_Wait();
+        dirty = false;
+        }
 
         poem_input_t in;
         poem_poll(&in);
         if (in.quit) {
             break;
         }
+        dirty = in.up || in.down || in.advance;
         if (in.down) {
             if (has_more) {
                 scroll += POEM_PAGE_LINES - 2;
