@@ -11,6 +11,9 @@ out by that same fixed index via fontlibc's fontlib_GetFontByIndex() -- the
 pack's own internal names aren't used as a lookup key on-calc, so nothing
 here needs to match render.c symbol-for-symbol, just index-for-index.
 
+Indexes 2 and 3 contain cardinal-dilated outline masks for fonts 0 and 1.
+Their +2 glyph width is canceled by an explicit fontlib italic adjustment.
+
 Output is a single packed binary (fontlib_font_pack_t) -- packaging that
 into a TI AppVar is import_game.py's job, same split of responsibility as
 convert_images.py/convimg's `type: bin` output.

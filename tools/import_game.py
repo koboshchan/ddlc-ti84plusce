@@ -325,7 +325,7 @@ def write_chunks(assemblers: list[vnasm.Assembler], build_dir: Path) -> list[Pat
 
 def _convimg_cache_key(build_dir: Path, manifest_bytes: bytes, quality: int) -> str:
     """A content hash covering everything that actually affects convimg's
-    output: manifest.json (which images go in which palette group) plus
+    output: converter configuration source, manifest.json (palette groups) plus
     every resolved PNG's own bytes under build/img/, plus quality (a
     quantization knob, not reflected in either of those). Deliberately not
     a mtime/exists check -- image_resolve.py regenerates build/img/ fresh

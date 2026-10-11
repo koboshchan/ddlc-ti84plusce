@@ -1,0 +1,5 @@
+
+bin/
+obj/
+src/fast_ops.s
+src/fast_ops.h
