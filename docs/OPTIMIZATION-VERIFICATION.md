@@ -4,6 +4,8 @@ Built and tested on the TI-84 Plus CE Python ROM supplied locally by the owner. 
 
 ## Notebook storage and redraw
 
+Final full-bundle on-calc usage is 2,800,754 bytes versus baseline 2,862,538, saving 61,784 bytes (2.16%). ZIP-compressed transfer size is 1,976,761 bytes and is not the archive usage.
+
 The notebook stream is 7,164 bytes rather than 76,800 raw bytes, a 69,636-byte reduction before variable overhead. DPOEMBG decodes into the existing graphics framebuffer. Old split DPOEMBG0/1 bundles remain readable and their sizes are checked. Neither minigame nor poem viewer redraws while waiting for unchanged input. The original final-page prompt, scrolling, page overlap, and dismissal behavior are retained.
 
 Emulator checks cover minigame entry, selection movement, and unchanged output after five idle seconds. Notebook pixels outside the randomized word area match baseline. Dear Sunshine viewer entry, final-page scrolling, backwards scrolling, Enter paging, and dismissal passed. Backward scrolling restores the exact first-page screen hash, and five idle seconds leave it unchanged.
@@ -22,7 +24,7 @@ The final linker map places the heap at D0A924..D13FD8. The old layout was D1282
 
 ## Assembly audit
 
-All six routines run in ADL=1 with 3-byte arguments/return addresses. IX and IY saves match stack offsets, local allocations are balanced, and EXX returns to the main register bank on every exit. General registers and flags are caller-clobbered. Source/destination memory must be valid and non-overlapping; pitches and frame clipping remain caller responsibilities.
+All six routines run in ADL=1 with 3-byte arguments/return addresses. IX and IY saves match stack offsets, local allocations are balanced, and EXX returns to the main register bank on every exit. General registers and flags are caller-clobbered. None changes interrupt enable state, uses self-modifying code, or depends on ambient carry. EXX temporarily uses alternate BC/DE/HL, as CEdev library routines do; interrupts must preserve both banks. No exhaustive asynchronous interrupt injection or every 64KB boundary is claimed. ADL LDIR and INC use 24-bit addresses, and accesses are byte-oriented with no alignment requirement. Source/destination memory must be valid and non-overlapping; pitches and frame clipping remain caller responsibilities.
 
 Fixed 24-bit zero-counter tests, the rectangle's truncated 8-bit height, and the horizontal resampler's inability to advance multiple source pixels during downscaling. Sprite halving is intentionally 16-bit because the documented dimensions fit 16 bits. Row scaler output counts are limited to 320 pixels, denominators must be nonzero and the initial accumulator smaller than the denominator.
 
