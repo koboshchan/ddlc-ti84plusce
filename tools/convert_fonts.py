@@ -54,13 +54,15 @@ def build_fontpack(raw_dir: Path, build_dir: Path) -> Path:
                       "-D", "Aller_Rg (index 0) + RifficFree-Bold (index 1)",
                       "-V", "1", "-P", "ASCII"]
 
-    for rel_path, height, name in FONTS:
+    for index, (rel_path, height, base_name) in enumerate(FONTS + FONTS):
+        outline = index >= len(FONTS)
+        name = base_name + ("Outline" if outline else "")
         ttf_path = raw_dir / rel_path
         if not ttf_path.is_file():
             sys.exit(f"missing {ttf_path} -- run extract.py first "
                       "(fonts.rpa must be extracted, see extract.py's own docstring)")
         out_path = font_dir / f"{name}.convfont"
-        text = ttf_to_convfont.build_convfont(ttf_path, height, name)
+        text = ttf_to_convfont.build_convfont(ttf_path, height, name, outline=outline)
         out_path.write_text(text)
         convfont_args += ["-t", str(out_path)]
 

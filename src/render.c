@@ -89,6 +89,7 @@ void render_end(void)
 #define FONT_NAME    1
 
 static fontlib_font_t *active_font = NULL;
+static uint8_t active_font_index;
 
 static void set_font(uint8_t index)
 {
@@ -96,6 +97,7 @@ static void set_font(uint8_t index)
     if (f) {
         fontlib_SetFont(f, 0);
         active_font = f;
+        active_font_index = index;
     }
 }
 
@@ -155,24 +157,26 @@ static void print_slice(const char *str, size_t len, int x, int y)
     fontlib_DrawString(buf);
 }
 
-/* Real DDLC's dialogue font is a solid fill over a distinct outline, not a
- * flat single color -- that's screens.rpy's own `outlines` style property
- * applied at render time, not something baked into Aller_Rg.ttf's glyphs,
- * so this engine has to fake it too, the same way most sprite-font-less
- * engines do it: the same slice drawn at a 1px offset in @p outline along
- * each of the 4 cardinal directions, then once more dead center in @p fill
- * on top. fontlib_SetTransparency(true) (render_init()) keeps every pass
- * from clobbering non-glyph pixels, so the offset passes only ever widen
- * each glyph's own silhouette by a ring -- never touch what's already
- * there outside it -- and the final centered pass repaints every pixel the
- * true glyph covers, leaving just that ring showing through as the
- * outline. Cardinal-only (not the full 8-direction ring, which also hits
- * the diagonals) -- the diagonal passes double up at every corner of a
- * glyph's strokes, reading as a noticeably heavier/blockier outline than
- * real DDLC's thin one. */
+/* Outline masks are cardinal-dilated at asset build time (font indexes 2/3).
+ * The +2 bitmap width is canceled by italic adjustment, so the cursor,
+ * wrapping and typewriter prefixes match the original fill font exactly.
+ * Old two-font bundles and edge coordinates retain the clipped fallback. */
 static void print_slice_outlined(const char *str, size_t len, int x, int y,
                                  uint8_t fill, uint8_t outline)
 {
+    fontlib_font_t *expanded = fontlib_GetFontByIndex("DFONTS", active_font_index + 2);
+    if (expanded && x > 0 && y > 0 &&
+        x + (int)measure(NULL, str, len) + 1 < SCREEN_W &&
+        y + fontlib_GetCurrentFontHeight() + 1 < SCREEN_H) {
+        fontlib_font_t *fill_font = active_font;
+        fontlib_SetFont(expanded, 0);
+        fontlib_SetForegroundColor(outline);
+        print_slice(str, len, x - 1, y - 1);
+        fontlib_SetFont(fill_font, 0);
+        fontlib_SetForegroundColor(fill);
+        print_slice(str, len, x, y);
+        return;
+    }
     static const int8_t off[4][2] = {
                  {0, -1},
         {-1, 0},         {1, 0},
