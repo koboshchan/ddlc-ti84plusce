@@ -66,7 +66,7 @@ def rasterize_glyph(font: ImageFont.FreeTypeFont, ch: str, cell_w: int,
     return bitmap, advance
 
 
-def build_convfont(ttf_path: Path, height_px: int, name: str) -> str:
+def build_convfont(ttf_path: Path, height_px: int, name: str, outline: bool = False) -> str:
     # PIL's "size" is an em-square target, not a literal glyph pixel height --
     # oversize the request and let getmetrics() report the real ascent/descent
     # actually used, then rely on the per-glyph threshold/crop below rather
@@ -81,7 +81,7 @@ def build_convfont(ttf_path: Path, height_px: int, name: str) -> str:
         "convfont",
         ": Font Metadata",
         ": Font Properties",
-        f"Height: {cell_h}",
+        f"Height: {cell_h + (2 if outline else 0)}",
         "Double width: False",
         "Code page: ASCII",
         ": Font Metrics",
@@ -89,7 +89,7 @@ def build_convfont(ttf_path: Path, height_px: int, name: str) -> str:
         "Style: Sans-serif",
         "Style: Upright",
         "Style: Proportional",
-        "Italic adjust: 0",
+        f"Italic adjust: {2 if outline else 0}",
         "Space above: 1",
         "Space below: 1",
         f"Cap height: {ascent}",
@@ -102,6 +102,16 @@ def build_convfont(ttf_path: Path, height_px: int, name: str) -> str:
         ch = chr(cp)
         bitmap, advance = rasterize_glyph(font, ch, cell_w, cell_h, ascent)
         width = max(1, min(advance, cell_w))
+        if outline:
+            # Cardinal dilation only. The final fill pass repaints the center.
+            expanded = [[False] * (width + 2) for _ in range(cell_h + 2)]
+            for y, row in enumerate(bitmap):
+                for x in range(width):
+                    if row[x]:
+                        for dx, dy in ((0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)):
+                            expanded[y + 1 + dy][x + 1 + dx] = True
+            bitmap = expanded
+            width += 2
         lines.append(f"Code point: {cp}")
         lines.append(f"Name: {name} U+{cp:08X}")
         lines.append(f"Unicode: U+{cp:08X}")
