@@ -332,6 +332,7 @@ def _convimg_cache_key(build_dir: Path, manifest_bytes: bytes, quality: int) -> 
     on every run regardless of whether the actual pixels changed, so
     mtimes are never a useful signal here; only content is."""
     h = hashlib.sha256()
+    h.update(Path(convert_images.__file__).read_bytes())
     h.update(str(quality).encode())
     h.update(manifest_bytes)
     img_dir = build_dir / "img"
