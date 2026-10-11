@@ -1009,25 +1009,21 @@ bool assets_poem_bg(uint8_t *dest)
  * and caching there (render_box()'s own job) is cheap regardless -- see
  * SCENE_BYTES's neighboring comment for why a same-sized copy every
  * render_scene() call already isn't a real cost on this hardware. */
-static bool load_fixed_art(const char *name, uint8_t *dest, size_t size)
+/* Open/copy/close together: never keep an AppVar pointer across another
+ * fileioc call. No 20KB permanent RAM mirror of immutable flash pixels. */
+bool assets_draw_box(bool namebox, uint8_t *dest)
 {
-    uint8_t handle = ti_Open(name, "r");
-    if (!handle) {
+    size_t w = namebox ? NAMEBOX_W : TEXTBOX_W;
+    size_t h = namebox ? NAMEBOX_H : TEXTBOX_H;
+    uint8_t handle = ti_Open(namebox ? "DNAMEBOX" : "DTXTBOX", "r");
+    if (!handle) return false;
+    if (ti_GetSize(handle) != w * h) {
+        ti_Close(handle);
         return false;
     }
-    memcpy(dest, ti_GetDataPtr(handle), size);
+    fast_rect_blit(dest, SCREEN_W, ti_GetDataPtr(handle), w, w, h);
     ti_Close(handle);
     return true;
-}
-
-bool assets_textbox(uint8_t *dest)
-{
-    return load_fixed_art("DTXTBOX", dest, TEXTBOX_W * TEXTBOX_H);
-}
-
-bool assets_namebox(uint8_t *dest)
-{
-    return load_fixed_art("DNAMEBOX", dest, NAMEBOX_W * NAMEBOX_H);
 }
 
 bool assets_draw_sticker_centered(uint8_t id, int center_x, int bottom_y)
@@ -1118,7 +1114,10 @@ bool assets_scene(uint8_t id, uint8_t *dest)
      * stride is SCREEN_W (the real framebuffer's), not SCENE_CG_SRC_W*2 --
      * every caller passes a pointer straight into gfx_vbuffer, matching a
      * background's own direct-decompress contract exactly. */
-    static uint8_t cg_scratch[SCENE_CG_BYTES];
+    /* All callers supply the full 320x240 framebuffer. Rows 180..224
+     * are outside the 320x180 output, so input and output never overlap.
+     * render_box overwrites these scratch pixels before presentation. */
+    uint8_t *cg_scratch = dest + SCENE_BYTES;
     zx0_Decompress(cg_scratch, data + offset);
     ti_Close(handle);
 

@@ -959,18 +959,6 @@ void render_scene_lazy(const vn_scene_t *scene)
      * on the next frame in that case. */
 }
 
-/* Copies a @p w x @p h raw palette-index image (row-major, no stride gaps)
- * into the draw buffer with its top-left at (@p x, @p y). Used for both the
- * textbox and namebox art below -- neither needs graphx's own sprite/rlet
- * machinery, since both are always drawn axis-aligned with no transparency
- * to skip. */
-static void blit_raw(int x, int y, const uint8_t *src, int w, int h)
-{
-    fast_rect_blit((uint8_t *)gfx_vbuffer + (size_t)y * SCREEN_W + x, SCREEN_W,
-                   src, (size_t)w,
-                   (size_t)w, (size_t)h);
-}
-
 void render_box(const vn_scene_t *scene, const char *speaker,
                 const char *text, size_t visible)
 {
@@ -1006,25 +994,8 @@ void render_box(const vn_scene_t *scene, const char *speaker,
 
     const int pad = 6;
 
-    /* The real textbox/namebox art (tools/image_resolve.py's ui_box_art()),
-     * loaded once and cached here rather than re-read from the AppVar every
-     * call -- render_box() runs on every typewriter tick, so this avoids
-     * paying that (cheap, but nonzero) ti_Open/memcpy cost dozens of times
-     * per line. Falls back to the old flat-rectangle box when the AppVar is
-     * missing (an older raw DDLC copy this port's own asset pipeline
-     * couldn't find gui/textbox.png in -- see ui_box_art()'s own
-     * "not found" degrade) rather than drawing nothing. */
-    static uint8_t textbox_px[TEXTBOX_W * TEXTBOX_H];
-    static uint8_t namebox_px[NAMEBOX_W * NAMEBOX_H];
-    static bool    box_art_loaded, have_textbox, have_namebox;
-    if (!box_art_loaded) {
-        have_textbox   = assets_textbox(textbox_px);
-        have_namebox   = assets_namebox(namebox_px);
-        box_art_loaded = true;
-    }
-
-    if (have_textbox) {
-        blit_raw(0, BOX_Y, textbox_px, TEXTBOX_W, TEXTBOX_H);
+    if (assets_draw_box(false, (uint8_t *)gfx_vbuffer + BOX_Y * SCREEN_W)) {
+        /* Already copied directly from archive. */
     } else {
         gfx_SetColor(COL_BOX_FILL);
         gfx_FillRectangle_NoClip(0, BOX_Y, SCREEN_W, BOX_H);
@@ -1061,9 +1032,8 @@ void render_box(const vn_scene_t *scene, const char *speaker,
          * caller can keep assuming the default font is active without
          * having to set it itself. */
         set_font(FONT_NAME);
-        if (have_namebox) {
-            const int nb_x = pad, nb_y = BOX_Y - NAMEBOX_H + 4;
-            blit_raw(nb_x, nb_y, namebox_px, NAMEBOX_W, NAMEBOX_H);
+        const int nb_x = pad, nb_y = BOX_Y - NAMEBOX_H + 4;
+        if (assets_draw_box(true, (uint8_t *)gfx_vbuffer + nb_y * SCREEN_W + nb_x)) {
             int name_w = (int)string_width(speaker);
             int name_x = nb_x + (NAMEBOX_W - name_w) / 2;
             if (name_x < nb_x + 2) {
