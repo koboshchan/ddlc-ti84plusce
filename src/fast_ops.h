@@ -5,6 +5,11 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+/* All drawing callers must provide non-overlapping buffers, valid pitches,
+ * and framebuffer-clipped dimensions. Scaler output row count is <= 320;
+ * source/destination sprite dimensions fit 16 bits; denominator is nonzero
+ * and acc_x < div_x. This is a drawing primitive, not an unchecked general
+ * resampler. IX/IY and SP are preserved under the CEdev ADL=1 C ABI. */
 #ifdef __cplusplus
 extern "C" {
 #endif

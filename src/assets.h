@@ -210,7 +210,8 @@ void assets_zoom_cache_clear(void);
 
 /**
  * Copies background/CG @p id's raw 320x180 palette-index pixels directly
- * into @p dest (typically the graphx draw buffer). Returns false
+ * into @p dest, which must hold the whole 320x240 framebuffer: the unused
+ * bottom 60 rows temporarily hold non-overlapping CG decode scratch. Returns false
  * if @p id is out of range or its AppVar is missing.
  */
 bool assets_scene(uint8_t id, uint8_t *dest);
@@ -316,8 +317,7 @@ bool assets_poem_bg(uint8_t *dest);
  * build without this art, or one where tools/import_game.py's raw DDLC
  * copy didn't have it.
  */
-bool assets_textbox(uint8_t *dest);
-bool assets_namebox(uint8_t *dest);
+bool assets_draw_box(bool namebox, uint8_t *dest);
 
 /**
  * Draws the poem minigame chibi sticker @p id centered at (@p center_x, @p bottom_y)

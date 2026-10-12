@@ -259,4 +259,8 @@ void render_splash_warning(const char *msg);
 void render_game_menu(uint8_t mode, uint8_t focused_pane, uint8_t sidebar_selected,
                       uint8_t slot_selected, bool is_in_game, unsigned t);
 
+/* Composition only, not presentation; scheduler integration pending. */
+bool render_timed_scene(const vn_scene_t *scene);
+bool render_timed_cg(const vn_scene_t *scene, uint16_t index, uint32_t timestamp_ms);
+
 #endif /* RENDER_H */

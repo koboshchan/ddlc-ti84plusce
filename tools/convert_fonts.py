@@ -11,6 +11,9 @@ out by that same fixed index via fontlibc's fontlib_GetFontByIndex() -- the
 pack's own internal names aren't used as a lookup key on-calc, so nothing
 here needs to match render.c symbol-for-symbol, just index-for-index.
 
+Indexes 2 and 3 contain cardinal-dilated outline masks for fonts 0 and 1.
+Their +2 glyph width is canceled by an explicit fontlib italic adjustment.
+
 Output is a single packed binary (fontlib_font_pack_t) -- packaging that
 into a TI AppVar is import_game.py's job, same split of responsibility as
 convert_images.py/convimg's `type: bin` output.
@@ -54,13 +57,15 @@ def build_fontpack(raw_dir: Path, build_dir: Path) -> Path:
                       "-D", "Aller_Rg (index 0) + RifficFree-Bold (index 1)",
                       "-V", "1", "-P", "ASCII"]
 
-    for rel_path, height, name in FONTS:
+    for index, (rel_path, height, base_name) in enumerate(FONTS + FONTS):
+        outline = index >= len(FONTS)
+        name = base_name + ("Outline" if outline else "")
         ttf_path = raw_dir / rel_path
         if not ttf_path.is_file():
             sys.exit(f"missing {ttf_path} -- run extract.py first "
                       "(fonts.rpa must be extracted, see extract.py's own docstring)")
         out_path = font_dir / f"{name}.convfont"
-        text = ttf_to_convfont.build_convfont(ttf_path, height, name)
+        text = ttf_to_convfont.build_convfont(ttf_path, height, name, outline=outline)
         out_path.write_text(text)
         convfont_args += ["-t", str(out_path)]
 

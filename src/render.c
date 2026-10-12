@@ -1,3 +1,6 @@
+#include "noise.h"
+#include "ch5_bands.h"
+#include "cgpack.h"
 /**
  * @file render.c
  * @brief Scene composition via graphx. See render.h.
@@ -89,6 +92,7 @@ void render_end(void)
 #define FONT_NAME    1
 
 static fontlib_font_t *active_font = NULL;
+static uint8_t active_font_index;
 
 static void set_font(uint8_t index)
 {
@@ -96,6 +100,7 @@ static void set_font(uint8_t index)
     if (f) {
         fontlib_SetFont(f, 0);
         active_font = f;
+        active_font_index = index;
     }
 }
 
@@ -155,24 +160,28 @@ static void print_slice(const char *str, size_t len, int x, int y)
     fontlib_DrawString(buf);
 }
 
-/* Real DDLC's dialogue font is a solid fill over a distinct outline, not a
- * flat single color -- that's screens.rpy's own `outlines` style property
- * applied at render time, not something baked into Aller_Rg.ttf's glyphs,
- * so this engine has to fake it too, the same way most sprite-font-less
- * engines do it: the same slice drawn at a 1px offset in @p outline along
- * each of the 4 cardinal directions, then once more dead center in @p fill
- * on top. fontlib_SetTransparency(true) (render_init()) keeps every pass
- * from clobbering non-glyph pixels, so the offset passes only ever widen
- * each glyph's own silhouette by a ring -- never touch what's already
- * there outside it -- and the final centered pass repaints every pixel the
- * true glyph covers, leaving just that ring showing through as the
- * outline. Cardinal-only (not the full 8-direction ring, which also hits
- * the diagonals) -- the diagonal passes double up at every corner of a
- * glyph's strokes, reading as a noticeably heavier/blockier outline than
- * real DDLC's thin one. */
+/* Outline masks are cardinal-dilated at asset build time (font indexes 2/3).
+ * The +2 bitmap width is canceled by italic adjustment, so the cursor,
+ * wrapping and typewriter prefixes match the original fill font exactly.
+ * Old two-font bundles and edge coordinates retain the clipped fallback. */
 static void print_slice_outlined(const char *str, size_t len, int x, int y,
                                  uint8_t fill, uint8_t outline)
 {
+    fontlib_font_t *expanded = fontlib_GetFontByIndex("DFONTS", active_font_index + 2);
+    if (expanded && x > 0 && y > 0 &&
+        x + (int)measure(NULL, str, len) + 1 < SCREEN_W &&
+        y + fontlib_GetCurrentFontHeight() + 1 < SCREEN_H) {
+        fontlib_font_t *fill_font = active_font;
+        fontlib_SetFont(expanded, 0);
+        fontlib_SetItalicSpacingAdjustment(2);
+        fontlib_SetForegroundColor(outline);
+        print_slice(str, len, x - 1, y - 1);
+        fontlib_SetFont(fill_font, 0);
+        fontlib_SetItalicSpacingAdjustment(0);
+        fontlib_SetForegroundColor(fill);
+        print_slice(str, len, x, y);
+        return;
+    }
     static const int8_t off[4][2] = {
                  {0, -1},
         {-1, 0},         {1, 0},
@@ -816,7 +825,8 @@ static void scene_obscured(void);
 
 void render_scene(const vn_scene_t *scene)
 {
-    draw_background(scene->background);
+    noise_restore();
+    if (!ch5_motion_draw(scene->background)) draw_background(scene->background);
     anim_moving = false;
 
     /* Real elapsed time, not a frame count -- render_scene() is called from
@@ -881,6 +891,64 @@ void render_scene(const vn_scene_t *scene)
     }
 }
 
+/* Transactional composition entrypoint. Scheduling caller supplies validated
+ * source frame identity/time. No swap here; normal textbox/window composition
+ * and noise_tick must run before presentation. Existing inactive graphx buffer
+ * is the only pixel staging. Stack palette costs 512 bytes, pending measured
+ * stack-domain proof. The scheduler calls this only from noise_tick. */
+bool render_timed_cg(const vn_scene_t *scene, uint16_t index,
+                     uint32_t timestamp_ms) {
+    uint16_t palette[256];
+    noise_restore(); /* BEFORE any destination bytes or palette are changed. */
+    render_invalidate_scene();
+    plate_free();
+    memset(gfx_vbuffer,0,320u*240u);
+    bool frame_ok=cgpack_read_timed_frame(scene->background,index,timestamp_ms,
+                                         (uint8_t *)gfx_vbuffer,palette);
+    /* UI artwork uses fixed indices. Reject an incompatible external palette
+     * rather than overwrite its colors or silently recolor the reference. */
+    if (frame_ok) {
+        const uint16_t *ui=assets_scene_palette(scene->background);
+        for (unsigned i=0;i<50;i++) {
+            if (i==8 || i==9) continue;
+            if (palette[i]!=ui[i]) { frame_ok=false; break; }
+        }
+    }
+    if (frame_ok) {
+        /* Frame/palette completely read before hardware palette mutation.
+         * Only top 180 rows are frame data; remove sector padding below it. */
+        memset((uint8_t *)gfx_vbuffer+57600u,0,19200u);
+        render_apply_palette(palette);
+        have_drawn_once=false; /* never let a lazy cached underlay survive */
+        return true;
+    }
+    /* Short reads may have overwritten ANY prefix. Motion draw covers only
+     * top 180: clear ALL 240 rows before reconstructing the authored underlay.
+     * Subsequent normal textbox/window draw replaces lower UI before swap. */
+    memset(gfx_vbuffer,0,320u*240u);
+    render_scene(scene);
+    return false;
+}
+
+/* Scene-local schedule is tied to the motion clock, not noise startup.
+ * Every false path reconstructs ALL pixels before caller presents anything. */
+bool render_timed_scene(const vn_scene_t *scene) {
+    uint16_t index;
+    uint32_t timestamp;
+    if (!ch5_motion_active(scene->background) || cgpack_status()!=CGPACK_READY)
+        return false;
+    if (!ch5_motion_sync_clock(scene->background)) return false;
+    noise_restore();
+    if (cgpack_select_timed_frame(scene->background,
+                                 ch5_motion_elapsed_ms(scene->background),
+                                 (uint8_t *)gfx_vbuffer,&index,&timestamp))
+        return render_timed_cg(scene,index,timestamp);
+    render_invalidate_scene();
+    memset(gfx_vbuffer,0,320u*240u);
+    render_scene(scene);
+    return false;
+}
+
 /* The fast path: paste the plate back and redraw only from the moving actor
  * forward. Everything outside that rectangle is already correct in the draw
  * buffer, which render_present() keeps in step with the screen. */
@@ -926,6 +994,12 @@ void render_invalidate_scene(void)
 
 void render_scene_lazy(const vn_scene_t *scene)
 {
+    static clock_t motion_next;
+    if (ch5_motion_active(scene->background) && clock() >= motion_next) {
+        render_scene(scene);
+        motion_next = clock() + CLOCKS_PER_SEC/4;
+        return;
+    }
     if (!have_drawn_once || !scene_settled) {
         if (plate_valid) {
             render_scene_moving(scene);
@@ -957,18 +1031,6 @@ void render_scene_lazy(const vn_scene_t *scene)
      * where nothing was easing at all and the very first frame was already
      * final. Asking the offset helpers directly costs nothing and settles
      * on the next frame in that case. */
-}
-
-/* Copies a @p w x @p h raw palette-index image (row-major, no stride gaps)
- * into the draw buffer with its top-left at (@p x, @p y). Used for both the
- * textbox and namebox art below -- neither needs graphx's own sprite/rlet
- * machinery, since both are always drawn axis-aligned with no transparency
- * to skip. */
-static void blit_raw(int x, int y, const uint8_t *src, int w, int h)
-{
-    fast_rect_blit((uint8_t *)gfx_vbuffer + (size_t)y * SCREEN_W + x, SCREEN_W,
-                   src, (size_t)w,
-                   (size_t)w, (size_t)h);
 }
 
 void render_box(const vn_scene_t *scene, const char *speaker,
@@ -1006,25 +1068,8 @@ void render_box(const vn_scene_t *scene, const char *speaker,
 
     const int pad = 6;
 
-    /* The real textbox/namebox art (tools/image_resolve.py's ui_box_art()),
-     * loaded once and cached here rather than re-read from the AppVar every
-     * call -- render_box() runs on every typewriter tick, so this avoids
-     * paying that (cheap, but nonzero) ti_Open/memcpy cost dozens of times
-     * per line. Falls back to the old flat-rectangle box when the AppVar is
-     * missing (an older raw DDLC copy this port's own asset pipeline
-     * couldn't find gui/textbox.png in -- see ui_box_art()'s own
-     * "not found" degrade) rather than drawing nothing. */
-    static uint8_t textbox_px[TEXTBOX_W * TEXTBOX_H];
-    static uint8_t namebox_px[NAMEBOX_W * NAMEBOX_H];
-    static bool    box_art_loaded, have_textbox, have_namebox;
-    if (!box_art_loaded) {
-        have_textbox   = assets_textbox(textbox_px);
-        have_namebox   = assets_namebox(namebox_px);
-        box_art_loaded = true;
-    }
-
-    if (have_textbox) {
-        blit_raw(0, BOX_Y, textbox_px, TEXTBOX_W, TEXTBOX_H);
+    if (assets_draw_box(false, (uint8_t *)gfx_vbuffer + BOX_Y * SCREEN_W)) {
+        /* Already copied directly from archive. */
     } else {
         gfx_SetColor(COL_BOX_FILL);
         gfx_FillRectangle_NoClip(0, BOX_Y, SCREEN_W, BOX_H);
@@ -1061,9 +1106,8 @@ void render_box(const vn_scene_t *scene, const char *speaker,
          * caller can keep assuming the default font is active without
          * having to set it itself. */
         set_font(FONT_NAME);
-        if (have_namebox) {
-            const int nb_x = pad, nb_y = BOX_Y - NAMEBOX_H + 4;
-            blit_raw(nb_x, nb_y, namebox_px, NAMEBOX_W, NAMEBOX_H);
+        const int nb_x = pad, nb_y = BOX_Y - NAMEBOX_H + 4;
+        if (assets_draw_box(true, (uint8_t *)gfx_vbuffer + nb_y * SCREEN_W + nb_x)) {
             int name_w = (int)string_width(speaker);
             int name_x = nb_x + (NAMEBOX_W - name_w) / 2;
             if (name_x < nb_x + 2) {

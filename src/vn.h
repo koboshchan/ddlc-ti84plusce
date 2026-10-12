@@ -112,6 +112,7 @@ enum vn_op {
                           * Hides the dialogue box until the next
                           * OP_WINDOW_SHOW; see vn_scene_t.window_hidden
                           * and render.c's render_box().                */
+    OP_WINDOW_AUTO = 0x20, /* auto visibility on subsequent dialogue */
     OP_WINDOW_SHOW = 0x17, /* -- compiles `window show(...)`/`window auto`.
                           * `auto` and an explicit `show` both compile to
                           * this: this engine has no notion of a
@@ -182,6 +183,9 @@ enum vn_op {
     OP_MENU_COND  = 0x1D, /* count:u8, per option: (cond_count:u8, (var:u8, cmp:u8, val:i16)*cond_count, text:u16, tgt:u24)
                            * Conditional menu choices: only options whose variable conditions evaluate
                            * to true are presented to the player. */
+    OP_MOTION = 0x22, /* authored original-layer record:u8 trans:u8 */
+    OP_TEXT_OVERLAY = 0x21, /* slot:u8 text:u16 x:u8 y:u8; FFFF clears */
+    OP_NOISE = 0x1F, /* enabled:u8, ch5 source-layer lifetime */
     OP_POEM_VIEW  = 0x1E, /* poem_id:u8 -- renders character poem on notebook paper until dismissed */
 };
 
@@ -346,6 +350,9 @@ typedef struct {
 
 /** Everything the renderer needs to draw a frame. Owned by the VM. */
 typedef struct {
+    uint16_t overlay_text[2];
+    uint8_t overlay_x[2], overlay_y[2];
+    uint8_t overlay_mask;
     uint8_t     background;             /* bg id, or VN_NO_SPRITE            */
     vn_actor_t  actors[VN_MAX_CHARS];
     uint8_t     speaker;                /* VN_SPEAKER_NONE for narration     */
@@ -379,6 +386,7 @@ typedef struct {
      * dialogue disappearing for a clean shot -- without a wider art
      * pipeline change. See OP_WINDOW_SHOW/OP_WINDOW_HIDE. */
     bool     window_hidden;
+    bool     window_auto;
 } vn_scene_t;
 
 /**
@@ -538,6 +546,7 @@ typedef struct {
 
     const vn_host_t *host;
     vn_status_t      status;
+    bool            noise_enabled;
 } vn_vm_t;
 
 /** Reset @p vm and point it at @p code. Does not draw anything. */

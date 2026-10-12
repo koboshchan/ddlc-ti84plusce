@@ -11,6 +11,8 @@
 #include "name.h"
 #include "poem.h"
 #include "render.h"
+#include "noise.h"
+#include "noise_window.h"
 #include "save.h"
 #include "text.h"
 #include "vn.h"
@@ -1400,6 +1402,48 @@ static __attribute__((noinline)) void run_debug_menu(vn_vm_t *vm)
  * its next call, and there is no next call once vn_run() has exited -- the
  * loaded scene would flash on screen and then just be discarded.
  */
+static clock_t noise_started;
+static bool noise_was_enabled;
+static clock_t noise_next_frame;
+/* Shared dialogue-box drawing keeps all host paths consistent. */
+static void draw_dialogue_box(vn_vm_t *vm, const vn_scene_t *scene, size_t visible) {
+    render_box(scene, speaker_display_name(vm, scene->speaker), scene->text, visible);
+    /* Source Text displayables are persistent scene overlays, not dialogue.
+     * No typewriter and no input wait; each slot survives until its Hide. */
+    for (uint8_t slot = 0; slot < 2; ++slot) {
+        if (!(scene->overlay_mask & (1u << slot))) continue;
+        const char *text = vm->host->string(vm->host->ctx, scene->overlay_text[slot]);
+        char line[48]; unsigned n = 0;
+        int x = scene->overlay_x[slot], y = scene->overlay_y[slot];
+        gfx_SetTextFGColor(0); gfx_SetTextBGColor(255); gfx_SetTextTransparentColor(255);
+        while (*text && y < 232) {
+            char c = *text++;
+            if (c != '\n') line[n++] = c;
+            if (c == '\n' || n == 44 || !*text) {
+                line[n] = 0; gfx_PrintStringXY(line, x, y); y += 8; n = 0;
+            }
+        }
+    }
+}
+static void noise_tick(vn_vm_t *vm, const vn_scene_t *scene, size_t visible) {
+    if (!vm->noise_enabled) { noise_release(); noise_was_enabled=false; return; }
+    if (!noise_was_enabled) { noise_started=clock(); noise_next_frame=noise_started; noise_was_enabled=true; }
+    clock_t now=clock();
+    if (now < noise_next_frame) return;
+    /* Restore BOTH scene and textbox before every effect frame. Never blend
+     * into last frame; archive handles are closed before any asset load. */
+    noise_restore();
+    /* USB frame is complete before palette commit; noise_begin remaps its
+     * colors against whichever palette the successful/fallback path chose. */
+    if (!render_timed_scene(scene)) render_scene_lazy(scene);
+    if (noise_begin(scene->background)) noise_frame((unsigned)(((uint64_t)(now-noise_started)*1000ULL)/CLOCKS_PER_SEC));
+    noise_end();
+    draw_dialogue_box(vm, scene, visible);
+    gfx_BlitBuffer();
+    noise_next_frame += CLOCKS_PER_SEC/10;
+    if (noise_next_frame <= clock()) noise_next_frame=clock()+CLOCKS_PER_SEC/10;
+}
+
 static void wait_for_advance(vn_vm_t *vm, bool allow_pause)
 {
     const vn_scene_t *scene = &vm->scene;
@@ -1422,9 +1466,9 @@ static void wait_for_advance(vn_vm_t *vm, bool allow_pause)
         }
         if (!quit_requested) {
             render_scene_lazy(scene);
-            render_box(scene, speaker_display_name(vm, scene->speaker),
-                       scene->text, SIZE_MAX);
+            draw_dialogue_box(vm, scene, SIZE_MAX);
             render_present(TRANS_CUT);
+            noise_tick(vm, scene, SIZE_MAX);
             gfx_Wait();
         }
     } while (!in.advance && !quit_requested);
@@ -1719,8 +1763,7 @@ static void host_update(void *ctx, const vn_scene_t *scene, uint8_t trans)
     }
 
     render_scene(scene);
-    render_box(scene, speaker_display_name(ctx, scene->speaker),
-               scene->text, SIZE_MAX);
+    draw_dialogue_box(ctx, scene, SIZE_MAX);
     render_present(trans);
 
     if (trans == TRANS_FADE) {
@@ -1750,9 +1793,9 @@ static void host_say(void *ctx, const vn_scene_t *scene)
         }
 
         render_scene_lazy(scene);
-        render_box(scene, speaker_display_name(vm, scene->speaker),
-                   scene->text, visible);
+        draw_dialogue_box(vm, scene, visible);
         render_present(TRANS_CUT);
+        noise_tick(vm, scene, visible);
         gfx_Wait();
     }
 
@@ -1775,7 +1818,7 @@ static uint8_t host_menu(void *ctx, const vn_scene_t *scene,
          * than the box going blank. Hardcoding an empty string here used to
          * lose that context for every menu in the game, not just ones with
          * an explicit caption. */
-        render_box(scene, speaker_display_name(ctx, scene->speaker), scene->text, SIZE_MAX);
+        draw_dialogue_box(ctx, scene, SIZE_MAX);
         render_present(TRANS_CUT);
         gfx_Wait();
 
@@ -1811,21 +1854,17 @@ static uint8_t host_menu(void *ctx, const vn_scene_t *scene,
  * has no vm to hand it). */
 static void host_pause(void *ctx, uint32_t ms)
 {
-    (void)ctx;
-
-    clock_t start = clock();
+    vn_vm_t *vm=ctx;
+    clock_t start=clock();
     input_t in;
-
     for (;;) {
         input_poll(&in);
-        if (quit_requested || in.advance) {
-            return;
-        }
-        if (ms != 0 && (clock() - start) * 1000UL / CLOCKS_PER_SEC >= ms) {
-            return;
-        }
+        if (quit_requested || in.advance) break;
+        if (ms && (clock()-start)*1000UL/CLOCKS_PER_SEC >= ms) break;
+        noise_tick(vm, &vm->scene, SIZE_MAX);
         gfx_Wait();
     }
+    noise_end();
 }
 
 static bool host_quit(void *ctx)

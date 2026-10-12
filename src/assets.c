@@ -954,21 +954,27 @@ bool assets_title_bg(uint8_t px, uint8_t py, uint8_t *dest)
     return true;
 }
 
-/* The poem minigame's notebook background: full-screen (320x240 = 76800
- * bytes) raw indices, unlike an ordinary scene (see image_resolve.py's
- * poem_background() for why it isn't one). 76800 bytes is over the
- * 65535-byte single-AppVar ceiling, so tools/import_game.py splits it in
- * two at a fixed MAXVARSIZE (65000) boundary rather than through a LUT --
- * there's only ever this one resource, a LUT would be pure overhead.
- * Optional, same as the title assets, so a bundle built before the poem
- * minigame existed still boots. */
+/* The notebook is a single ZX0-compressed full-frame stream in DPOEMBG.
+ * Decode into the caller's graphics buffer; keep no permanent 77KB mirror.
+ * The split raw format remains readable for older bundles. */
 #define POEM_BG_BYTES  (320u * 240u)
 #define POEM_BG_SPLIT  65000u
 
 bool assets_poem_bg(uint8_t *dest)
 {
+    uint8_t compressed = ti_Open("DPOEMBG", "r");
+    if (compressed) {
+        zx0_Decompress(dest, ti_GetDataPtr(compressed));
+        ti_Close(compressed);
+        return true;
+    }
+    /* Compatibility with old uncompressed bundles. */
     uint8_t handle0 = ti_Open("DPOEMBG0", "r");
     if (!handle0) {
+        return false;
+    }
+    if (ti_GetSize(handle0) != POEM_BG_SPLIT) {
+        ti_Close(handle0);
         return false;
     }
     memcpy(dest, ti_GetDataPtr(handle0), POEM_BG_SPLIT);
@@ -978,41 +984,32 @@ bool assets_poem_bg(uint8_t *dest)
     if (!handle1) {
         return false;
     }
+    if (ti_GetSize(handle1) != POEM_BG_BYTES - POEM_BG_SPLIT) {
+        ti_Close(handle1);
+        return false;
+    }
     memcpy(dest + POEM_BG_SPLIT, ti_GetDataPtr(handle1), POEM_BG_BYTES - POEM_BG_SPLIT);
     ti_Close(handle1);
 
     return true;
 }
 
-/* The real dialogue box/namebox art (tools/image_resolve.py's
- * ui_box_art()): raw, uncompressed palette indices, same reasoning
- * assets_draw_sprite()'s own comment gives for shipping sprites
- * uncompressed -- render_box() (src/render.c) draws these every typewriter
- * tick, so paying a decompression cost on every single one of those calls
- * would be real, avoidable per-frame work. Both are small enough (19200 and
- * 1224 bytes) that copying them out to a caller buffer once at first use
- * and caching there (render_box()'s own job) is cheap regardless -- see
- * SCENE_BYTES's neighboring comment for why a same-sized copy every
- * render_scene() call already isn't a real cost on this hardware. */
-static bool load_fixed_art(const char *name, uint8_t *dest, size_t size)
+/* The dialogue/name boxes are immutable archived palette indices.
+ * Open/copy/close together: never keep an AppVar pointer across another
+ * fileioc call. No 20KB permanent RAM mirror of immutable flash pixels. */
+bool assets_draw_box(bool namebox, uint8_t *dest)
 {
-    uint8_t handle = ti_Open(name, "r");
-    if (!handle) {
+    size_t w = namebox ? NAMEBOX_W : TEXTBOX_W;
+    size_t h = namebox ? NAMEBOX_H : TEXTBOX_H;
+    uint8_t handle = ti_Open(namebox ? "DNAMEBOX" : "DTXTBOX", "r");
+    if (!handle) return false;
+    if (ti_GetSize(handle) != w * h) {
+        ti_Close(handle);
         return false;
     }
-    memcpy(dest, ti_GetDataPtr(handle), size);
+    fast_rect_blit(dest, SCREEN_W, ti_GetDataPtr(handle), w, w, h);
     ti_Close(handle);
     return true;
-}
-
-bool assets_textbox(uint8_t *dest)
-{
-    return load_fixed_art("DTXTBOX", dest, TEXTBOX_W * TEXTBOX_H);
-}
-
-bool assets_namebox(uint8_t *dest)
-{
-    return load_fixed_art("DNAMEBOX", dest, NAMEBOX_W * NAMEBOX_H);
 }
 
 bool assets_draw_sticker_centered(uint8_t id, int center_x, int bottom_y)
@@ -1103,7 +1100,10 @@ bool assets_scene(uint8_t id, uint8_t *dest)
      * stride is SCREEN_W (the real framebuffer's), not SCENE_CG_SRC_W*2 --
      * every caller passes a pointer straight into gfx_vbuffer, matching a
      * background's own direct-decompress contract exactly. */
-    static uint8_t cg_scratch[SCENE_CG_BYTES];
+    /* All callers supply the full 320x240 framebuffer. Rows 180..224
+     * are outside the 320x180 output, so input and output never overlap.
+     * render_box overwrites these scratch pixels before presentation. */
+    uint8_t *cg_scratch = dest + SCENE_BYTES;
     zx0_Decompress(cg_scratch, data + offset);
     ti_Close(handle);
 
