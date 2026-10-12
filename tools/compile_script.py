@@ -829,6 +829,11 @@ class Compiler:
             if credits_cg is not None:
                 imgname = (credits_cg,)
 
+        if fname.endswith("script-ch5.rpyc") or fname == "script-ch5":
+            if imgname == ("noise",):
+                self.asm.code.extend(bytes((0x1F, 1)))
+                return
+
         if imgname[0] == "splash_warning":
             # DDLC's own `show splash_warning "..."` idiom (splash.rpyc,
             # script-poemresponses2.rpyc) -- a centered warning-style text
@@ -924,6 +929,11 @@ class Compiler:
                 # since imgname[0] here is the symbolic tag, not the literal
                 # Text(...) call source -- see image_resolve.py's
                 # _resolve_source() for where this ImageDef comes from.
+                if fname == "script-ch5.rpyc" and imgname[0] in ("fake_exception", "fake_exception2"):
+                    self._flush_pending_scene(vnasm.TRANS_CUT)
+                    slot = int(imgname[0] == "fake_exception2")
+                    self.asm.text_overlay(slot, _strip_text_tags(defn.text), 32, 36 if slot else 12)
+                    return
                 self.asm.window_hide()
                 self.asm.narrate(_strip_text_tags(defn.text))
                 self.asm.window_show()
@@ -991,10 +1001,36 @@ class Compiler:
                 self._flash_stack.clear()
                 return
 
+            # Default calculator: omit vignette before scene registration,
+            # preserving the live motion underlay and original source assets.
+            if (fname == "script-ch5" or fname.endswith("script-ch5.rpyc")) and imgname[0] == "vignette":
+                return
+
             scene_id = self.resolver.scene_id(imgname)
             if scene_id is None:
                 self._skip(node, fname, f"unknown character tag in {imgname!r}")
                 return
+            if (fname == "script-ch5" or fname.endswith("script-ch5.rpyc")) and imgname[0].startswith("s_kill"):
+                layer_alias = alias or imgname[0]
+                at = node.imspec[3] if len(node.imspec) > 3 else []
+                transform = str(at[0]) if at else ""
+                layers = getattr(self, "_ch5_original_layers", [])
+                layers = [l for l in layers if l[1] != layer_alias]
+                # RenPy imspec slot5 is explicit zorder; equal-z displayables
+                # retain show ordering, not alphabetical alias ordering.
+                zorder = int(node.imspec[5]) if node.imspec[5] is not None else (1 if imgname[0].startswith("s_kill_bg") else 3)
+                layers.append((imgname[0], layer_alias, transform, zorder, 1.0, False))
+                self._ch5_original_layers = layers
+                scene_id = self.resolver.ch5_original_layers(scene_id, layers)
+            # These ch5 shows are transparent layers, not new scenes.
+            # Preserve opcode count/scene ids while baking their lower layers.
+            if (fname == "script-ch5" or fname.endswith("script-ch5.rpyc")) and imgname[0] in (
+                    "vignette", "splash_glitch", "splash_glitch2", "splash_glitch_m", "splash_glitch_n", "splash_glitch_y"):
+                if self._current_bg is None:
+                    raise ValueError("ch5 overlay has no base scene")
+                scene_id = self.resolver.ch5_overlay_scene(
+                    scene_id, self._current_bg, imgname[0],
+                    vignette_top=any(e.img_tag == "vignette" for e in self._flash_stack))
             # Full-screen overlays and flashes (white, black, s_kill, splash_glitch, etc.)
             # are tracked via _flash_stack. If this is the bottom overlay on the stack,
             # snapshot currently visible character sprites and positions so that when all
@@ -1020,7 +1056,10 @@ class Compiler:
                 prev_bg=prev_bg,
                 saved_chars=saved_chars,
             ))
-            self.asm.scene(scene_id, vnasm.TRANS_CUT)
+            if (fname == "script-ch5" or fname.endswith("script-ch5.rpyc")) and imgname[0].startswith("s_kill"):
+                self.asm.motion(scene_id)
+            else:
+                self.asm.scene(scene_id, vnasm.TRANS_CUT)
             self._current_bg = scene_id
             self.last_sprite.clear()
             self.last_pos.clear()
@@ -1076,6 +1115,18 @@ class Compiler:
     def _emit_Hide(self, node, fname: str) -> None:
         imgname = node.imspec[0] if node.imspec else None
         tag = imgname[0] if imgname else None
+        if (fname == "script-ch5" or fname.endswith("script-ch5.rpyc")) and tag == "vignette":
+            return
+        if fname in ("script-ch5", "script-ch5.rpyc") and tag is not None:
+            layers = getattr(self, "_ch5_original_layers", [])
+            if any(l[1] == tag for l in layers):
+                self._flush_pending_scene(vnasm.TRANS_CUT)
+                layers = [tuple(l[:3]) + ((l[3], l[4], True) if len(l) == 6 else (1 if l[0].startswith("s_kill_bg") else 3, 1.0, True)) if l[1] == tag else l for l in layers]
+                self._ch5_original_layers = layers
+                sid = self.resolver.ch5_original_layers(self._current_bg, layers)
+                self.asm.motion(sid)
+                self._current_bg = sid
+                return
         if tag is not None and any(tag.startswith(pfx) for pfx in CG_PREFIXES):
             if self._current_cg_family is not None and tag in self._current_cg_layers:
                 self._current_cg_layers.remove(tag)
@@ -1101,6 +1152,8 @@ class Compiler:
         if defn is None and tag is not None:
             defn = self.resolver.table.get((tag,))
         if defn is not None and defn.kind == "text":
+            if fname == "script-ch5.rpyc" and tag in ("fake_exception", "fake_exception2"):
+                self.asm.text_overlay(int(tag == "fake_exception2"), None)
             return
 
         entry_idx = None
@@ -1147,6 +1200,8 @@ class Compiler:
 
     def _emit_Scene(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)
+        if (fname.endswith("script-ch5.rpyc") or fname == "script-ch5") and getattr(node, "linenumber", 0) == 309:
+            self.asm.code.extend(bytes((0x1F, 0)))
         imgname = tuple(node.imspec[0]) if node.imspec and node.imspec[0] else None
         if not imgname:
             self._skip(node, fname, "Scene with empty imspec")
@@ -1769,7 +1824,10 @@ class Compiler:
         if stripped == "window hide" or stripped.startswith("window hide("):
             self.asm.window_hide()
             return
-        if stripped == "window auto" or stripped.startswith("window show("):
+        if stripped == "window auto":
+            self.asm.code.append(0x20)
+            return
+        if stripped == "window show" or stripped.startswith("window show("):
             self.asm.window_show()
             return
         if stripped.startswith("call screen confirm("):

@@ -283,6 +283,23 @@ bool vn_step(vn_vm_t *vm)
     uint8_t op = read_u8(vm);
 
     switch (op) {
+        case OP_TEXT_OVERLAY: {
+            uint8_t slot = read_u8(vm);
+            uint16_t text = read_u16(vm);
+            uint8_t x = read_u8(vm), y = read_u8(vm);
+            if (slot < 2 && vm->status == VN_RUNNING) {
+                vm->scene.overlay_text[slot] = text;
+                vm->scene.overlay_x[slot] = x;
+                vm->scene.overlay_y[slot] = y;
+                if (text == 0xFFFF) vm->scene.overlay_mask &= ~(1u << slot);
+                else vm->scene.overlay_mask |= 1u << slot;
+                vm->host->update(vm->host->ctx, &vm->scene, 0);
+            }
+            break;
+        }
+        case OP_NOISE:
+            vm->noise_enabled = read_u8(vm) != 0;
+            break;
         case OP_NOP:
         case OP_SOUND: {
             /* OP_SOUND still consumes its operand so the stream stays aligned
@@ -299,6 +316,7 @@ bool vn_step(vn_vm_t *vm)
             if (vm->status != VN_RUNNING) {
                 break;
             }
+            if (vm->scene.window_auto) vm->scene.window_hidden = false;
             vm->scene.speaker    = spk;
             vm->scene.text       = vm->host->string(vm->host->ctx, text);
             vm->scene.text_index = text;
@@ -306,6 +324,7 @@ bool vn_step(vn_vm_t *vm)
             break;
         }
 
+        case OP_MOTION: /* Same stage transition, separate source dependency. */
         case OP_SCENE: {
             uint8_t bg    = read_u8(vm);
             uint8_t trans = read_u8(vm);
@@ -690,7 +709,13 @@ bool vn_step(vn_vm_t *vm)
             if (vm->status != VN_RUNNING) {
                 break;
             }
+            vm->scene.window_auto = false;
             vm->scene.window_hidden = true;
+            break;
+        }
+
+        case OP_WINDOW_AUTO: {
+            vm->scene.window_auto = true;
             break;
         }
 
@@ -698,6 +723,7 @@ bool vn_step(vn_vm_t *vm)
             if (vm->status != VN_RUNNING) {
                 break;
             }
+            vm->scene.window_auto = false;
             vm->scene.window_hidden = false;
             break;
         }

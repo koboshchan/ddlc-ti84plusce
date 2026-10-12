@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 OP_NOP = 0x00
 OP_SAY = 0x01
 OP_SCENE = 0x02
+OP_MOTION = 0x22
 OP_SHOW = 0x03
 OP_HIDE = 0x04
 OP_MENU = 0x05
@@ -198,6 +199,13 @@ class Assembler:
         self._u8(speaker)
         self._u16(self.string(text))
 
+    def text_overlay(self, slot: int, text: str | None, x: int = 32, y: int = 12) -> None:
+        self._u8(0x21)
+        self._u8(slot)
+        self._u16(0xFFFF if text is None else self.string(text))
+        self._u8(x)
+        self._u8(y)
+
     def narrate(self, text: str) -> None:
         self.say(SPEAKER_NONE, text)
 
@@ -205,6 +213,11 @@ class Assembler:
         self._u8(OP_SCENE)
         self._u8(bg)
         self._u8(trans)
+
+    def motion(self, scene_id: int) -> None:
+        self._u8(OP_MOTION)
+        self._u8(scene_id)
+        self._u8(TRANS_CUT)
 
     def show(self, char: int, sprite: int, overlay: int | None = None,
              pos: int = POS_CENTER, flags: int = 0) -> None:

@@ -1,3 +1,6 @@
+#include "noise.h"
+#include "ch5_bands.h"
+#include "cgpack.h"
 /**
  * @file render.c
  * @brief Scene composition via graphx. See render.h.
@@ -822,7 +825,8 @@ static void scene_obscured(void);
 
 void render_scene(const vn_scene_t *scene)
 {
-    draw_background(scene->background);
+    noise_restore();
+    if (!ch5_motion_draw(scene->background)) draw_background(scene->background);
     anim_moving = false;
 
     /* Real elapsed time, not a frame count -- render_scene() is called from
@@ -887,6 +891,64 @@ void render_scene(const vn_scene_t *scene)
     }
 }
 
+/* Transactional composition entrypoint. Scheduling caller supplies validated
+ * source frame identity/time. No swap here; normal textbox/window composition
+ * and noise_tick must run before presentation. Existing inactive graphx buffer
+ * is the only pixel staging. Stack palette costs 512 bytes, pending measured
+ * stack-domain proof. The scheduler calls this only from noise_tick. */
+bool render_timed_cg(const vn_scene_t *scene, uint16_t index,
+                     uint32_t timestamp_ms) {
+    uint16_t palette[256];
+    noise_restore(); /* BEFORE any destination bytes or palette are changed. */
+    render_invalidate_scene();
+    plate_free();
+    memset(gfx_vbuffer,0,320u*240u);
+    bool frame_ok=cgpack_read_timed_frame(scene->background,index,timestamp_ms,
+                                         (uint8_t *)gfx_vbuffer,palette);
+    /* UI artwork uses fixed indices. Reject an incompatible external palette
+     * rather than overwrite its colors or silently recolor the reference. */
+    if (frame_ok) {
+        const uint16_t *ui=assets_scene_palette(scene->background);
+        for (unsigned i=0;i<50;i++) {
+            if (i==8 || i==9) continue;
+            if (palette[i]!=ui[i]) { frame_ok=false; break; }
+        }
+    }
+    if (frame_ok) {
+        /* Frame/palette completely read before hardware palette mutation.
+         * Only top 180 rows are frame data; remove sector padding below it. */
+        memset((uint8_t *)gfx_vbuffer+57600u,0,19200u);
+        render_apply_palette(palette);
+        have_drawn_once=false; /* never let a lazy cached underlay survive */
+        return true;
+    }
+    /* Short reads may have overwritten ANY prefix. Motion draw covers only
+     * top 180: clear ALL 240 rows before reconstructing the authored underlay.
+     * Subsequent normal textbox/window draw replaces lower UI before swap. */
+    memset(gfx_vbuffer,0,320u*240u);
+    render_scene(scene);
+    return false;
+}
+
+/* Scene-local schedule is tied to the motion clock, not noise startup.
+ * Every false path reconstructs ALL pixels before caller presents anything. */
+bool render_timed_scene(const vn_scene_t *scene) {
+    uint16_t index;
+    uint32_t timestamp;
+    if (!ch5_motion_active(scene->background) || cgpack_status()!=CGPACK_READY)
+        return false;
+    if (!ch5_motion_sync_clock(scene->background)) return false;
+    noise_restore();
+    if (cgpack_select_timed_frame(scene->background,
+                                 ch5_motion_elapsed_ms(scene->background),
+                                 (uint8_t *)gfx_vbuffer,&index,&timestamp))
+        return render_timed_cg(scene,index,timestamp);
+    render_invalidate_scene();
+    memset(gfx_vbuffer,0,320u*240u);
+    render_scene(scene);
+    return false;
+}
+
 /* The fast path: paste the plate back and redraw only from the moving actor
  * forward. Everything outside that rectangle is already correct in the draw
  * buffer, which render_present() keeps in step with the screen. */
@@ -932,6 +994,12 @@ void render_invalidate_scene(void)
 
 void render_scene_lazy(const vn_scene_t *scene)
 {
+    static clock_t motion_next;
+    if (ch5_motion_active(scene->background) && clock() >= motion_next) {
+        render_scene(scene);
+        motion_next = clock() + CLOCKS_PER_SEC/4;
+        return;
+    }
     if (!have_drawn_once || !scene_settled) {
         if (plate_valid) {
             render_scene_moving(scene);

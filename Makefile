@@ -8,7 +8,10 @@ DESCRIPTION = "Doki Doki Literature Club (fan port)"
 COMPRESSED = NO
 ARCHIVED = YES
 
-CFLAGS = -Wall -Wextra -Oz
+CFLAGS = -Wall -Wextra -Oz -fno-inline-functions
+# Balanced contiguous code parts; stock convbin extractor copies real part lengths.
+# Split derived from actual token-stripped engine by wrapper.
+
 CXXFLAGS = -Wall -Wextra -Oz
 
 HAS_PRINTF = NO
@@ -26,6 +29,7 @@ BSSHEAP_HIGH = 0xD13FD8
 # ----------------------------
 
 include $(shell cedev-config --makefile)
+CONVBIN = python3 tools/balanced_convbin.py
 
 # ----------------------------
 # Asset import / bundling

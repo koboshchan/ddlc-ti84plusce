@@ -70,4 +70,14 @@ typedef enum {
 
 cgpack_status_t cgpack_status(void);
 
+/* No display commit. False may partially overwrite inactive/palette.
+ * Caller retires noise undo first and fully reconstructs on failure. */
+bool cgpack_read_timed_frame(uint8_t scene, uint16_t index,
+                            uint32_t expected_ms, uint8_t *inactive,
+                            uint16_t *palette);
+
+/* Fixed-cadence schedule, read into the inactive framebuffer only. */
+bool cgpack_select_timed_frame(uint8_t scene, uint32_t elapsed_ms,
+                              uint8_t *scratch, uint16_t *index,
+                              uint32_t *timestamp_ms);
 #endif /* CGPACK_H */

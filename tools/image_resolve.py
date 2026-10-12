@@ -1081,6 +1081,130 @@ class ImageResolver:
         self._scene_ids[imgname] = idx
         return idx
 
+    def ch5_original_layers(self, scene_id, layers, elapsed=0.0):
+        """Original RGBA layers on authored viewport, never standalone stretching."""
+        # Explicit source display state is part of identity, including hidden layers.
+        normalized = []
+        for l in layers:
+            tag, alias, transform = l[:3]
+            zorder, alpha, hidden = l[3:] if len(l) == 6 else (1 if tag.startswith("s_kill_bg") else 3, 1.0, False)
+            normalized.append((tag, alias, transform, int(zorder), float(alpha), bool(hidden)))
+        layers = sorted(normalized, key=lambda l: l[3])
+        cache = getattr(self, "_ch5_original_cache", {})
+        key = (tuple(tuple(l) for l in layers), float(elapsed), "source-z-alpha-hide-v1")
+        if key in cache:
+            return cache[key]
+        self._ch5_original_cache = cache
+        before = {}
+        for i, old in enumerate(self.scenes):
+            for directory in (self.img_dir, self.cgpack_src_dir):
+                f = directory / old["file"]
+                if f.exists():
+                    before[str(f)] = hashlib.sha256(f.read_bytes()).hexdigest()
+        canvas = PILImage.new("RGBA", (1280, 720))
+        metadata = []
+        for tag, alias, transform, zorder, alpha, hidden in layers:
+            if hidden:
+                continue
+            art = self._render_def(self.table[(tag,)])
+            if art is None:
+                raise ValueError("missing original layer " + tag)
+            bg = tag.startswith("s_kill_bg")
+            z, xa, ya, yo = 1.0, 0.0, 0.0, 0.0
+            if transform == "s_kill_bg_start":
+                z = 1.1 - 0.1 * min(1.0, elapsed / 4.0)
+                xa = ya = 0.5
+            elif transform == "s_kill_start":
+                t = min(1.0, elapsed / 4.0)
+                z, xa, ya, yo = .8 - .05*t, .3 + .015*t, .25, 10*t
+            elif tag.endswith("_zoom"):
+                z, xa, ya = (2.0, .2, .3) if bg else (2.0, .5, .05)
+            w, h = max(1, round(art.width*z)), max(1, round(art.height*z))
+            x, y = round((1280-w)*xa), round((720-h)*ya+yo)
+            art = art.convert("RGBA").resize((w,h), PILImage.Resampling.NEAREST)
+            if alpha != 1.0:
+                art.putalpha(art.getchannel("A").point(lambda value: round(value * alpha)))
+            canvas.alpha_composite(art, (x,y))
+            metadata.append(dict(tag=tag, alias=alias, transform=transform,
+                                 zorder=zorder, alpha=alpha, hidden=hidden,
+                                 zoom=z, viewport=[x,y,w,h]))
+        idx = len(self.scenes)
+        filename = "ch5_original_%03d.png" % idx
+        entry = dict(imgname=["ch5_original", str(idx)], file=filename,
+                     w=CG_SIZE[0], h=CG_SIZE[1], palette="own",
+                     cg_palette_index=self._own_scene_count,
+                     original_layers=metadata, animation_verified=False)
+        self._own_scene_count += 1
+        full=canvas.resize(CG_FULL_SIZE,PILImage.Resampling.NEAREST)
+        full.save(self.cgpack_src_dir/filename)
+        full.resize(CG_SIZE,PILImage.Resampling.NEAREST).save(self.img_dir/filename)
+        self.scenes.append(entry)
+        cache[key] = idx
+        for f, digest in before.items():
+            assert hashlib.sha256(Path(f).read_bytes()).hexdigest() == digest, "base asset mutated"
+        entry["base_asset_hashes"] = before
+        return idx
+
+    def ch5_overlay_scene(self, scene_id: int, base_id: int, tag: str, vignette_top: bool = False) -> int:
+        """Bake ch5's static overlay approximation without losing lower layers.
+
+        Reuse the just-registered scene slot so the VM instruction layout and
+        subsequent scene/palette numbering stay stable. Only the ch5 Show
+        caller opts in; ordinary standalone images keep their existing bake.
+        """
+        entry = self.scenes[scene_id]
+        base = self.scenes[base_id]
+        base_path = self.cgpack_src_dir / base["file"]
+        if not base_path.exists():
+            base_path = self.img_dir / base["file"]
+        if not hasattr(self, "_ch5_underlays"):
+            self._ch5_underlays = {}
+        if base_id in self._ch5_underlays:
+            canvas = self._ch5_underlays[base_id].copy()
+        else:
+            with PILImage.open(base_path) as src:
+                canvas = src.convert("RGBA").resize((1280, 720), PILImage.Resampling.LANCZOS)
+        art = self._render_def(self.table[(tag,)])
+        if art is None:
+            raise ValueError(f"missing overlay art: {tag}")
+        if tag in ("splash_glitch", "splash_glitch2"):
+            canvas = art.convert("RGBA").resize((1280, 720), PILImage.Resampling.LANCZOS)
+        elif tag == "vignette":
+            self._ch5_underlays[scene_id] = canvas.copy()
+            art = art.resize((1280, 720), PILImage.Resampling.LANCZOS)
+            art.putalpha(art.getchannel("A").point(lambda a: round(a * 0.75)))
+            canvas.alpha_composite(art)
+        else:
+            # First authored static pose, at the declared 0.5 zoom.
+            # Match the approved renderer's top-left coordinates, not a centered anchor.
+            x, y = {"splash_glitch_m": (0.5, 0.5),
+                    "splash_glitch_n": (0.0, 0.0),
+                    "splash_glitch_y": (0.85, 1.3)}[tag]
+            art = art.resize((max(1, round(art.width * 0.5)),
+                              max(1, round(art.height * 0.5))),
+                             PILImage.Resampling.LANCZOS)
+            canvas.alpha_composite(art, (round(x * 1280),
+                                        round(y * 720)))
+        if tag != "vignette":
+            self._ch5_underlays[scene_id] = canvas.copy()
+            if vignette_top:
+                top = self._render_def(self.table[("vignette",)])
+                if top is None:
+                    raise ValueError("missing top vignette")
+                top = top.convert("RGBA").resize((1280, 720), PILImage.Resampling.LANCZOS)
+                top.putalpha(top.getchannel("A").point(lambda a: round(a * 0.75)))
+                canvas.alpha_composite(top)
+        full = canvas.resize(CG_FULL_SIZE, PILImage.Resampling.LANCZOS)
+        full.save(self.cgpack_src_dir / entry["file"])
+        full.resize(CG_SIZE, PILImage.Resampling.LANCZOS).save(self.img_dir / entry["file"])
+        entry["composition"] = {"base_scene": base_id, "overlay": tag,
+                                "static_atl_approximation": True,
+                                "semantic_z_order": [2, 3] if vignette_top else [3] if tag == "vignette" else [2],
+                                "vignette_top": vignette_top or tag == "vignette",
+                                "reference_pose": "initial_top_left",
+                                "character_motion": "static_approximation"}
+        return scene_id
+
     def cg_composite_scene_id(self, layers: tuple | list) -> int:
         norm_layers = normalize_cg_layers(layers)
         if not norm_layers:

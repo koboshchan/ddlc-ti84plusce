@@ -197,6 +197,26 @@ def do_compile(raw_dir: Path, build_dir: Path,
     # list (do_package()'s DCHJMP) -- see assets.h's assets_debug_chapter_*.
     compiler.file_entry_points: dict[str, tuple[int, int]] = {}
 
+    import inspect
+    scene_edges = []
+    original_scene_emit = vnasm.Assembler.scene
+    original_motion_emit = vnasm.Assembler.motion
+    def traced_scene_emit(asm, bg, trans=vnasm.TRANS_CUT):
+        frames=inspect.stack()
+        ctx=next((f.frame.f_locals for f in frames if "node" in f.frame.f_locals and "fname" in f.frame.f_locals), {})
+        node=ctx.get("node")
+        scene_edges.append(dict(chunk=asm.chunk_id,offset=len(asm.code),scene=bg,
+                                file=ctx.get("fname"),line=getattr(node,"linenumber",None)))
+        return original_scene_emit(asm,bg,trans)
+    def traced_motion_emit(asm, bg):
+        frames=inspect.stack()
+        ctx=next((f.frame.f_locals for f in frames if "node" in f.frame.f_locals and "fname" in f.frame.f_locals), {})
+        node=ctx.get("node")
+        scene_edges.append(dict(op="MOTION",chunk=asm.chunk_id,offset=len(asm.code),scene=bg,
+                                file=ctx.get("fname"),line=getattr(node,"linenumber",None)))
+        return original_motion_emit(asm,bg)
+    vnasm.Assembler.motion=traced_motion_emit
+    vnasm.Assembler.scene=traced_scene_emit
     assemblers: list[vnasm.Assembler] = []
     for name in files:
         path = raw_dir / f"{name}.rpyc"
@@ -218,6 +238,9 @@ def do_compile(raw_dir: Path, build_dir: Path,
 
     missing = link_chunks(assemblers)
     resolver.write_manifest()
+    vnasm.Assembler.scene = original_scene_emit
+    vnasm.Assembler.motion = original_motion_emit
+    (build_dir/"scene-source-dependency-graph.json").write_text(json.dumps(scene_edges,indent=2))
 
     # Which interned strings (compiler.var_strings) also happen to name a
     # real compiled label -- the table OP_JUMP_VAR/OP_CALL_VAR resolve
@@ -485,7 +508,7 @@ def zx0_compress(data: bytes, appvar_dir: Path) -> bytes:
 
 
 def pack_group(files: list[Path],
-               max_size: int = MAXVARSIZE) -> tuple[list[bytes], list[tuple[int, int, int]]]:
+               max_size: int = MAXVARSIZE, alias_ids: set[int] | None = None) -> tuple[list[bytes], list[tuple[int, int, int]]]:
     """Greedily pack files into <=max_size pieces, one AppVar's worth each,
     never splitting one file's bytes across two pieces -- so the reader
     only ever needs one ti_Open to get an image's complete compressed data,
@@ -497,8 +520,12 @@ def pack_group(files: list[Path],
     pieces: list[bytearray] = [bytearray()]
     lut: list[tuple[int, int, int]] = []
 
-    for f in files:
+    aliases = {}
+    for file_id, f in enumerate(files):
         data = f.read_bytes()
+        if (alias_ids is None or file_id in alias_ids) and data in aliases:
+            lut.append(aliases[data])
+            continue
         if len(data) > max_size:
             raise CompileError(f"{f} is {len(data)} bytes, larger than a single "
                                 f"AppVar can hold ({max_size})")
@@ -507,7 +534,9 @@ def pack_group(files: list[Path],
         piece_index = len(pieces) - 1
         offset = len(pieces[-1])
         pieces[-1] += data
-        lut.append((piece_index, offset, len(data)))
+        item = (piece_index, offset, len(data))
+        lut.append(item)
+        aliases.setdefault(data, item)
 
     return [bytes(p) for p in pieces], lut
 
@@ -521,7 +550,7 @@ def build_lut(entries: list[tuple[int, int, int]]) -> bytes:
 
 
 def package_group(files: list[Path], prefix: str, lut_name: str,
-                  build_dir: Path, appvar_dir: Path) -> list[Path]:
+                  build_dir: Path, appvar_dir: Path, alias_ids: set[int] | None = None) -> list[Path]:
     """Pack+ship a group of independently zx0-compressed images (sprites or
     scenes) as N data AppVars (@prefix + index, e.g. DSPR0, DSPR1, ...) plus
     one small LUT AppVar (@lut_name) recording which piece/offset/length
@@ -530,7 +559,7 @@ def package_group(files: list[Path], prefix: str, lut_name: str,
     splitting blindly risks straddling an image across an AppVar boundary.
     This is the middle ground: few AppVars, and every image whole in one.
     """
-    pieces, lut_entries = pack_group(files)
+    pieces, lut_entries = pack_group(files, alias_ids=alias_ids)
     appvars = [write_appvar(piece, ti_name(prefix, i), appvar_dir)
                for i, piece in enumerate(pieces)]
     lut_bytes = build_lut(lut_entries)
@@ -613,6 +642,20 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
         return gfx_dir / (Path(png_name).stem + ".bin")
 
     appvars: list[Path] = []
+    # Deterministic packed noise fixture, incompressible by design. Split
+    # below TI's 65535-byte AppVar limit. Whole texture is 640*720/8 bytes.
+    from PIL import Image
+    # These flags indicate mask availability only; noise_beat selects source beats.
+    flags = bytearray(256)
+    for entry in manifest["scenes"]:
+        comp = entry.get("composition", {})
+        if comp.get("vignette_top"):
+            flags[manifest["scenes"].index(entry)] = 1
+    with Image.open(raw_dir / "images/bg/vignette.png") as im:
+        alpha = im.convert("RGBA").getchannel("A").resize((16, 9))
+        mask = bytes(round(v * 15 / 255) for v in alpha.getdata()) + bytes(48)
+    for name, data in (("DNFX", bytes(flags) + mask),):
+        appvars.append(write_appvar(data, name, appvar_dir))
     for chunk_path in chunk_paths:
         chunk_id = int(chunk_path.stem.removeprefix("chunk"))
         compressed = zx0_compress(chunk_path.read_bytes(), appvar_dir)
@@ -731,7 +774,8 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
         appvars.append(write_appvar(sprite_offsets, "DSPROFF", appvar_dir))
 
     scene_files = [bin_for(s["file"]) for s in manifest["scenes"]]
-    appvars += package_group(scene_files, "DSCN", "DSCNLUT", build_dir, appvar_dir)
+    appvars += package_group(scene_files, "DSCN", "DSCNLUT", build_dir, appvar_dir,
+                             alias_ids=None)
 
     appvars.append(write_appvar((gfx_dir / "pal_game.bin").read_bytes(), "DPALGAME", appvar_dir))
 
@@ -821,6 +865,8 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
     # by chars_init() directly on-calc (and guarded by the FIRSTRUN marker), so they
     # do not need to be transferred via TI Connect CE.
 
+    from ch5_motion_assets import generate as motion_generate
+    appvars.extend(motion_generate(raw_dir, build_dir, appvar_dir, write_appvar))
     total = sum(p.stat().st_size for p in appvars)
     print(f"{len(appvars)} AppVars, {total} bytes total "
           f"({len(sprite_files)} sprites + {len(scene_files)} scenes)")
@@ -913,13 +959,26 @@ def do_bundle(prog_8xp: Path, appvars: list[Path], out_path: Path,
     if not prog_8xp.is_file():
         sys.exit(f"{prog_8xp} not found -- build the engine first (`make`, or "
                  f"`make bundle GAME_DIR=...` to do both in one step)")
-    inputs = optimize_flash_order(prog_8xp, appvars)
+    # convbin splits oversized engines into a loader and numbered code AppVars.
+    # They are executable dependencies, not optional assets.
+    engine_parts = sorted(prog_8xp.parent.glob(prog_8xp.name + ".*.8xv"))
+    inputs = optimize_flash_order(prog_8xp, appvars + engine_parts)
 
     args = ["convbin"]
     for f in inputs:
         args += ["-i", str(f)]
     args += ["-k", "b84", "-o", str(out_path)]
     subprocess.run(args, check=True)
+
+    # Audit every actual packaged variable, including loader/code AppVars.
+    from audit_ti_payloads import parse, LIMIT
+    import zipfile, hashlib, json
+    import audit_ti_payloads
+    subprocess.run([sys.executable, str(Path(__file__).with_name("audit_ti_payloads.py")),
+                    str(out_path), "--engine", str(prog_8xp), "--out", str(out_path.parent / "variable-size-audit.json")], check=True)
+    digest = hashlib.sha256(out_path.read_bytes()).hexdigest()
+    audit = out_path.parent / "variable-size-audit.json"
+    (out_path.parent / ("variable-size-audit-" + digest + ".json")).write_bytes(audit.read_bytes())
 
     # The real constraint: what actually has to sit in the calculator's
     # archive, uncompressed -- NOT out_path's size. .b84 is a ZIP container
