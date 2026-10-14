@@ -8,6 +8,7 @@
 #include <time.h>
 #include <string.h>
 #include <stdlib.h>
+#include "perf_memory.h"
 static ti_var_t h[1];
 static const uint8_t *meta;
 static uint8_t colors[32];

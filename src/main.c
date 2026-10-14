@@ -22,6 +22,7 @@
 #include <graphx.h>
 #include <keypadc.h>
 #include <sys/timers.h>
+#include "perf_overlay.h"
 #include <ti/getcsc.h>
 #include <ti/screen.h>
 
@@ -30,6 +31,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <stdlib.h>
+#include "perf_memory.h"
 
 /* Characters revealed per frame by the typewriter. */
 #define TYPE_SPEED 4
@@ -1182,7 +1185,7 @@ static __attribute__((noinline)) void run_debug_menu(vn_vm_t *vm)
     enum {
         DBG_POEM, DBG_TEXT, DBG_TAGS, DBG_FONT, DBG_ANIM, DBG_CG, DBG_LAYERED_CG,
         DBG_GLITCH, DBG_EVENTS, DBG_ASM,
-        DBG_SCENEINFO, DBG_TEAR, DBG_WINDOW, DBG_CHAPTERS,
+        DBG_SCENEINFO, DBG_TEAR, DBG_WINDOW, DBG_CHAPTERS, DBG_PERF,
         DBG_DEL_SAYORI, DBG_DEL_NATSUKI, DBG_DEL_YURI, DBG_DEL_MONIKA,
         DBG_ERASE, DBG_CLOSE, DBG_ACTION_MAX,
     };
@@ -1213,6 +1216,12 @@ static __attribute__((noinline)) void run_debug_menu(vn_vm_t *vm)
             count++;
         }
 
+#ifdef DDLC_PERF_OVERLAY
+        actions[count] = DBG_PERF;
+        sprintf(labels[count], "Performance overlay: %s",
+                perf_overlay_enabled() ? "ON" : "OFF");
+        count++;
+#endif
         if (vm) {
             actions[count] = DBG_SCENEINFO;
             strcpy(labels[count], "Scene diagnostic");
@@ -1334,6 +1343,11 @@ static __attribute__((noinline)) void run_debug_menu(vn_vm_t *vm)
                 run_debug_asm_test();
                 break;
 
+#ifdef DDLC_PERF_OVERLAY
+            case DBG_PERF:
+                perf_overlay_toggle();
+                break;
+#endif
             case DBG_SCENEINFO:
                 run_debug_scene_info(vm);
                 break;
@@ -1430,6 +1444,7 @@ static void noise_tick(vn_vm_t *vm, const vn_scene_t *scene, size_t visible) {
     if (!noise_was_enabled) { noise_started=clock(); noise_next_frame=noise_started; noise_was_enabled=true; }
     clock_t now=clock();
     if (now < noise_next_frame) return;
+    perf_overlay_begin();
     /* Restore BOTH scene and textbox before every effect frame. Never blend
      * into last frame; archive handles are closed before any asset load. */
     noise_restore();
@@ -1439,7 +1454,9 @@ static void noise_tick(vn_vm_t *vm, const vn_scene_t *scene, size_t visible) {
     if (noise_begin(scene->background)) noise_frame_scene((unsigned)(((uint64_t)(now-noise_started)*1000ULL)/CLOCKS_PER_SEC));
     noise_end();
     draw_dialogue_box(vm, scene, visible);
+    perf_overlay_end();
     gfx_BlitBuffer();
+    perf_overlay_draw();
     noise_next_frame += CLOCKS_PER_SEC/10;
     if (noise_next_frame <= clock()) noise_next_frame=clock()+CLOCKS_PER_SEC/10;
 }

@@ -16,10 +16,12 @@
 #include <fontlibc.h>
 #include <graphx.h>
 #include <sys/timers.h>
+#include "perf_overlay.h"
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "perf_memory.h"
 #include <string.h>
 #include <time.h>
 
@@ -71,6 +73,7 @@ void render_init(void)
 
 void render_end(void)
 {
+    perf_overlay_shutdown();
     gfx_End();
 }
 
@@ -826,7 +829,8 @@ static void scene_obscured(void);
 void render_scene(const vn_scene_t *scene)
 {
     noise_restore();
-    if (!ch5_motion_draw(scene->background)) draw_background(scene->background);
+    if (ch5_motion_draw(scene->background)) perf_overlay_mark_rendered();
+    else draw_background(scene->background);
     anim_moving = false;
 
     /* Real elapsed time, not a frame count -- render_scene() is called from
@@ -919,6 +923,7 @@ bool render_timed_cg(const vn_scene_t *scene, uint16_t index,
          * Only top 180 rows are frame data; remove sector padding below it. */
         memset((uint8_t *)gfx_vbuffer+57600u,0,19200u);
         render_apply_palette(palette);
+        perf_overlay_mark_rendered();
         have_drawn_once=false; /* never let a lazy cached underlay survive */
         return true;
     }
@@ -1285,6 +1290,7 @@ void render_present(uint8_t trans)
 
     gfx_SwapDraw();
     gfx_BlitScreen();
+    perf_overlay_draw();
 }
 
 /* ---------------------------------------------------------------------------

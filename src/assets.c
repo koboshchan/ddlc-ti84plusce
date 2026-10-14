@@ -34,6 +34,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include "perf_memory.h"
 #include <string.h>
 
 /* A single resident chunk's string pool, generously capped -- the largest

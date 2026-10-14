@@ -9,6 +9,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include "perf_memory.h"
 
 /* DPSLOT: u16 count, then one u8 slot per entry -- which vars[] indices are
  * `persistent.*` (see tools/import_game.py's packaging). Compiler-generated

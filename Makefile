@@ -12,6 +12,10 @@ CFLAGS = -Wall -Wextra -Oz -fno-inline-functions
 # Balanced contiguous code parts; stock convbin extractor copies real part lengths.
 # Split derived from actual token-stripped engine by wrapper.
 
+ifeq ($(PERF_OVERLAY),1)
+CFLAGS += -DDDLC_PERF_OVERLAY
+endif
+
 CXXFLAGS = -Wall -Wextra -Oz
 
 HAS_PRINTF = NO

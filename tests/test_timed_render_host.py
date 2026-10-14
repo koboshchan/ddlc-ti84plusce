@@ -127,7 +127,7 @@ int main(int argc,char**argv){
    f=export_timed_frame(p,35,1,100,pix,pal)
    s=export_timed_schedule(p/'schedule',35,100,[(pix,pal)]*3)
    (p/'test.c').write_text(prefix+reader+render+tick+tests)
-   subprocess.run(['cc','-std=c11','-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer',str(p/'test.c'),'-o',str(p/'test')],check=True)
+   subprocess.run(['cc','-include',str(ROOT/'src/perf_overlay.h'),'-std=c11','-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer',str(p/'test.c'),'-o',str(p/'test')],check=True)
    subprocess.run([str(p/'test'),str(f),str(s)],check=True)
 if __name__=='__main__':unittest.main()
 
