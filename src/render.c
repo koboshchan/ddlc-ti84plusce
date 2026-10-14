@@ -1035,6 +1035,15 @@ void render_scene_lazy(const vn_scene_t *scene)
 void render_box(const vn_scene_t *scene, const char *speaker,
                 const char *text, size_t visible)
 {
+    static bool had_namebox;
+    /* Restore scene before filling the textbox: motion uses its lower rows
+     * as temporary scratch, so a late redraw would erase the new box. */
+    if (had_namebox && (speaker == NULL || scene->window_hidden ||
+                        text == NULL || text[0] == '\0')) {
+        render_scene(scene);
+        had_namebox = false;
+    }
+
     /* `window hide` or empty text -- DDLC uses this for beats with no text
      * (e.g. splash screens, CGs, end screens, pauses) over a clean shot of
      * the scene. The letterbox area (rows 180..239) is filled matching the
@@ -1085,8 +1094,6 @@ void render_box(const vn_scene_t *scene, const char *speaker,
      * area above BOX_Y, and render_scene_lazy()'s "already correct, skip"
      * fast path has no reason to know that rectangle needs fixing, since
      * nothing about the actors/background actually changed. */
-    static bool had_namebox;
-
     if (speaker != NULL) {
         /* Pokes up above BOX_Y into the scene area, matching the real
          * game's namebox -- safe despite render_scene_lazy()'s "plate"
@@ -1122,13 +1129,6 @@ void render_box(const vn_scene_t *scene, const char *speaker,
         }
         set_font(FONT_DEFAULT);
         had_namebox = true;
-    } else if (had_namebox) {
-        /* Just transitioned from a shown namebox to narration -- redraw the
-         * scene for real (not the lazy/plate path) so whatever legitimately
-         * belongs under that rectangle (background art, an actor) replaces
-         * the stale namebox immediately, in this same frame. */
-        render_scene(scene);
-        had_namebox = false;
     }
 
     /* text_wrap() re-measures every character-width prefix of every line it
