@@ -25,7 +25,7 @@
  * into the middle of an instruction, variables holding another build's
  * values. Cheaper to stamp it than to debug it. */
 #define SAVE_MAGIC   0x444C4353UL  /* "SCLD" */
-#define SAVE_VERSION 2             /* 2: VN_MAX_VARS 64 -> 256 */
+#define SAVE_VERSION 3             /* 3: splash bytecode PCs changed; DPERSIST unchanged */
 
 typedef struct {
     uint32_t   magic;
