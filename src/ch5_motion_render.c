@@ -135,7 +135,7 @@ bool ch5_motion_draw(uint8_t scene){
   uint8_t *ramlut=lookup_aligned;
   uint8_t *pages=ramlut+4096;
   uint8_t page_base=(uint8_t)((uintptr_t)ramlut>>8);
-  for(unsigned pg=0;pg<256;pg++)pages[pg]=page_base+quant_groups[pg];
+  if(!opaque)for(unsigned pg=0;pg<256;pg++)pages[pg]=page_base+quant_groups[pg];
 
   if(!opaque)memcpy(ramlut,qdata+272+(pose.alpha_q10<352?0:pose.alpha_q10<544?4096:8192),4096);
   unsigned first=0,end=320;
