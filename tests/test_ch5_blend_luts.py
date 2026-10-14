@@ -14,3 +14,8 @@ class BlendLuts(unittest.TestCase):
   for fg,p in enumerate(palette):
    self.assertEqual(tables[15][fg*32:fg*32+32],bytes([nearest[p]])*32)
   self.assertEqual((groups,tables),generate_blend_luts(palette,nearest))
+
+ def test_reject_invalid_assets(self):
+  with self.assertRaises(ValueError):generate_blend_luts([],bytes(32768))
+  with self.assertRaises(ValueError):generate_blend_luts([32768]*256,bytes(32768))
+  with self.assertRaises(ValueError):generate_blend_luts([0]*256,bytes([255])*32768)

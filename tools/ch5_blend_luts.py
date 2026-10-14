@@ -1,6 +1,12 @@
 """Offline bounded approximate palette blend tables, pure Python."""
 import struct
 def generate_blend_luts(palette,nearest):
+ if len(palette)!=256 or len(nearest)!=32768:
+  raise ValueError("Expected 256 RGB1555 colors and 32768 nearest entries")
+ if any(v<0 or v>32767 for v in palette):
+  raise ValueError("Palette color outside RGB1555 range")
+ if any(v>254 for v in nearest):
+  raise ValueError("Nearest lookup must exclude transparent index")
  channels=[((v>>10)&31,(v>>5)&31,v&31) for v in palette]
  def dist(a,b):return sum((x-y)**2 for x,y in zip(a,b))
  centers=[channels[0]]
