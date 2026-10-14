@@ -1,14 +1,13 @@
 #include <time.h>
 
+
 #include <stdint.h>
 void ch5_motion_quant_solid1(uint8_t*,const uint8_t*,unsigned,const uint8_t*,const uint8_t*);
 void ch5_motion_quant_solid2(uint8_t*,const uint8_t*,unsigned,const uint8_t*,const uint8_t*);
-void ch5_motion_opaque_solid1(uint8_t*,const uint8_t*,unsigned);
 void ch5_motion_opaque_solid2(uint8_t*,const uint8_t*,unsigned);
 #include <stdint.h>
 #include <time.h>
 
-void ch5_motion_expand_fast(uint8_t*,const uint8_t*,unsigned);
 #include "ch5_bands.h"
 #include "ch5_motion.h"
 #include "ch5_motion_fast.h"
@@ -18,10 +17,16 @@ void ch5_motion_expand_fast(uint8_t*,const uint8_t*,unsigned);
 #include <string.h>
 #include <stdlib.h>
 #include "perf_memory.h"
+
 void ch5_motion_quant_direct1(uint8_t*,const uint8_t*,unsigned,const uint8_t*,const uint8_t*);
 void ch5_motion_quant_direct2(uint8_t*,const uint8_t*,unsigned,const uint8_t*,const uint8_t*);
 void ch5_motion_opaque_direct1(uint8_t*,const uint8_t*,unsigned);
 void ch5_motion_opaque_direct2(uint8_t*,const uint8_t*,unsigned);
+void ch5_fused_bg_0(uint8_t*,const uint8_t*,const uint8_t*,const uint8_t*,const uint8_t*);
+void ch5_fused_bg_1(uint8_t*,const uint8_t*,const uint8_t*,const uint8_t*,const uint8_t*);
+void ch5_fused_bg_2(uint8_t*,const uint8_t*,const uint8_t*,const uint8_t*,const uint8_t*);
+void ch5_fused_bg_3(uint8_t*,const uint8_t*,const uint8_t*,const uint8_t*,const uint8_t*);
+static int16_t pair_x[320],pair_y[180];
 static int16_t xmap[320],ymap[180];
 static uint8_t last_scene=255;
 
@@ -145,6 +150,55 @@ bool ch5_motion_draw(uint8_t scene){
 
  /* Proven full-screen opaque mode-3 coverage overwrites every pixel. */
  if(!first_layer)memset(gfx_vbuffer,0,320*180);
+
+ /* Opt-in only for the actual adjacent background pair. Every other path
+  * retains the existing compositor. Maps and transparency proved before writes. */
+ if(first_layer==1 && record[1]>=3 && record[4]==0 && record[6]==1){
+  unsigned ms0=(unsigned)(((uint64_t)(clock()-layer_start[1])*1000ULL)/CLOCKS_PER_SEC);
+  unsigned ms1=(unsigned)(((uint64_t)(clock()-layer_start[2])*1000ULL)/CLOCKS_PER_SEC);
+  ch5_motion_t a=ch5_motion(ms0,record[5],1280,720);
+  ch5_motion_t b=ch5_motion(ms1,record[7],1280,720);
+  bool eligible=a.alpha_q10==1024 && b.alpha_q10>0 && b.alpha_q10<1024 &&
+                a.zoom_q10==2000000u && b.zoom_q10==2000000u;
+  if(eligible){
+   motion_axis_map(pair_x,320,a.x,a.zoom_q10,320);
+   motion_axis_map(pair_y,180,a.y,a.zoom_q10,180);
+   motion_axis_map(xmap,320,b.x,b.zoom_q10,320);
+   motion_axis_map(ymap,180,b.y,b.zoom_q10,180);
+   for(unsigned k=0;k<320;k++)if(pair_x[k]<0||xmap[k]<0)eligible=false;
+   for(unsigned k=0;k<180;k++)if(pair_y[k]<0||ymap[k]<0)eligible=false;
+  }
+  if(eligible){
+   /* Preflight both source windows. No partial fusion before fallback. */
+   for(unsigned k=0;k<180 && eligible;k++){
+    if(k && pair_y[k]==pair_y[k-1] && ymap[k]==ymap[k-1])continue;
+    const uint8_t *r0=ch5_band_row(0,pair_y[k]);
+    const uint8_t *r1=ch5_band_row(1,ymap[k]);
+    if(!r0||!r1)goto motion_done;
+    if(memchr(r0+pair_x[0],255,pair_x[319]-pair_x[0]+1)||
+       memchr(r1+xmap[0],255,xmap[319]-xmap[0]+1))eligible=false;
+   }
+  }
+  if(eligible){
+   uint8_t *table=lookup_aligned,*pages=table+4096;
+   uint8_t base=(uint8_t)((uintptr_t)table>>8),pg=0;
+   do{pages[pg]=base+quant_groups[pg];}while(++pg);
+   memcpy(table,qdata+272+(b.alpha_q10<352?0:b.alpha_q10<544?4096:8192),4096);
+   unsigned phase=(pair_x[1]!=pair_x[0]) | ((xmap[1]!=xmap[0])<<1);
+   void (*kernel)(uint8_t*,const uint8_t*,const uint8_t*,const uint8_t*,const uint8_t*)=
+     phase==0?ch5_fused_bg_0:phase==1?ch5_fused_bg_1:phase==2?ch5_fused_bg_2:ch5_fused_bg_3;
+   for(unsigned k=0;k<180;k++){
+    if(k && pair_y[k]==pair_y[k-1] && ymap[k]==ymap[k-1]){
+     memcpy((uint8_t*)gfx_vbuffer+k*320,(uint8_t*)gfx_vbuffer+(k-1)*320,320);continue;
+    }
+    const uint8_t *r0=ch5_band_row(0,pair_y[k]);
+    const uint8_t *r1=ch5_band_row(1,ymap[k]);
+    if(!r0||!r1)goto motion_done;
+    kernel((uint8_t*)gfx_vbuffer+k*320,r0+pair_x[0],r1+xmap[0],pages,table);
+   }
+   first_layer=3;
+  }
+ }
  for(i=first_layer;i<record[1];i++){
   layer=record[2+i*2];mode=record[3+i*2];
   unsigned tw=layer<2?320:72,th=layer<2?180:263;
@@ -181,58 +235,30 @@ bool ch5_motion_draw(uint8_t scene){
    uint8_t *dst=(uint8_t *)gfx_vbuffer+y*320;
    /* Never assume packaged backgrounds are opaque. Scan the decoded row;
     * unusual transparent assets retain the original guarded kernels. */
-   if(prior_solid){
-   if(opaque){
-    if(linear)memcpy(dst+first,row+xmap[first],span);
-    else if(odd_doubled && !doubled && span>=3){
-     ch5_motion_opaque_solid1(dst+first,row+xmap[first],1);
-     unsigned remaining=span-1,even=remaining&~1u;
-     ch5_motion_opaque_solid2(dst+first+1,row+xmap[first+1],even/2);
-     if(remaining!=even)ch5_motion_opaque_solid1(dst+first+1+even,row+xmap[first+1+even],1);
-    }else if(doubled && span>=2){
-     unsigned even=span&~1u;
-     ch5_motion_opaque_solid2(dst+first,row+xmap[first],even/2);
-     if(span!=even)ch5_motion_opaque_solid1(dst+first+even,row+xmap[first+even],1);
-    }else ch5_motion_opaque_fast(dst+first,row,xmap+first,span);
+   if(opaque && prior_solid && linear){memcpy(dst+first,row+xmap[first],span);continue;}
+   void (*copy1)(uint8_t*,const uint8_t*,unsigned)=ch5_motion_opaque_direct1;
+   void (*copy2)(uint8_t*,const uint8_t*,unsigned)=prior_solid?ch5_motion_opaque_solid2:ch5_motion_opaque_direct2;
+   void (*blend1)(uint8_t*,const uint8_t*,unsigned,const uint8_t*,const uint8_t*)=prior_solid?ch5_motion_quant_solid1:ch5_motion_quant_direct1;
+   void (*blend2)(uint8_t*,const uint8_t*,unsigned,const uint8_t*,const uint8_t*)=prior_solid?ch5_motion_quant_solid2:ch5_motion_quant_direct2;
+   if(linear){
+    if(opaque)copy1(dst+first,row+xmap[first],span);
+    else blend1(dst+first,row+xmap[first],span,pages,ramlut);
+   }else if((odd_doubled && !doubled && span>=3)||(doubled && span>=2)){
+    unsigned edge=odd_doubled && !doubled,remaining=span-edge,even=remaining&~1u;
+    if(edge){
+     if(opaque){if(prior_solid)dst[first]=row[xmap[first]];else copy1(dst+first,row+xmap[first],1);}
+     else blend1(dst+first,row+xmap[first],1,pages,ramlut);
+    }
+    if(opaque)copy2(dst+first+edge,row+xmap[first+edge],even/2);
+    else blend2(dst+first+edge,row+xmap[first+edge],even/2,pages,ramlut);
+    if(remaining!=even){
+     unsigned last=first+edge+even;
+     if(opaque){if(prior_solid)dst[last]=row[xmap[last]];else copy1(dst+last,row+xmap[last],1);}
+     else blend1(dst+last,row+xmap[last],1,pages,ramlut);
+    }
    }else{
-    if(linear)ch5_motion_quant_solid1(dst+first,row+xmap[first],span,pages,ramlut);
-    else if(odd_doubled && !doubled && span>=3){
-     ch5_motion_quant_solid1(dst+first,row+xmap[first],1,pages,ramlut);
-     unsigned remaining=span-1,even=remaining&~1u;
-     ch5_motion_quant_solid2(dst+first+1,row+xmap[first+1],even/2,pages,ramlut);
-     if(remaining!=even)ch5_motion_quant_solid1(dst+first+1+even,row+xmap[first+1+even],1,pages,ramlut);
-    }else if(doubled && span>=2){
-     unsigned even=span&~1u;
-     ch5_motion_quant_solid2(dst+first,row+xmap[first],even/2,pages,ramlut);
-     if(span!=even)ch5_motion_quant_fast(dst+first+even,row,xmap+first+even,1,pages,ramlut);
-    }else ch5_motion_quant_fast(dst+first,row,xmap+first,span,pages,ramlut);
-   }
-   }else{
-   if(opaque){
-    if(linear)ch5_motion_opaque_direct1(dst+first,row+xmap[first],span);
-    else if(odd_doubled && !doubled && span>=3){
-     ch5_motion_opaque_direct1(dst+first,row+xmap[first],1);
-     unsigned remaining=span-1,even=remaining&~1u;
-     ch5_motion_opaque_direct2(dst+first+1,row+xmap[first+1],even/2);
-     if(remaining!=even)ch5_motion_opaque_direct1(dst+first+1+even,row+xmap[first+1+even],1);
-    }else if(doubled && span>=2){
-     unsigned even=span&~1u;
-     ch5_motion_opaque_direct2(dst+first,row+xmap[first],even/2);
-     if(span!=even)ch5_motion_opaque_direct1(dst+first+even,row+xmap[first+even],1);
-    }else ch5_motion_opaque_fast(dst+first,row,xmap+first,span);
-   }else{
-    if(linear)ch5_motion_quant_direct1(dst+first,row+xmap[first],span,pages,ramlut);
-    else if(odd_doubled && !doubled && span>=3){
-     ch5_motion_quant_direct1(dst+first,row+xmap[first],1,pages,ramlut);
-     unsigned remaining=span-1,even=remaining&~1u;
-     ch5_motion_quant_direct2(dst+first+1,row+xmap[first+1],even/2,pages,ramlut);
-     if(remaining!=even)ch5_motion_quant_direct1(dst+first+1+even,row+xmap[first+1+even],1,pages,ramlut);
-    }else if(doubled && span>=2){
-     unsigned even=span&~1u;
-     ch5_motion_quant_direct2(dst+first,row+xmap[first],even/2,pages,ramlut);
-     if(span!=even)ch5_motion_quant_fast(dst+first+even,row,xmap+first+even,1,pages,ramlut);
-    }else ch5_motion_quant_fast(dst+first,row,xmap+first,span,pages,ramlut);
-   }
+    if(opaque)ch5_motion_opaque_fast(dst+first,row,xmap+first,span);
+    else ch5_motion_quant_fast(dst+first,row,xmap+first,span,pages,ramlut);
    }
   }
   

@@ -9,6 +9,4 @@ void ch5_motion_opaque_fast(uint8_t *dst,const uint8_t *src,
 void ch5_motion_lut_fast(uint8_t *dst,const uint8_t *src,
                          const int16_t *map,size_t count,
                          const uint8_t *groups,const uint8_t *lut);
-/* Returns consumed pixels up to the first uncached opaque pair. */
-size_t ch5_motion_cached_fast(uint8_t*,const uint8_t*,const int16_t*,size_t,const uint16_t*,const uint8_t*);
 #endif

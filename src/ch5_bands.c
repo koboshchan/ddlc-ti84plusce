@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include "perf_memory.h"
 
+
 /* Layer-local caches keep decoded rows valid while another layer is sampled.
  * No framebuffer scratch: textbox drawing and graphx swaps overwrite it. */
 static uint8_t pixels_bg[2][320 * 8];

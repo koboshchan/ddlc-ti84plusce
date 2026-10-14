@@ -76,3 +76,5 @@ int main(void){
    subprocess.run([str(tmp/'test')],check=True)
 
 HARNESS += '\nuint8_t *resident;\n'
+
+HARNESS += '\nvoid ch5_fused_bg_0(uint8_t*d,const uint8_t*a,const uint8_t*b,const uint8_t*g,const uint8_t*t){for(unsigned x=0;x<320;x++){uint8_t pg=(uint8_t)(g[b[(x+0)/2]]-(uint8_t)((uintptr_t)t>>8));d[x]=t[((unsigned)pg<<8)|a[(x+0)/2]];}}\nvoid ch5_fused_bg_1(uint8_t*d,const uint8_t*a,const uint8_t*b,const uint8_t*g,const uint8_t*t){for(unsigned x=0;x<320;x++){uint8_t pg=(uint8_t)(g[b[(x+0)/2]]-(uint8_t)((uintptr_t)t>>8));d[x]=t[((unsigned)pg<<8)|a[(x+1)/2]];}}\nvoid ch5_fused_bg_2(uint8_t*d,const uint8_t*a,const uint8_t*b,const uint8_t*g,const uint8_t*t){for(unsigned x=0;x<320;x++){uint8_t pg=(uint8_t)(g[b[(x+1)/2]]-(uint8_t)((uintptr_t)t>>8));d[x]=t[((unsigned)pg<<8)|a[(x+0)/2]];}}\nvoid ch5_fused_bg_3(uint8_t*d,const uint8_t*a,const uint8_t*b,const uint8_t*g,const uint8_t*t){for(unsigned x=0;x<320;x++){uint8_t pg=(uint8_t)(g[b[(x+1)/2]]-(uint8_t)((uintptr_t)t>>8));d[x]=t[((unsigned)pg<<8)|a[(x+1)/2]];}}\n'

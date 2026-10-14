@@ -71,3 +71,37 @@ constant-time seed-to-phase map would require another 131070 bytes. This
 does not fit the current heap budget. The shipped unrolled kernel adds
 no noise working RAM and preserves sparse coverage instead.
 
+
+
+## Composed background rows and shared scanline dispatch
+
+Adjacent opaque-background and quantized-background layers can be fused when
+their actual asset records, maps, coverage, opacity, and source windows prove
+eligible. Transparency or clipping falls back to the original compositor.
+Repeated pairs of source rows copy the previous composed background row before
+any foreground rendering. The memoization is local to the draw; it cannot copy
+foreground pixels or survive palette, pose, alpha, or scene changes.
+
+The renderer shares the solid/transparent scanline dispatch instead of keeping
+two copies of its edge and doubled-pixel logic. Unused cache and reverse-expand
+assembly routines are removed. All four fused phase kernels remain available.
+
+At 48 MHz, seven fresh target samples match the baseline framebuffer bytes.
+Scene 35 measures 485.077, 510.132, and 483.673 ms, compared with the previous
+520 534 ms range. Scene 32 measures 294.617 and 319.824 ms; scene 26 remains
+654.755 ms. These CPU timings include palette setup, stream validation, band
+decoding, and blending, but exclude dialogue, noise, and presentation.
+
+The sanitizer corpus contains 1,261 frames, all byte-identical to the previous
+quality candidate. The renderer regressions also cover 1,930 authored-layout
+cases and 600 forced-pose cases, including all four sampling phases,
+transparency, clipping, draw isolation, and foreground nonleakage.
+
+Release archive use is 2,969,475 bytes, leaving 525 bytes against the configured
+2,970,000-byte limit. Individual variable caps pass. The debug overlay totals
+2,971,979 bytes; this overflow is informational and is not a release gate.
+
+The separate target diagnostic records 448 composed-row copies and 452 fused
+rows across the seven samples. All four loaded fused kernels match the timed
+build. A further target ABI run passes 2,503 guarded reference cases with zero
+errors, including all four fused phases and counts 0 320 for scanline kernels.

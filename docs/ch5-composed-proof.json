@@ -1,0 +1,237 @@
+{
+  "target": {
+    "source_hashes": {
+      "src/ch5_bands.c": "73ab8764ad59879c7da36366605bfd7298b17b9c96f2ed36ee91d79db60ebad5",
+      "src/ch5_bands.h": "5f8961384589381245208fa280039d2b7217c9b826eac527ce0f26da635a7854",
+      "src/ch5_motion.h": "9f5949852d030d7f5c97c846b714cedbbe9262f438e389b43544384592978ab2",
+      "src/ch5_motion_fast.h": "c9fe048e577f3a0dd24dff00d90e2e819665edfbeb16c12b6ada7bfcfdd1895a",
+      "src/ch5_motion_fast.s": "2e343dd8ca5d55fb9da21dc9ffda392dabdb0e2be879f0417a94e45076f713d1",
+      "src/ch5_motion_render.c": "561af4b803c04a9e109ceea1e2cc418a0f4e468312467dcfc97de2e938309507",
+      "src/main.c": "1f7dda585bd59f0025f42af147de0f89438e073632214cbdf00c5ca82dc15c6a",
+      "src/quant.c": "b63d4f3c7fe47e85d8ce10057df1a2189542bee31205559a900310c40e93d24c"
+    },
+    "full_text_bytes": 17604,
+    "full_text_sha256": "345a4ad69999b98db055bab75ca57e526418580db4ab68718381ceace6ebcaee",
+    "target_frames_equal_baseline": true,
+    "timings": {
+      "clock_hz": 32768,
+      "cpu_hz": 48000000,
+      "rows": [
+        {
+          "scene": 20,
+          "age_ms": 0,
+          "ticks": 3161,
+          "ok": 1,
+          "frame_hash": "0xcd09e9cb",
+          "ms": 96.466064453125
+        },
+        {
+          "scene": 26,
+          "age_ms": 0,
+          "ticks": 21455,
+          "ok": 1,
+          "frame_hash": "0xed85664",
+          "ms": 654.754638671875
+        },
+        {
+          "scene": 32,
+          "age_ms": 0,
+          "ticks": 9654,
+          "ok": 1,
+          "frame_hash": "0x66340da5",
+          "ms": 294.61669921875
+        },
+        {
+          "scene": 32,
+          "age_ms": 1125,
+          "ticks": 10480,
+          "ok": 1,
+          "frame_hash": "0x30867c22",
+          "ms": 319.82421875
+        },
+        {
+          "scene": 35,
+          "age_ms": 0,
+          "ticks": 15895,
+          "ok": 1,
+          "frame_hash": "0xde9ff9ff",
+          "ms": 485.076904296875
+        },
+        {
+          "scene": 35,
+          "age_ms": 1125,
+          "ticks": 16716,
+          "ok": 1,
+          "frame_hash": "0xa3371c24",
+          "ms": 510.1318359375
+        },
+        {
+          "scene": 35,
+          "age_ms": 3000,
+          "ticks": 15849,
+          "ok": 1,
+          "frame_hash": "0x170805a9",
+          "ms": 483.673095703125
+        }
+      ],
+      "ram_sha256": "73a0761eb8ff767e20683083af16b8e598a656afa66a9ad3096258724e52b128",
+      "scope": "Direct ch5_motion_draw CPU timer, frozen authored clock. Includes palette, sync, stream validation, bands, alpha blend. Excludes UI/blit/noise. Full fresh reset+ROM+DMOT deps+clibs+Artifice. No screenshot inspection.",
+      "loaded_signatures": {
+        "_ch5_motion_draw": {
+          "address": 13745578,
+          "match": true,
+          "sha256": "9ca404ca4758720feeafaec9a87d2dd4a78cfd8f5ecfc91deef85e74ebc76ec9"
+        },
+        "_ch5_band_row": {
+          "address": 13744305,
+          "match": true,
+          "sha256": "7245ae2197ca5274569bf511bd833a910f97ffbde6766787a44a9754c402d668"
+        }
+      }
+    }
+  },
+  "activation": {
+    "kernels": {
+      "_ch5_fused_bg_0": {
+        "bytes": 87,
+        "sha256": "cf914b1ce0c2cac372e41f0b74eafdc8399a178978ac4c645c5f51eb6a280806",
+        "loaded_counter_timed_equal": true
+      },
+      "_ch5_fused_bg_1": {
+        "bytes": 115,
+        "sha256": "1aa6be0f3edcd30cef6f132d836efa699d7724776c2c489c900ee686cc810779",
+        "loaded_counter_timed_equal": true
+      },
+      "_ch5_fused_bg_2": {
+        "bytes": 115,
+        "sha256": "b3e34bb26628692b6705cd66465a40cb1605b4fd6c5d36895a96b171b3647663",
+        "loaded_counter_timed_equal": true
+      },
+      "_ch5_fused_bg_3": {
+        "bytes": 115,
+        "sha256": "8b87ae9b8658c882a819dea621fd080755962aeb3fb57ee51e908a21afd45b81",
+        "loaded_counter_timed_equal": true
+      }
+    },
+    "cumulative_counts": [
+      {
+        "_composed_copies": [
+          0
+        ],
+        "_composed_rows": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "_composed_copies": [
+          0
+        ],
+        "_composed_rows": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "_composed_copies": [
+          90
+        ],
+        "_composed_rows": [
+          90,
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "_composed_copies": [
+          179
+        ],
+        "_composed_rows": [
+          90,
+          0,
+          0,
+          91
+        ]
+      },
+      {
+        "_composed_copies": [
+          269
+        ],
+        "_composed_rows": [
+          180,
+          0,
+          0,
+          91
+        ]
+      },
+      {
+        "_composed_copies": [
+          358
+        ],
+        "_composed_rows": [
+          180,
+          0,
+          0,
+          182
+        ]
+      },
+      {
+        "_composed_copies": [
+          448
+        ],
+        "_composed_rows": [
+          270,
+          0,
+          0,
+          182
+        ]
+      }
+    ],
+    "full_text_verified": true
+  },
+  "abi": {
+    "abi_cases": 2503,
+    "abi_errors": 0,
+    "abi_finished": 1094863153,
+    "kernels": {
+      "_ch5_fused_bg_0": {
+        "bytes": 87,
+        "timed_loaded_abi_equal": true
+      },
+      "_ch5_fused_bg_1": {
+        "bytes": 115,
+        "timed_loaded_abi_equal": true
+      },
+      "_ch5_fused_bg_2": {
+        "bytes": 115,
+        "timed_loaded_abi_equal": true
+      },
+      "_ch5_fused_bg_3": {
+        "bytes": 115,
+        "timed_loaded_abi_equal": true
+      }
+    }
+  },
+  "release": {
+    "total": 2969475,
+    "headroom": 525
+  },
+  "host": {
+    "frames": 1261,
+    "all_equal_prior_candidate": true,
+    "asan_ubsan": true,
+    "suite_tests": 31,
+    "authored_adversarial": 1930,
+    "forced_all_phases": 600
+  },
+  "debug": {
+    "total": 2971979,
+    "over": 1979,
+    "informational_only": true
+  }
+}

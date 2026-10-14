@@ -39,142 +39,6 @@ _ch5_motion_opaque_fast:
 	ret
 
 
-	.global _ch5_motion_cached_fast
-	.type _ch5_motion_cached_fast,@function
-; size_t ch5_motion_cached_fast(dst,src,map,count,tags,colors)
-; Returns number consumed before first nontransparent cache miss.
-; Cache is read-only. IY keeps frame arguments; IX is clipped xmap.
-_ch5_motion_cached_fast:
-	push ix
-	push iy
-	ld iy,0
-	add iy,sp
-	ld de,(iy+9)
-	ld bc,(iy+12)
-	ld ix,(iy+15)
-	ld hl,(iy+18)
-	push hl
-.hit_loop:
-	ld hl,(iy-3)
-	ld a,h
-	or a,l
-	jr z,.hit_return
-	ld hl,0
-	ld l,(ix+0)
-	ld h,(ix+1)
-	add hl,bc
-	ld a,(hl)
-	cp a,255
-	jr z,.hit_advance
-	push bc
-	push de
-	ld hl,0
-	ld h,a
-	ld a,(de)
-	ld l,a
-	push hl
-	; Hash ((fg<<5)-fg+bg)&4095. Keep upper HL/DE/BC zero.
-	ld de,0
-	ld e,h
-	ld bc,0
-	ld c,l
-	ld hl,0
-	ld l,e
-	add hl,hl
-	add hl,hl
-	add hl,hl
-	add hl,hl
-	add hl,hl
-	or a,a
-	sbc hl,de
-	add hl,bc
-	ld a,h
-	and a,15
-	ld h,a
-	add hl,hl
-	ld bc,(iy+21)
-	add hl,bc
-	pop bc
-	ld a,(hl)
-	cp a,c
-	jr nz,.hit_miss
-	inc hl
-	ld a,(hl)
-	cp a,b
-	jr nz,.hit_miss
-	; Matching tag. Recompute hash from the pair in BC.
-	ld de,0
-	ld e,b
-	ld hl,0
-	ld l,c
-	push hl
-	ld hl,0
-	ld l,e
-	add hl,hl
-	add hl,hl
-	add hl,hl
-	add hl,hl
-	add hl,hl
-	or a,a
-	sbc hl,de
-	pop bc
-	add hl,bc
-	ld a,h
-	and a,15
-	ld h,a
-	ld bc,(iy+24)
-	add hl,bc
-	ld a,(hl)
-	pop de
-	pop bc
-	ld (de),a
-.hit_advance:
-	inc de
-	lea ix,ix+2
-	ld hl,(iy-3)
-	dec hl
-	ld (iy-3),hl
-	jp .hit_loop
-.hit_miss:
-	pop de
-	pop bc
-.hit_return:
-	; Return original count minus remaining in 24-bit HL.
-	ld bc,(iy-3)
-	ld hl,(iy+18)
-	or a,a
-	sbc hl,bc
-	pop bc
-	pop iy
-	pop ix
-	ret
-
-	.global _ch5_motion_expand_fast
-	.type _ch5_motion_expand_fast,@function
-_ch5_motion_expand_fast:
-	push ix
-	push iy
-	ld ix,0
-	add ix,sp
-	ld de,(ix+9)
-	ld hl,(ix+12)
-	ld iy,(ix+15)
-.expand_loop:
-	ld a,(hl)
-	ld (de),a
-	dec de
-	ld (de),a
-	dec de
-	dec hl
-	dec iy
-	ld a,iyl
-	or a,iyh
-	jr nz,.expand_loop
-	pop iy
-	pop ix
-	ret
-
-
  .global _ch5_motion_quant_fast
  .type _ch5_motion_quant_fast,@function
 _ch5_motion_quant_fast:
@@ -1362,90 +1226,6 @@ _ch5_motion_quant_solid2:
  pop ix
  ret
 
-.global _ch5_motion_opaque_solid1
-.type _ch5_motion_opaque_solid1,@function
-_ch5_motion_opaque_solid1:
- push ix
- ld ix,0
- add ix,sp
- ld de,(ix+6)
- ld hl,(ix+9)
- ld bc,(ix+12)
- ld a,c
- and a,7
- push af
- srl b
- rr c
- srl b
- rr c
- srl b
- rr c
- ld a,b
- or a,c
- jp z,.opaquesolid1_tailsetup
-.opaquesolid1_blocks:
- ld a,(hl)
-
- ld (de),a
- inc de
- inc hl
- ld a,(hl)
-
- ld (de),a
- inc de
- inc hl
- ld a,(hl)
-
- ld (de),a
- inc de
- inc hl
- ld a,(hl)
-
- ld (de),a
- inc de
- inc hl
- ld a,(hl)
-
- ld (de),a
- inc de
- inc hl
- ld a,(hl)
-
- ld (de),a
- inc de
- inc hl
- ld a,(hl)
-
- ld (de),a
- inc de
- inc hl
- ld a,(hl)
-
- ld (de),a
- inc de
- inc hl
- dec bc
- ld a,b
- or a,c
- jp nz,.opaquesolid1_blocks
-.opaquesolid1_tailsetup:
- pop af
- ld c,a
- ld b,0
- or a,a
- jr z,.opaquesolid1_done
-.opaquesolid1_tail:
- ld a,(hl)
-
- ld (de),a
- inc de
- inc hl
- dec c
- jp nz,.opaquesolid1_tail
-.opaquesolid1_done:
- pop ix
- ret
-
 .global _ch5_motion_opaque_solid2
 .type _ch5_motion_opaque_solid2,@function
 _ch5_motion_opaque_solid2:
@@ -1545,5 +1325,263 @@ _ch5_motion_opaque_solid2:
  dec c
  jp nz,.opaquesolid2_tail
 .opaquesolid2_done:
+ pop ix
+ ret
+
+.global _ch5_fused_bg_0
+.type _ch5_fused_bg_0,@function
+_ch5_fused_bg_0:
+ push ix
+ push iy
+ ld ix,0
+ add ix,sp
+ ld bc,(ix+9)
+ ld hl,(ix+12)
+ ld de,(ix+15)
+ ld iy,(ix+21)
+ ld ix,(ix+18)
+ push hl
+ ld hl,80
+ ex (sp),hl
+.ch5_fused_bg_0_loop:
+ ld a,(de)
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(hl)
+ ld iyl,a
+ ld a,(iy)
+ ld (bc),a
+ inc bc
+ ld (bc),a
+ inc bc
+ inc hl
+ inc de
+
+ ld a,(de)
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(hl)
+ ld iyl,a
+ ld a,(iy)
+ ld (bc),a
+ inc bc
+ ld (bc),a
+ inc bc
+ inc hl
+ inc de
+ ex (sp),hl
+ dec hl
+ ld a,h
+ or a,l
+ ex (sp),hl
+ jp nz,.ch5_fused_bg_0_loop
+ pop hl
+ pop iy
+ pop ix
+ ret
+
+.global _ch5_fused_bg_1
+.type _ch5_fused_bg_1,@function
+_ch5_fused_bg_1:
+ push ix
+ push iy
+ ld ix,0
+ add ix,sp
+ ld bc,(ix+9)
+ ld hl,(ix+12)
+ ld de,(ix+15)
+ ld iy,(ix+21)
+ ld ix,(ix+18)
+ push hl
+ ld hl,80
+ ex (sp),hl
+.ch5_fused_bg_1_loop:
+ ld a,(de)
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(hl)
+ ld iyl,a
+ ld a,(iy)
+ ld (bc),a
+ inc bc
+ inc hl
+ ld a,(de)
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(hl)
+ ld iyl,a
+ ld a,(iy)
+ ld (bc),a
+ inc bc
+ inc de
+
+ ld a,(de)
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(hl)
+ ld iyl,a
+ ld a,(iy)
+ ld (bc),a
+ inc bc
+ inc hl
+ ld a,(de)
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(hl)
+ ld iyl,a
+ ld a,(iy)
+ ld (bc),a
+ inc bc
+ inc de
+ ex (sp),hl
+ dec hl
+ ld a,h
+ or a,l
+ ex (sp),hl
+ jp nz,.ch5_fused_bg_1_loop
+ pop hl
+ pop iy
+ pop ix
+ ret
+
+.global _ch5_fused_bg_2
+.type _ch5_fused_bg_2,@function
+_ch5_fused_bg_2:
+ push ix
+ push iy
+ ld ix,0
+ add ix,sp
+ ld bc,(ix+9)
+ ld hl,(ix+12)
+ ld de,(ix+15)
+ ld iy,(ix+21)
+ ld ix,(ix+18)
+ push hl
+ ld hl,80
+ ex (sp),hl
+.ch5_fused_bg_2_loop:
+ ld a,(de)
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(hl)
+ ld iyl,a
+ ld a,(iy)
+ ld (bc),a
+ inc bc
+ inc de
+ ld a,(de)
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(hl)
+ ld iyl,a
+ ld a,(iy)
+ ld (bc),a
+ inc bc
+ inc hl
+
+ ld a,(de)
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(hl)
+ ld iyl,a
+ ld a,(iy)
+ ld (bc),a
+ inc bc
+ inc de
+ ld a,(de)
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(hl)
+ ld iyl,a
+ ld a,(iy)
+ ld (bc),a
+ inc bc
+ inc hl
+ ex (sp),hl
+ dec hl
+ ld a,h
+ or a,l
+ ex (sp),hl
+ jp nz,.ch5_fused_bg_2_loop
+ pop hl
+ pop iy
+ pop ix
+ ret
+
+.global _ch5_fused_bg_3
+.type _ch5_fused_bg_3,@function
+_ch5_fused_bg_3:
+ push ix
+ push iy
+ ld ix,0
+ add ix,sp
+ ld bc,(ix+9)
+ ld hl,(ix+12)
+ ld de,(ix+15)
+ ld iy,(ix+21)
+ ld ix,(ix+18)
+ push hl
+ ld hl,80
+ ex (sp),hl
+.ch5_fused_bg_3_loop:
+ ld a,(de)
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(hl)
+ ld iyl,a
+ ld a,(iy)
+ ld (bc),a
+ inc bc
+ inc hl
+ inc de
+ ld a,(de)
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(hl)
+ ld iyl,a
+ ld a,(iy)
+ ld (bc),a
+ inc bc
+
+ ld a,(de)
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(hl)
+ ld iyl,a
+ ld a,(iy)
+ ld (bc),a
+ inc bc
+ inc hl
+ inc de
+ ld a,(de)
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(hl)
+ ld iyl,a
+ ld a,(iy)
+ ld (bc),a
+ inc bc
+ ex (sp),hl
+ dec hl
+ ld a,h
+ or a,l
+ ex (sp),hl
+ jp nz,.ch5_fused_bg_3_loop
+ pop hl
+ pop iy
  pop ix
  ret
