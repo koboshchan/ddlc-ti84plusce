@@ -105,3 +105,11 @@ The separate target diagnostic records 448 composed-row copies and 452 fused
 rows across the seven samples. All four loaded fused kernels match the timed
 build. A further target ABI run passes 2,503 guarded reference cases with zero
 errors, including all four fused phases and counts 0 320 for scanline kernels.
+
+Historical asset identity is independently bound from the original saved
+emulator states, whose raw flash and RAM regions were retained for each run.
+All nine motion AppVars (DMOT0 3, DMOTMAP, DMOTPAL, DMOTRGB, DMSAMP, and
+DLUTQ) have identical named archived payload lengths and hashes across the
+timed, counter, and ABI runs and the isolated release fixtures. These are
+loaded bytes in the original states, not hashes of mutable input paths.
+Each state's RAM region also exactly matches its measured RAM dump.

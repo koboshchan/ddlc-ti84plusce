@@ -233,5 +233,373 @@
     "total": 2971979,
     "over": 1979,
     "informational_only": true
+  },
+  "historical_loaded_asset_binding": {
+    "scope": "Historical loaded AppVar payloads extracted from durable CEmu state, not present mutable source files",
+    "states": {
+      "shared": {
+        "path": "/home/kat/ti/opt/ch5-target-bench/rgb-composed-dispatch-shared/measured.ce",
+        "sha256": "5b27b4ba4b521fca6097b56c3c2f1aff715cbbb48c5f5ed9057cb6e51665955d",
+        "state_mtime": 1791976616.3793309,
+        "flash_offset": 4729,
+        "ram_offset": 4199033,
+        "ram_equal_measured_dump": true,
+        "variables": [
+          {
+            "name": "DMOT0",
+            "length": 25437,
+            "sha256": "bfe66c01bb07764350992b905fd726e91753b20a4031da1d844b3f135b6af388",
+            "archive_flash_offset": 804660,
+            "state_payload_offset": 809389,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/continuation-dispatch-integration/fit-release/dmot0.8xv",
+            "fixture_file_sha256": "d7dfb886dd782ccad034006cc176b92180c39329f68f9d4cce0ce630eb8d90e2",
+            "fixture_mtime": 1791937670.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DMOT1",
+            "length": 13556,
+            "sha256": "7cf5fcabffe0c4edb6b6a0f9c14668a3ade809fefab9e417d3a28a68fd957bc8",
+            "archive_flash_offset": 830114,
+            "state_payload_offset": 834843,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/continuation-dispatch-integration/fit-release/dmot1.8xv",
+            "fixture_file_sha256": "9ee134d32750c8ee20426d6508632a42952d011bbd5a9534accf2bde1079dc24",
+            "fixture_mtime": 1791937670.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DMOT2",
+            "length": 6114,
+            "sha256": "c0bac4948e8a4f435bf4978d405d20580f2f9f7c0fd7369522f2ec82eca45503",
+            "archive_flash_offset": 843687,
+            "state_payload_offset": 848416,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/continuation-dispatch-integration/fit-release/dmot2.8xv",
+            "fixture_file_sha256": "e0102586c824b36a04413d32d7cdbb820a183621599ae7b6c28ccced660cf2d1",
+            "fixture_mtime": 1791937670.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DMOT3",
+            "length": 3730,
+            "sha256": "ddd01a17636120cb92c87cf0a72d7a8df60b7fafcad7b6481f6171399ff33f3b",
+            "archive_flash_offset": 851986,
+            "state_payload_offset": 856715,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/continuation-dispatch-integration/fit-release/dmot3.8xv",
+            "fixture_file_sha256": "17ab5c875c67942102107cb6d7df2844a11678ce024b655dd98134fe86ad6a47",
+            "fixture_mtime": 1791937670.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DMOTMAP",
+            "length": 234,
+            "sha256": "83ba37bdb077480e184c5375e3440d91f3db1063209b8b12c09db4562282e96f",
+            "archive_flash_offset": 849820,
+            "state_payload_offset": 854549,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/continuation-dispatch-integration/fit-release/dmotmap.8xv",
+            "fixture_file_sha256": "f64265c7977a35556b19be1e834ab30f1c55bbbdb482e636fb203203c1e697ed",
+            "fixture_mtime": 1791937670.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DMOTPAL",
+            "length": 512,
+            "sha256": "362834002294f97ff1fb5998a37ad59a76f1ded9df4331ef907462136baa8bc5",
+            "archive_flash_offset": 850073,
+            "state_payload_offset": 854802,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/continuation-dispatch-integration/fit-release/dmotpal.8xv",
+            "fixture_file_sha256": "91ecd7bbefa77b1d0fbaa9dd7c81d7d7886fe1ae8d53a1545e49704b21abb7ef",
+            "fixture_mtime": 1791937670.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DMOTRGB",
+            "length": 32768,
+            "sha256": "32b7402f3443eb057f2506904dc79b1d5c15b7ec0ec9d829607f83d69deaa916",
+            "archive_flash_offset": 855735,
+            "state_payload_offset": 860464,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/continuation-dispatch-integration/fit-release/dmotrgb.8xv",
+            "fixture_file_sha256": "aac79027b8a162b02e1c9ebeef6e520303f1d2034f80a07ef507325507262bf4",
+            "fixture_mtime": 1791937670.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DMSAMP",
+            "length": 14956,
+            "sha256": "0a9764095e08715e36010bfbadd751247bdf21847c88c09ec72b15649400334b",
+            "archive_flash_offset": 888521,
+            "state_payload_offset": 893250,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/rgb-composed-dispatch-shared/dmsamp.8xv",
+            "fixture_file_sha256": "b0416550dc23ee65491ce36a32bb32bbd5d8e5b614fcebfa6f5c2583c61152f1",
+            "fixture_mtime": 1791942323.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DLUTQ",
+            "length": 12560,
+            "sha256": "7610b6d207208b0c9dd4833acb07478c3b21e31810e842c6381362dc87657a35",
+            "archive_flash_offset": 903494,
+            "state_payload_offset": 908223,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/rgb-composed-dispatch-shared/qlut.8xv",
+            "fixture_file_sha256": "1b3d728675e73ab265e2a086f12a0a0ca66f11fd6eb5e7ee529ca86afbf1bf8c",
+            "fixture_mtime": 1791949247.0,
+            "loaded_exact": true
+          }
+        ],
+        "protocol_appvar_names": [
+          "DMOT0",
+          "DMOT1",
+          "DMOT2",
+          "DMOT3",
+          "DMOTMAP",
+          "DMOTPAL",
+          "DMOTRGB",
+          "DMSAMP",
+          "DLUTQ"
+        ],
+        "all_protocol_appvars_bound": true
+      },
+      "counter": {
+        "path": "/home/kat/ti/opt/ch5-target-bench/rgb-composed-dispatch-counter/measured.ce",
+        "sha256": "43835d54cf1f161ff44ffee3f5e7c3a07bce1e4b408bdf4a74425a0d3afcb0b0",
+        "state_mtime": 1791976978.7887647,
+        "flash_offset": 4729,
+        "ram_offset": 4199033,
+        "ram_equal_measured_dump": true,
+        "variables": [
+          {
+            "name": "DMOT0",
+            "length": 25437,
+            "sha256": "bfe66c01bb07764350992b905fd726e91753b20a4031da1d844b3f135b6af388",
+            "archive_flash_offset": 804734,
+            "state_payload_offset": 809463,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/continuation-dispatch-integration/fit-release/dmot0.8xv",
+            "fixture_file_sha256": "d7dfb886dd782ccad034006cc176b92180c39329f68f9d4cce0ce630eb8d90e2",
+            "fixture_mtime": 1791937670.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DMOT1",
+            "length": 13556,
+            "sha256": "7cf5fcabffe0c4edb6b6a0f9c14668a3ade809fefab9e417d3a28a68fd957bc8",
+            "archive_flash_offset": 830188,
+            "state_payload_offset": 834917,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/continuation-dispatch-integration/fit-release/dmot1.8xv",
+            "fixture_file_sha256": "9ee134d32750c8ee20426d6508632a42952d011bbd5a9534accf2bde1079dc24",
+            "fixture_mtime": 1791937670.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DMOT2",
+            "length": 6114,
+            "sha256": "c0bac4948e8a4f435bf4978d405d20580f2f9f7c0fd7369522f2ec82eca45503",
+            "archive_flash_offset": 843761,
+            "state_payload_offset": 848490,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/continuation-dispatch-integration/fit-release/dmot2.8xv",
+            "fixture_file_sha256": "e0102586c824b36a04413d32d7cdbb820a183621599ae7b6c28ccced660cf2d1",
+            "fixture_mtime": 1791937670.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DMOT3",
+            "length": 3730,
+            "sha256": "ddd01a17636120cb92c87cf0a72d7a8df60b7fafcad7b6481f6171399ff33f3b",
+            "archive_flash_offset": 851986,
+            "state_payload_offset": 856715,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/continuation-dispatch-integration/fit-release/dmot3.8xv",
+            "fixture_file_sha256": "17ab5c875c67942102107cb6d7df2844a11678ce024b655dd98134fe86ad6a47",
+            "fixture_mtime": 1791937670.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DMOTMAP",
+            "length": 234,
+            "sha256": "83ba37bdb077480e184c5375e3440d91f3db1063209b8b12c09db4562282e96f",
+            "archive_flash_offset": 849894,
+            "state_payload_offset": 854623,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/continuation-dispatch-integration/fit-release/dmotmap.8xv",
+            "fixture_file_sha256": "f64265c7977a35556b19be1e834ab30f1c55bbbdb482e636fb203203c1e697ed",
+            "fixture_mtime": 1791937670.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DMOTPAL",
+            "length": 512,
+            "sha256": "362834002294f97ff1fb5998a37ad59a76f1ded9df4331ef907462136baa8bc5",
+            "archive_flash_offset": 850147,
+            "state_payload_offset": 854876,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/continuation-dispatch-integration/fit-release/dmotpal.8xv",
+            "fixture_file_sha256": "91ecd7bbefa77b1d0fbaa9dd7c81d7d7886fe1ae8d53a1545e49704b21abb7ef",
+            "fixture_mtime": 1791937670.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DMOTRGB",
+            "length": 32768,
+            "sha256": "32b7402f3443eb057f2506904dc79b1d5c15b7ec0ec9d829607f83d69deaa916",
+            "archive_flash_offset": 855735,
+            "state_payload_offset": 860464,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/continuation-dispatch-integration/fit-release/dmotrgb.8xv",
+            "fixture_file_sha256": "aac79027b8a162b02e1c9ebeef6e520303f1d2034f80a07ef507325507262bf4",
+            "fixture_mtime": 1791937670.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DMSAMP",
+            "length": 14956,
+            "sha256": "0a9764095e08715e36010bfbadd751247bdf21847c88c09ec72b15649400334b",
+            "archive_flash_offset": 888521,
+            "state_payload_offset": 893250,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/rgb-composed-dispatch-counter/dmsamp.8xv",
+            "fixture_file_sha256": "b0416550dc23ee65491ce36a32bb32bbd5d8e5b614fcebfa6f5c2583c61152f1",
+            "fixture_mtime": 1791942323.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DLUTQ",
+            "length": 12560,
+            "sha256": "7610b6d207208b0c9dd4833acb07478c3b21e31810e842c6381362dc87657a35",
+            "archive_flash_offset": 903494,
+            "state_payload_offset": 908223,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/rgb-composed-dispatch-counter/qlut.8xv",
+            "fixture_file_sha256": "1b3d728675e73ab265e2a086f12a0a0ca66f11fd6eb5e7ee529ca86afbf1bf8c",
+            "fixture_mtime": 1791949247.0,
+            "loaded_exact": true
+          }
+        ],
+        "protocol_appvar_names": [
+          "DMOT0",
+          "DMOT1",
+          "DMOT2",
+          "DMOT3",
+          "DMOTMAP",
+          "DMOTPAL",
+          "DMOTRGB",
+          "DMSAMP",
+          "DLUTQ"
+        ],
+        "all_protocol_appvars_bound": true
+      },
+      "abi": {
+        "path": "/home/kat/ti/opt/ch5-target-bench/rgb-composed-dispatch-abi/measured.ce",
+        "sha256": "d7d04f4e8c506f1cf93dec003b908eaad1e20bf4a33f89845e8da620eae6a62d",
+        "state_mtime": 1791977152.9123366,
+        "flash_offset": 4729,
+        "ram_offset": 4199033,
+        "ram_equal_measured_dump": true,
+        "variables": [
+          {
+            "name": "DMOT0",
+            "length": 25437,
+            "sha256": "bfe66c01bb07764350992b905fd726e91753b20a4031da1d844b3f135b6af388",
+            "archive_flash_offset": 808934,
+            "state_payload_offset": 813663,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/continuation-dispatch-integration/fit-release/dmot0.8xv",
+            "fixture_file_sha256": "d7dfb886dd782ccad034006cc176b92180c39329f68f9d4cce0ce630eb8d90e2",
+            "fixture_mtime": 1791937670.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DMOT1",
+            "length": 13556,
+            "sha256": "7cf5fcabffe0c4edb6b6a0f9c14668a3ade809fefab9e417d3a28a68fd957bc8",
+            "archive_flash_offset": 834388,
+            "state_payload_offset": 839117,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/continuation-dispatch-integration/fit-release/dmot1.8xv",
+            "fixture_file_sha256": "9ee134d32750c8ee20426d6508632a42952d011bbd5a9534accf2bde1079dc24",
+            "fixture_mtime": 1791937670.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DMOT2",
+            "length": 6114,
+            "sha256": "c0bac4948e8a4f435bf4978d405d20580f2f9f7c0fd7369522f2ec82eca45503",
+            "archive_flash_offset": 851986,
+            "state_payload_offset": 856715,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/continuation-dispatch-integration/fit-release/dmot2.8xv",
+            "fixture_file_sha256": "e0102586c824b36a04413d32d7cdbb820a183621599ae7b6c28ccced660cf2d1",
+            "fixture_mtime": 1791937670.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DMOT3",
+            "length": 3730,
+            "sha256": "ddd01a17636120cb92c87cf0a72d7a8df60b7fafcad7b6481f6171399ff33f3b",
+            "archive_flash_offset": 847961,
+            "state_payload_offset": 852690,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/continuation-dispatch-integration/fit-release/dmot3.8xv",
+            "fixture_file_sha256": "17ab5c875c67942102107cb6d7df2844a11678ce024b655dd98134fe86ad6a47",
+            "fixture_mtime": 1791937670.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DMOTMAP",
+            "length": 234,
+            "sha256": "83ba37bdb077480e184c5375e3440d91f3db1063209b8b12c09db4562282e96f",
+            "archive_flash_offset": 851710,
+            "state_payload_offset": 856439,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/continuation-dispatch-integration/fit-release/dmotmap.8xv",
+            "fixture_file_sha256": "f64265c7977a35556b19be1e834ab30f1c55bbbdb482e636fb203203c1e697ed",
+            "fixture_mtime": 1791937670.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DMOTPAL",
+            "length": 512,
+            "sha256": "362834002294f97ff1fb5998a37ad59a76f1ded9df4331ef907462136baa8bc5",
+            "archive_flash_offset": 858119,
+            "state_payload_offset": 862848,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/continuation-dispatch-integration/fit-release/dmotpal.8xv",
+            "fixture_file_sha256": "91ecd7bbefa77b1d0fbaa9dd7c81d7d7886fe1ae8d53a1545e49704b21abb7ef",
+            "fixture_mtime": 1791937670.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DMOTRGB",
+            "length": 32768,
+            "sha256": "32b7402f3443eb057f2506904dc79b1d5c15b7ec0ec9d829607f83d69deaa916",
+            "archive_flash_offset": 858650,
+            "state_payload_offset": 863379,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/continuation-dispatch-integration/fit-release/dmotrgb.8xv",
+            "fixture_file_sha256": "aac79027b8a162b02e1c9ebeef6e520303f1d2034f80a07ef507325507262bf4",
+            "fixture_mtime": 1791937670.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DMSAMP",
+            "length": 14956,
+            "sha256": "0a9764095e08715e36010bfbadd751247bdf21847c88c09ec72b15649400334b",
+            "archive_flash_offset": 891436,
+            "state_payload_offset": 896165,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/rgb-composed-dispatch-abi/dmsamp.8xv",
+            "fixture_file_sha256": "b0416550dc23ee65491ce36a32bb32bbd5d8e5b614fcebfa6f5c2583c61152f1",
+            "fixture_mtime": 1791942323.0,
+            "loaded_exact": true
+          },
+          {
+            "name": "DLUTQ",
+            "length": 12560,
+            "sha256": "7610b6d207208b0c9dd4833acb07478c3b21e31810e842c6381362dc87657a35",
+            "archive_flash_offset": 917522,
+            "state_payload_offset": 922251,
+            "expected_fixture": "/home/kat/ti/opt/ch5-target-bench/rgb-composed-dispatch-abi/qlut.8xv",
+            "fixture_file_sha256": "1b3d728675e73ab265e2a086f12a0a0ca66f11fd6eb5e7ee529ca86afbf1bf8c",
+            "fixture_mtime": 1791949247.0,
+            "loaded_exact": true
+          }
+        ],
+        "protocol_appvar_names": [
+          "DMOT0",
+          "DMOT1",
+          "DMOT2",
+          "DMOT3",
+          "DMOTMAP",
+          "DMOTPAL",
+          "DMOTRGB",
+          "DMSAMP",
+          "DLUTQ"
+        ],
+        "all_protocol_appvars_bound": true
+      }
+    }
   }
 }
