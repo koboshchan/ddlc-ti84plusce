@@ -33,13 +33,19 @@ static uint8_t previous_mode[8]={255,255,255,255,255,255,255,255};
  * cancels before flooring. Keep general authored zooms on the wide path. */
 static void motion_axis_map(int16_t *map,unsigned count,int32_t origin,uint32_t scale,unsigned extent){
  if(scale==1000000u || scale==2000000u){
-   int32_t den=scale==1000000u?1024:2048;
-   int32_t source=ch5_floor_div(-(int64_t)origin,den);
-   int32_t rem=-(int64_t)origin-(int64_t)source*den;
-   for(unsigned j=0;j<count;j++){
-    map[j]=(source<0||(uint32_t)source>=extent)?-1:(int16_t)source;
-    rem+=1024;
-    if(rem>=den){rem-=den;source++;}
+   unsigned shift=scale==1000000u?10:11;
+   int32_t start=(-origin)>>shift;
+   unsigned parity=((uint32_t)(-origin)>>10)&1u;
+   if(scale==1000000u){
+    for(unsigned j=0;j<count;j++){
+     int32_t source=start+j;
+     map[j]=(source<0||(uint32_t)source>=extent)?-1:(int16_t)source;
+    }
+   }else{
+    for(unsigned j=0;j<count;j++){
+     int32_t source=start+((j+parity)>>1);
+     map[j]=(source<0||(uint32_t)source>=extent)?-1:(int16_t)source;
+    }
    }
    return;
  }
