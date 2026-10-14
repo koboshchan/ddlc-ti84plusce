@@ -41,6 +41,11 @@ void ch5_motion_opaque_fast(uint8_t*d,const uint8_t*s,const int16_t*m,size_t n){
  for(size_t i=0;i<n;i++){assert(m[i]>=0);uint8_t c=s[m[i]];if(c!=255)d[i]=c;}
 }
 """
+HARNESS += r"""
+void ch5_motion_lut_fast(uint8_t*d,const uint8_t*s,const int16_t*m,size_t n,const uint8_t*g,const uint8_t*t){
+ for(size_t i=0;i<n;i++){uint8_t c=s[m[i]];if(c!=255)d[i]=t[(unsigned)c*32+g[d[i]]];}
+}
+"""
 MAIN = r"""
 static void reference(unsigned ms){
  memset(expected,0,sizeof expected);

@@ -51,7 +51,7 @@ bool ch5_motion_sync_clock(uint8_t scene){
  ti_Close(h);return found;
 }
 bool ch5_motion_draw(uint8_t scene){
- uint8_t record[18],h,blend_handle;unsigned i,n,layer,mode,x,y;uint16_t palette[256];bool found=false;
+ uint8_t record[18],h,blend_handle,lut_handle=0;unsigned i,n,layer,mode,x,y;uint16_t palette[256];bool found=false;
  h=ti_Open("DMOTMAP","r");if(!h)return false;
  const uint8_t *p=ti_GetDataPtr(h);n=ti_GetSize(h);
  for(i=0;i+18<=n;i+=18)if(p[i]==scene){memcpy(record,p+i,18);found=true;break;}
@@ -67,6 +67,15 @@ bool ch5_motion_draw(uint8_t scene){
  if(ti_GetSize(blend_handle)!=32768u){ti_Close(blend_handle);return false;}
  const uint8_t *nearest=ti_GetDataPtr(blend_handle);
  gfx_SetPalette(palette,512,0);
+ uint8_t bg_groups[256];bool have_groups=false;
+ h=ti_Open("DMOTBGM","r");
+ if(h){
+  if(ti_GetSize(h)==256){
+   ti_Read(bg_groups,1,256,h);have_groups=true;
+   for(unsigned g=0;g<256;g++)if(bg_groups[g]>=32){have_groups=false;break;}
+  }
+  ti_Close(h);
+ }
  bool success=false;
  /* No variable mutation/GC inside this scope; clear borrowed pointers
   * before closing the nearest-color AppVar on every exit. */
@@ -82,6 +91,17 @@ bool ch5_motion_draw(uint8_t scene){
   motion_axis_map(xmap,320,pose.x,pose.zoom_q10,tw);
   motion_axis_map(ymap,180,pose.y,pose.zoom_q10,th);
   if(!pose.alpha_q10)continue;
+  const uint8_t *blend_lut=0;
+  if(have_groups && pose.alpha_q10!=1024){
+   unsigned level=(pose.alpha_q10*15u+512u)/1024u;
+   char lut_name[]="DMLUT00";
+   lut_name[5]='0'+level/10;lut_name[6]='0'+level%10;
+   lut_handle=ti_Open(lut_name,"r");
+   if(lut_handle){
+    if(ti_GetSize(lut_handle)==8192)blend_lut=ti_GetDataPtr(lut_handle);
+    else{ti_Close(lut_handle);lut_handle=0;}
+   }
+  }
   /* Exact channel contributions. 128 bytes bounded stack workspace, not a
    * per-pixel multiplication or a heap allocation at lifecycle peak. */
   uint16_t fg_weight[32],bg_weight[32];
@@ -91,9 +111,9 @@ bool ch5_motion_draw(uint8_t scene){
   uint8_t *scratch=(uint8_t *)gfx_vbuffer+320u*180u;
   uint16_t *pair_tags=(uint16_t *)scratch;
   uint8_t *pair_colors=scratch+8192;
-  if(pose.alpha_q10!=1024)memset(pair_tags,255,8192);
+  if(pose.alpha_q10!=1024 && !blend_lut)memset(pair_tags,255,8192);
   const bool opaque=pose.alpha_q10==1024;
-  if(!opaque)for(unsigned c=0;c<32;c++){
+  if(!opaque && !blend_lut)for(unsigned c=0;c<32;c++){
    fg_weight[c]=c*pose.alpha_q10;
    bg_weight[c]=c*(1024u-pose.alpha_q10);
   }
@@ -107,6 +127,8 @@ bool ch5_motion_draw(uint8_t scene){
    uint8_t *dst=(uint8_t *)gfx_vbuffer+y*320;
    if(opaque){
     ch5_motion_opaque_fast(dst+first,row,xmap+first,end-first);
+   }else if(blend_lut){
+    ch5_motion_lut_fast(dst+first,row,xmap+first,end-first,bg_groups,blend_lut);
    }else{
     for(x=first;x<end;x++){
      uint8_t color=row[xmap[x]];
@@ -129,10 +151,12 @@ bool ch5_motion_draw(uint8_t scene){
     }
    }
   }
+  if(lut_handle){ti_Close(lut_handle);lut_handle=0;}
  }
  success=true;
 motion_done:
  ch5_band_end();
+ if(lut_handle)ti_Close(lut_handle);
  ti_Close(blend_handle);
  /* Bottom rows are transient work space, not scene pixels. Every caller
   * must compose the dialogue/letterbox after this draw and before present. */
