@@ -1,106 +1,67 @@
-# ddlc-ti84plusce
+![DDLC calculator icon](icon.png)
 
-A visual novel engine for the TI-84 Plus CE, built with the
-[CE C/C++ toolchain](https://github.com/CE-Programming/toolchain), plus a local
-pipeline that converts copies of Doki Doki Literature
-Club into calculator-ready assets.
+**ddlc-ti84plusce**
 
-## Building the engine
+An unofficial Doki Doki Literature Club fan port for the TI-84 Plus CE. The C/eZ80 engine handles dialogue, choices, save/load, poems and visual effects; the Python pipeline converts your local game copy into calculator AppVars.
 
-Requires the CE toolchain. If `cedev-config` is not on your `PATH`:
+> [!IMPORTANT]
+> Bring your own legally obtained DDLC game files. Game assets and calculator ROMs are not distributed here. Emulation requires your own ROM.
 
-```bash
-export PATH="$HOME/CEdev/bin:$PATH"
-```
+**Build a playable bundle**
 
-Then:
+Install the [CE C/C++ toolchain](https://github.com/CE-Programming/toolchain) and Python 3 with venv support. The pipeline uses `convimg` and `convbin` from CEdev, plus the dependencies in [tools/requirements.txt](tools/requirements.txt). The current split-program wrapper expects CEdev at `$HOME/CEdev`.
 
-```bash
-make
-```
-
-This produces `bin/DDLC.8xp`. On its own it shows an "assets not found" screen
-— it needs the AppVars from the asset pipeline too (see below) to have
-anything to play.
-
-### Controls
-
-| Key | Action |
-|---|---|
-| `2nd` / `enter` | Advance text, confirm a choice |
-| `up` / `down` | Move between menu options |
-| `mode` | Pause menu (in-game); cancel out of a submenu |
-| `clear` | Quit |
-
-The name-entry screen (first launch only) is typed directly on the keypad,
-same as it would be in the TI-OS itself -- letters follow the printed ALPHA
-labels (`MATH`=A, `APPS`=B, `PRGM`=C, …), plus `del` to erase and `enter` to
-confirm.
-
-## Building the full bundle
-
-The asset pipeline needs its own Python environment (Pillow, PyYAML, unrpa)
-and `convimg`/`convbin` from the CE toolchain. A one-time setup:
-
-```bash
+```sh
+git clone https://github.com/koboshchan/ddlc-ti84plusce.git
+cd ddlc-ti84plusce
 python3 -m venv .venv
 .venv/bin/pip install -r tools/requirements.txt
 export PATH="$HOME/CEdev/bin:$(pwd)/.venv/bin:$PATH"
+
+make bundle GAME_DIR=/path/to/DDLC-1.1.1-pc/game IMPORT_FLAGS=--files=all
 ```
 
-Then, against your own legally obtained copy of the game:
+Use the original game's `game` directory. `--files=all` selects all supported script files; omitting it builds only the default `script,script-ch0` selection. `--files=act1` selects chapters 0 through 4. Script selection is not a claim of complete gameplay compatibility.
 
-```bash
-make bundle GAME_DIR=/path/to/DDLC-1.1.1-pc/game
+The output is `build/DDLC.b84`, with individual transfer files in `build/transfer_files/` and the optional external CG pack in `build/cgpack/`. The bundler checks variable sizes and the uncompressed archive budget. The compressed bundle's file size is not its on-calculator storage requirement.
+
+`make` alone builds `bin/DDLC.8xp` and its split code AppVars, but not the game assets. That program alone is not a playable installation.
+
+**Install and launch**
+
+Transfer `build/DDLC.b84` to the calculator or CEmu, then transfer the CE C libraries (`clibs.8xg`) and the arTIfiCE jailbreak launcher. Run program `A`, then choose `DDLC`.
+
+Keep the bundle together. `DDLC0` and `DDLC1` are required executable code AppVars, not optional assets. If your transfer tool cannot read the bundle, transfer every file from `build/transfer_files/` instead.
+
+> [!TIP]
+> For a clean emulator test, reset RAM and reload your own ROM before sending the bundle, libraries and launcher. Missing assets or a code-part mismatch should be fixed by resending the complete matching build, not just `DDLC.8xp`.
+
+**Controls**
+
+Press `2nd` or `enter` to advance text and confirm; use `up` and `down` to select menu options. `mode` opens the pause menu or cancels a submenu, and `clear` quits.
+
+On first launch, enter your name with the keypad's printed ALPHA letter labels. `del` erases and `enter` confirms.
+
+**Optional USB CG pack**
+
+Copy the contents of `build/cgpack/` into a `/DDLC/` folder on a FAT32 USB drive, then connect it with a compatible USB-OTG adapter. The pack must come from the same bundle build. Without a matching pack, the engine uses the built-in half-resolution CGs.
+
+Physical USB attachment and hotplug have not been verified in the documented emulator checks. See [the format documentation](docs/FORMAT.md#external-full-res-cg-pack) for the layout and matching rules.
+
+**Development and tests**
+
+Enter `up up down down left left right right` at the title screen or during play to open the debug menu. It includes rendering tests, animation previews, assembly diagnostics and in-game chapter jumps. Save-erasure and character-state controls change game data; use a separate test save.
+
+The performance overlay is not part of `main` at present. Experimental performance builds on the development branch add a debug-menu toggle when compiled with `DDLC_PERF_OVERLAY`.
+
+With the Python environment active and a host C compiler installed, run the regression suite with
+
+```sh
+python -m unittest discover -s tests -v
 ```
 
-Outputs `build/DDLC.b84`, a bundle containing the engine and all assets, ready to upload to a calculator or CEmu.
+Host tests do not establish calculator timing or hardware compatibility. See [optimization verification](docs/OPTIMIZATION-VERIFICATION.md), [assembly tests](tools/asm_tests/README.md) and [asset/bytecode formats](docs/FORMAT.md) for the separate target checks and engine internals.
 
-## Building with Docker
+**License and credits**
 
-If you prefer building inside a container without manually installing CEdev or Python dependencies, you can build everything with Docker:
-
-### Direct BuildKit Export (Recommended)
-
-Run `docker build` with `--build-arg GAME_DIR=...` and `-o build` to output all artifacts (`DDLC.b84`, `DDLC.8xp`, `cgpack/`, and `transfer_files/`) directly into your local `build/` directory:
-
-```bash
-docker build --build-arg GAME_DIR=/path/to/DDLC-1.1.1-pc/game -o build .
-```
-
-*(Note: `GAME_DIR` can be a path relative to the current directory or inside the build context).*
-
-### Container Run Workflow
-
-Alternatively, build the runner image once and mount your game directory:
-
-```bash
-# 1. Build the builder image
-docker build --target runner -t ddlc-builder .
-
-# 2. Run the build with mounted folders
-docker run --rm -v /path/to/DDLC-1.1.1-pc/game:/game -v $(pwd)/build:/app/build ddlc-builder
-```
-
-## Full-resolution CG pack (optional)
-
-CGs ship on-calc at half resolution to help fit the archive budget above —
-softer than a background, a deliberate tradeoff. `make bundle` also writes
-`build/cgpack/`, a full-resolution version of every CG. Copy its contents
-onto a FAT32-formatted USB drive as a `/DDLC/` folder and connect it to the
-calculator via a USB-OTG-to-flash-drive adapter, and every CG draws at full
-resolution instead — no drive, or a drive without a matching pack (one built
-from a different `--files` selection won't match: the pack is checked
-against the exact build it came from), and the game falls back to the
-built-in half-res version, exactly as if this feature didn't exist. See
-docs/FORMAT.md's "External full-res CG pack" for how the matching works.
-
-## Loading it onto a calculator or CEmu
-
-Just upload `build/DDLC.b84` to a calculator or CEmu.
-
-## License
-
-Code for the engine and the asset pipeline is licensed under the MIT License. See [LICENSE](LICENSE) for details. Any DDLC assets you use must be obtained separately and legally, in accordance with Team Salvato's IP Guidelines.
-
-Not affiliated with or endorsed by Team Salvato.
+Original engine code, tools and build files are covered by the [MIT License and IP disclaimer](LICENSE). Doki Doki Literature Club and its assets belong to Team Salvato; obtain them separately and follow [Team Salvato's IP Guidelines](https://teamsalvato.com). This is a non-commercial fan work, not affiliated with or endorsed by Team Salvato.
