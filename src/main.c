@@ -2260,7 +2260,9 @@ int main(void)
     assets_status_t status;
     uint32_t entry_pc;
 
-    chars_init();
+    if (!chars_init()) {
+        return 1; /* Leave the reset marker absent so the next launch retries. */
+    }
 
     /* render_init() (gfx_Begin() + gfx_SetDrawBuffer()) must run before
      * assets_init() writes gfx_palette: gfx_Begin()'s docs say it should
