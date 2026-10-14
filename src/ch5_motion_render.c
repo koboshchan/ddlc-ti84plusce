@@ -122,8 +122,22 @@ bool ch5_motion_draw(uint8_t scene){
  ch5_band_begin();
  /* Validate each stream before modifying frame. Existing scene is fallback. */
  for(i=0;i<record[1];i++)if(!ch5_band_row(record[2+i*2],0)){goto motion_done;}
+ 
+ unsigned first_layer=0;
+ /* Authored bg_zoom has 2x coverage for every permitted phase. Never
+  * skip for other modes or assets containing transparent pixels. */
+ if(record[1]>1 && record[4]==0 && record[5]==3){
+  bool solid=true;
+  for(unsigned row=0;row<180;row++){
+   const uint8_t *pixels=ch5_band_row(0,row);
+   if(!pixels){goto motion_done;}
+   if(memchr(pixels,255,320)){solid=false;break;}
+  }
+  if(solid)first_layer=1;
+ }
+
  memset(gfx_vbuffer,0,320*180);
- for(i=0;i<record[1];i++){
+ for(i=first_layer;i<record[1];i++){
   layer=record[2+i*2];mode=record[3+i*2];
   unsigned tw=layer<2?320:72,th=layer<2?180:263;
   unsigned layer_ms=(unsigned)(((uint64_t)(clock()-layer_start[i])*1000ULL)/CLOCKS_PER_SEC);
