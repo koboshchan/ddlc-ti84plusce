@@ -308,6 +308,8 @@ static uint8_t run_game_menu(vn_vm_t *vm, uint8_t initial_mode, bool is_in_game)
                     if (is_in_game && vm) {
                         if (!save_load(slot, vm)) {
                             returning_to_title = true;
+                            quit_requested = true;
+                            vm->status = VN_QUIT;
                             return 0; /* Chunk backing may have been replaced. */
                         }
                         assets_use_title_palette(false);
