@@ -29,12 +29,11 @@ bool chars_init(void)
     }
     /* Refuse partial reset: a surviving progress/save AppVar must never
      * be combined with recreated characters and a completed reset marker. */
-    if (ti_Delete("DPERSIST") == 0) {
-        handle = ti_Open("DPERSIST", "r");
-        if (handle) {
-            ti_Close(handle);
-            return false;
-        }
+    ti_Delete("DPERSIST");
+    handle = ti_Open("DPERSIST", "r");
+    if (handle) {
+        ti_Close(handle);
+        return false;
     }
     if (!save_delete_all()) {
         return false;

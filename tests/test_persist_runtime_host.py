@@ -49,6 +49,7 @@ typedef struct {
 static appvar_t files[32];
 static const char *short_read;
 static const char *failed_delete;
+static const char *retained_delete;
 static uint8_t loaded_chunk;
 static bool fail_chunk, null_script;
 static size_t target_size = 32;
@@ -103,6 +104,8 @@ int ti_Delete(const char *name) {
     unsigned i = lookup(name, false);
     if (!i || !files[i].exists ||
         (failed_delete && !strcmp(failed_delete, name))) return 0;
+    /* Exercise postcondition validation independently of the return code. */
+    if (retained_delete && !strcmp(retained_delete, name)) return -1;
     files[i].exists = false; free(files[i].data); files[i].data = NULL;
     files[i].size = 0; return -1;
 }
@@ -202,6 +205,15 @@ int main(int argc, char **argv) {
         assert(exists("DPERSIST") && !exists("FIRSTRUN"));
         assert(!chars_present(CHAR_SAYORI) && save_exists(1));
         failed_delete = NULL;
+        assert(chars_init()); check_reset();
+    } else if (!strcmp(which, "reset_retained_progress")) {
+        seed_reset();
+        assert(ti_Delete("FIRSTRUN") != 0);
+        retained_delete = "DPERSIST";
+        assert(!chars_init());
+        assert(exists("DPERSIST") && !exists("FIRSTRUN"));
+        assert(!chars_present(CHAR_SAYORI) && save_exists(1));
+        retained_delete = NULL;
         assert(chars_init()); check_reset();
     } else if (!strcmp(which, "reset_save_delete_failure")) {
         seed_reset();
@@ -360,7 +372,7 @@ def _case(case):
 
 for _name in (
     "missing_firstrun", "missing_dpersist", "reset_delete_failure",
-    "reset_save_delete_failure", "delete_contract", "normal_deleted_sayori",
+    "reset_save_delete_failure", "reset_retained_progress", "delete_contract", "normal_deleted_sayori",
     "load_current_persistent_and_scene", "failed_chunk_unchanged",
     "null_script_unchanged", "out_of_bounds_pc_unchanged",
     "short_save_read_unchanged", "old_version_unchanged", "empty_dpslot", "one_byte_dpslot",
