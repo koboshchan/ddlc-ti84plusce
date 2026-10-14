@@ -306,7 +306,10 @@ static uint8_t run_game_menu(vn_vm_t *vm, uint8_t initial_mode, bool is_in_game)
             } else if (mode == GAME_MENU_LOAD) {
                 if (save_exists(slot)) {
                     if (is_in_game && vm) {
-                        save_load(slot, vm);
+                        if (!save_load(slot, vm)) {
+                            returning_to_title = true;
+                            return 0; /* Chunk backing may have been replaced. */
+                        }
                         assets_use_title_palette(false);
                         return 0; /* Resumes game at loaded position */
                     } else {
@@ -2378,7 +2381,9 @@ int main(void)
                 continue; /* cancelled -- back to the title screen */
             }
             name_load(player_name, sizeof(player_name));
-            save_load(slot, &vm);
+            if (!save_load(slot, &vm)) {
+                continue; /* Never resume dangling code or dialogue after failure. */
+            }
         }
 
         render_apply_palette(assets_scene_palette(vm.scene.background));

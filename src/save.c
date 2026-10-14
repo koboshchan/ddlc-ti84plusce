@@ -110,6 +110,10 @@ bool save_load(uint8_t slot, vn_vm_t *vm)
         return false;
     }
 
+    if (blob.sp > VN_CALL_DEPTH) {
+        return false;
+    }
+
     /* The chunk owns both the bytecode and its string table. Do not leave
      * vm->code pointing at the freed entry chunk, or make the first step
      * reload and invalidate freshly restored dialogue. */
@@ -118,7 +122,7 @@ bool save_load(uint8_t slot, vn_vm_t *vm)
     }
     size_t code_size;
     const uint8_t *code = assets_script(&code_size);
-    if (!code || (blob.pc & 0xFFFFUL) >= code_size || blob.sp > VN_CALL_DEPTH) {
+    if (!code || (blob.pc & 0xFFFFUL) >= code_size) {
         return false;
     }
     vm->code = code;
