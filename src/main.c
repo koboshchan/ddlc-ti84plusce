@@ -1507,7 +1507,7 @@ static void wait_for_advance(vn_vm_t *vm, bool allow_pause)
 /** @p play_intro replays DDLC's entrance animation. Callers pass false when
  * coming back from a submenu (help, a cancelled load) -- sitting through the
  * intro every time you back out of a menu gets old fast. */
-static uint8_t run_title_screen(bool play_intro)
+static uint8_t run_title_screen(bool play_intro, int16_t playthrough)
 {
     uint8_t selected = 0;
     clock_t start = clock();
@@ -1525,7 +1525,7 @@ static uint8_t run_title_screen(bool play_intro)
         unsigned elapsed = (unsigned)((clock() - start) * 1000UL / CLOCKS_PER_SEC);
         unsigned t = skipped ? TITLE_INTRO_MS + elapsed : elapsed;
 
-        render_title_screen(selected, t);
+        render_title_screen(selected, t, playthrough);
         render_present(TRANS_CUT);
         gfx_Wait();
 
@@ -2282,6 +2282,7 @@ int main(void)
 
     /* Initialize vm with variable defaults and persistent state early so
      * startup splash and disclaimer checks have access to persistent.playthrough. */
+    memset(vm.vars, 0, sizeof(vm.vars));
     assets_apply_var_defaults(&vm);
     persist_load(&vm);
     int16_t playthrough = vm.vars[VN_PLAYTHROUGH_VAR];
@@ -2316,7 +2317,7 @@ int main(void)
     bool play_intro = true;
 
     while (!quit_requested) {
-        uint8_t choice = run_title_screen(play_intro);
+        uint8_t choice = run_title_screen(play_intro, vm.vars[VN_PLAYTHROUGH_VAR]);
         play_intro = false;
 
         if (choice == TITLE_HELP) {
@@ -2367,12 +2368,8 @@ int main(void)
          * after this if it runs, so applying defaults first for every path
          * costs nothing on Load and is exactly right for New Game/Continue. */
         assets_apply_var_defaults(&vm);
-        /* Overlays whatever survived from an earlier session (route
-         * clears, playthrough count, one-time-easter-egg flags) on top of
-         * those plain defaults -- see persist.h. Before the possible
-         * save_load() just below: a loaded save's own vars[] already
-         * reflects whatever was persistent as of that save, and should
-         * stand as written rather than being second-guessed here. */
+        /* Persistent progress belongs to the installation. save_load()
+         * reapplies it after restoring a snapshot's ordinary variables. */
         persist_load(&vm);
 
         if (choice == TITLE_LOAD) {

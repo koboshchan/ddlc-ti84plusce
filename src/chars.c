@@ -4,6 +4,7 @@
  */
 
 #include "chars.h"
+#include "save.h"
 
 #include <fileioc.h>
 
@@ -14,14 +15,20 @@ static const char *const chars_name[CHAR_COUNT] = {
 
 void chars_init(void)
 {
-    /* Present means some previous boot (of this same flashed .b84) already
-     * ran this -- the 4 character AppVars are whatever the player's left
-     * them as since, and this function has nothing left to do. */
+    /* Either reset marker being removed requests a clean install. Keep
+     * character deletions intact on ordinary launches, but never combine
+     * recreated characters with an old act/autoload or a stale save. */
     uint8_t handle = ti_Open("FIRSTRUN", "r");
     if (handle) {
         ti_Close(handle);
-        return;
+        handle = ti_Open("DPERSIST", "r");
+        if (handle) {
+            ti_Close(handle);
+            return;
+        }
     }
+    ti_Delete("DPERSIST");
+    save_delete_all();
 
     /* First launch: create the 4 character AppVars in Archive */
     for (uint8_t i = 0; i < CHAR_COUNT; i++) {

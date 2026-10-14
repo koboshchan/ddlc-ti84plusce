@@ -6,6 +6,7 @@
 #include "save.h"
 #include "assets.h"
 #include "text.h"
+#include "persist.h"
 
 #include <fileioc.h>
 
@@ -109,6 +110,14 @@ bool save_load(uint8_t slot, vn_vm_t *vm)
         return false;
     }
 
+    /* The chunk owns both the bytecode and its string table. Do not leave
+     * vm->code pointing at the freed entry chunk, or make the first step
+     * reload and invalidate freshly restored dialogue. */
+    if (!assets_load_chunk((uint8_t)VN_CHUNK_ID(blob.pc))) {
+        return false;
+    }
+    vm->code = assets_script(&vm->code_size);
+    vm->chunk_id = (uint8_t)VN_CHUNK_ID(blob.pc);
     vm->pc = blob.pc;
     memcpy(vm->stack, blob.stack, sizeof(vm->stack));
     vm->sp = blob.sp;
@@ -120,7 +129,7 @@ bool save_load(uint8_t slot, vn_vm_t *vm)
     /* Load the target chunk so blob.text_index resolves against the correct
      * chunk string table, then resolve through vm->host->string() for
      * [player] substitution. */
-    assets_load_chunk((uint8_t)VN_CHUNK_ID(blob.pc));
+    persist_load(vm);
     vm->scene.text = vm->host->string(vm->host->ctx, blob.text_index);
     vm->status = VN_RUNNING;
     return true;

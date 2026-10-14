@@ -1434,7 +1434,7 @@ static void draw_title_art(uint8_t id, int dx_left, int dy_left)
     }
 }
 
-void render_title_screen(uint8_t selected, unsigned t)
+void render_title_screen(uint8_t selected, unsigned t, int16_t playthrough)
 {
     scene_obscured();
     static const char *const items[] = { "New Game", "Load Game", "Help", "Quit" };
@@ -1484,7 +1484,9 @@ void render_title_screen(uint8_t selected, unsigned t)
                    ease(bounce_remain, 256, t, F_LOGO_AT, F_LOGO_DUR));
 
     /* Frontmost pair. */
-    draw_title_art(TITLE_SAYORI, slide, rise);
+    if (playthrough == 0 || playthrough == 4) {
+        draw_title_art(TITLE_SAYORI, slide, rise);
+    }
     draw_title_art(TITLE_MONIKA, slide, rise);
 
     assets_title_end();

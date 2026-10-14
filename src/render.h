@@ -242,7 +242,7 @@ void render_fill_rect(int x, int y, int w, int h, uint8_t color);
  * bar over the nav panel, not with the ">" prefix that suits the in-scene
  * choice menu. Requires the title palette (assets_use_title_palette()).
  */
-void render_title_screen(uint8_t selected, unsigned t);
+void render_title_screen(uint8_t selected, unsigned t, int16_t playthrough);
 void render_pause_box(int x, int y, int w, int h, uint8_t fill_color, uint8_t edge_color);
 
 #define GAME_MENU_SAVE   0
