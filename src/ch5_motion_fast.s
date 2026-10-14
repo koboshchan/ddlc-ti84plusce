@@ -1032,3 +1032,680 @@ _ch5_motion_opaque_direct2:
 .opaque2_done:
  pop ix
  ret
+
+.global _ch5_motion_quant_solid1
+.type _ch5_motion_quant_solid1,@function
+_ch5_motion_quant_solid1:
+ push ix
+ push iy
+ ld ix,0
+ add ix,sp
+ ld de,(ix+9)
+ ld hl,(ix+12)
+ ld bc,(ix+15)
+ ld iy,(ix+21)
+ ld ix,(ix+18)
+ ld a,c
+ and a,7
+ push af
+ srl b
+ rr c
+ srl b
+ rr c
+ srl b
+ rr c
+ ld a,b
+ or a,c
+ jp z,.quantsolid1_tailsetup
+.quantsolid1_blocks:
+ ld a,(hl)
+
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ jr .quantsolid1_block0_advance
+.quantsolid1_block0_skip:
+ inc de
+.quantsolid1_block0_advance:
+ inc hl
+ ld a,(hl)
+
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ jr .quantsolid1_block1_advance
+.quantsolid1_block1_skip:
+ inc de
+.quantsolid1_block1_advance:
+ inc hl
+ ld a,(hl)
+
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ jr .quantsolid1_block2_advance
+.quantsolid1_block2_skip:
+ inc de
+.quantsolid1_block2_advance:
+ inc hl
+ ld a,(hl)
+
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ jr .quantsolid1_block3_advance
+.quantsolid1_block3_skip:
+ inc de
+.quantsolid1_block3_advance:
+ inc hl
+ ld a,(hl)
+
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ jr .quantsolid1_block4_advance
+.quantsolid1_block4_skip:
+ inc de
+.quantsolid1_block4_advance:
+ inc hl
+ ld a,(hl)
+
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ jr .quantsolid1_block5_advance
+.quantsolid1_block5_skip:
+ inc de
+.quantsolid1_block5_advance:
+ inc hl
+ ld a,(hl)
+
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ jr .quantsolid1_block6_advance
+.quantsolid1_block6_skip:
+ inc de
+.quantsolid1_block6_advance:
+ inc hl
+ ld a,(hl)
+
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ jr .quantsolid1_block7_advance
+.quantsolid1_block7_skip:
+ inc de
+.quantsolid1_block7_advance:
+ inc hl
+ dec bc
+ ld a,b
+ or a,c
+ jp nz,.quantsolid1_blocks
+.quantsolid1_tailsetup:
+ pop af
+ ld c,a
+ ld b,0
+ or a,a
+ jr z,.quantsolid1_done
+.quantsolid1_tail:
+ ld a,(hl)
+
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ jr .quantsolid1_last_advance
+.quantsolid1_last_skip:
+ inc de
+.quantsolid1_last_advance:
+ inc hl
+ dec c
+ jp nz,.quantsolid1_tail
+.quantsolid1_done:
+ pop iy
+ pop ix
+ ret
+
+.global _ch5_motion_quant_solid2
+.type _ch5_motion_quant_solid2,@function
+_ch5_motion_quant_solid2:
+ push ix
+ push iy
+ ld ix,0
+ add ix,sp
+ ld de,(ix+9)
+ ld hl,(ix+12)
+ ld bc,(ix+15)
+ ld iy,(ix+21)
+ ld ix,(ix+18)
+ ld a,c
+ and a,7
+ push af
+ srl b
+ rr c
+ srl b
+ rr c
+ srl b
+ rr c
+ ld a,b
+ or a,c
+ jp z,.quantsolid2_tailsetup
+.quantsolid2_blocks:
+ ld a,(hl)
+
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ jr .quantsolid2_block0_advance
+.quantsolid2_block0_skip:
+ inc de
+ inc de
+.quantsolid2_block0_advance:
+ inc hl
+ ld a,(hl)
+
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ jr .quantsolid2_block1_advance
+.quantsolid2_block1_skip:
+ inc de
+ inc de
+.quantsolid2_block1_advance:
+ inc hl
+ ld a,(hl)
+
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ jr .quantsolid2_block2_advance
+.quantsolid2_block2_skip:
+ inc de
+ inc de
+.quantsolid2_block2_advance:
+ inc hl
+ ld a,(hl)
+
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ jr .quantsolid2_block3_advance
+.quantsolid2_block3_skip:
+ inc de
+ inc de
+.quantsolid2_block3_advance:
+ inc hl
+ ld a,(hl)
+
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ jr .quantsolid2_block4_advance
+.quantsolid2_block4_skip:
+ inc de
+ inc de
+.quantsolid2_block4_advance:
+ inc hl
+ ld a,(hl)
+
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ jr .quantsolid2_block5_advance
+.quantsolid2_block5_skip:
+ inc de
+ inc de
+.quantsolid2_block5_advance:
+ inc hl
+ ld a,(hl)
+
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ jr .quantsolid2_block6_advance
+.quantsolid2_block6_skip:
+ inc de
+ inc de
+.quantsolid2_block6_advance:
+ inc hl
+ ld a,(hl)
+
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ jr .quantsolid2_block7_advance
+.quantsolid2_block7_skip:
+ inc de
+ inc de
+.quantsolid2_block7_advance:
+ inc hl
+ dec bc
+ ld a,b
+ or a,c
+ jp nz,.quantsolid2_blocks
+.quantsolid2_tailsetup:
+ pop af
+ ld c,a
+ ld b,0
+ or a,a
+ jr z,.quantsolid2_done
+.quantsolid2_tail:
+ ld a,(hl)
+
+ ld ixl,a
+ ld a,(ix)
+ ld iyh,a
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+ inc de
+ jr .quantsolid2_last_advance
+.quantsolid2_last_skip:
+ inc de
+ inc de
+.quantsolid2_last_advance:
+ inc hl
+ dec c
+ jp nz,.quantsolid2_tail
+.quantsolid2_done:
+ pop iy
+ pop ix
+ ret
+
+.global _ch5_motion_opaque_solid1
+.type _ch5_motion_opaque_solid1,@function
+_ch5_motion_opaque_solid1:
+ push ix
+ ld ix,0
+ add ix,sp
+ ld de,(ix+6)
+ ld hl,(ix+9)
+ ld bc,(ix+12)
+ ld a,c
+ and a,7
+ push af
+ srl b
+ rr c
+ srl b
+ rr c
+ srl b
+ rr c
+ ld a,b
+ or a,c
+ jp z,.opaquesolid1_tailsetup
+.opaquesolid1_blocks:
+ ld a,(hl)
+
+ ld (de),a
+ inc de
+ jr .opaquesolid1_block0_advance
+.opaquesolid1_block0_skip:
+ inc de
+.opaquesolid1_block0_advance:
+ inc hl
+ ld a,(hl)
+
+ ld (de),a
+ inc de
+ jr .opaquesolid1_block1_advance
+.opaquesolid1_block1_skip:
+ inc de
+.opaquesolid1_block1_advance:
+ inc hl
+ ld a,(hl)
+
+ ld (de),a
+ inc de
+ jr .opaquesolid1_block2_advance
+.opaquesolid1_block2_skip:
+ inc de
+.opaquesolid1_block2_advance:
+ inc hl
+ ld a,(hl)
+
+ ld (de),a
+ inc de
+ jr .opaquesolid1_block3_advance
+.opaquesolid1_block3_skip:
+ inc de
+.opaquesolid1_block3_advance:
+ inc hl
+ ld a,(hl)
+
+ ld (de),a
+ inc de
+ jr .opaquesolid1_block4_advance
+.opaquesolid1_block4_skip:
+ inc de
+.opaquesolid1_block4_advance:
+ inc hl
+ ld a,(hl)
+
+ ld (de),a
+ inc de
+ jr .opaquesolid1_block5_advance
+.opaquesolid1_block5_skip:
+ inc de
+.opaquesolid1_block5_advance:
+ inc hl
+ ld a,(hl)
+
+ ld (de),a
+ inc de
+ jr .opaquesolid1_block6_advance
+.opaquesolid1_block6_skip:
+ inc de
+.opaquesolid1_block6_advance:
+ inc hl
+ ld a,(hl)
+
+ ld (de),a
+ inc de
+ jr .opaquesolid1_block7_advance
+.opaquesolid1_block7_skip:
+ inc de
+.opaquesolid1_block7_advance:
+ inc hl
+ dec bc
+ ld a,b
+ or a,c
+ jp nz,.opaquesolid1_blocks
+.opaquesolid1_tailsetup:
+ pop af
+ ld c,a
+ ld b,0
+ or a,a
+ jr z,.opaquesolid1_done
+.opaquesolid1_tail:
+ ld a,(hl)
+
+ ld (de),a
+ inc de
+ jr .opaquesolid1_last_advance
+.opaquesolid1_last_skip:
+ inc de
+.opaquesolid1_last_advance:
+ inc hl
+ dec c
+ jp nz,.opaquesolid1_tail
+.opaquesolid1_done:
+ pop ix
+ ret
+
+.global _ch5_motion_opaque_solid2
+.type _ch5_motion_opaque_solid2,@function
+_ch5_motion_opaque_solid2:
+ push ix
+ ld ix,0
+ add ix,sp
+ ld de,(ix+6)
+ ld hl,(ix+9)
+ ld bc,(ix+12)
+ ld a,c
+ and a,7
+ push af
+ srl b
+ rr c
+ srl b
+ rr c
+ srl b
+ rr c
+ ld a,b
+ or a,c
+ jp z,.opaquesolid2_tailsetup
+.opaquesolid2_blocks:
+ ld a,(hl)
+
+ ld (de),a
+ inc de
+ ld (de),a
+ inc de
+ jr .opaquesolid2_block0_advance
+.opaquesolid2_block0_skip:
+ inc de
+ inc de
+.opaquesolid2_block0_advance:
+ inc hl
+ ld a,(hl)
+
+ ld (de),a
+ inc de
+ ld (de),a
+ inc de
+ jr .opaquesolid2_block1_advance
+.opaquesolid2_block1_skip:
+ inc de
+ inc de
+.opaquesolid2_block1_advance:
+ inc hl
+ ld a,(hl)
+
+ ld (de),a
+ inc de
+ ld (de),a
+ inc de
+ jr .opaquesolid2_block2_advance
+.opaquesolid2_block2_skip:
+ inc de
+ inc de
+.opaquesolid2_block2_advance:
+ inc hl
+ ld a,(hl)
+
+ ld (de),a
+ inc de
+ ld (de),a
+ inc de
+ jr .opaquesolid2_block3_advance
+.opaquesolid2_block3_skip:
+ inc de
+ inc de
+.opaquesolid2_block3_advance:
+ inc hl
+ ld a,(hl)
+
+ ld (de),a
+ inc de
+ ld (de),a
+ inc de
+ jr .opaquesolid2_block4_advance
+.opaquesolid2_block4_skip:
+ inc de
+ inc de
+.opaquesolid2_block4_advance:
+ inc hl
+ ld a,(hl)
+
+ ld (de),a
+ inc de
+ ld (de),a
+ inc de
+ jr .opaquesolid2_block5_advance
+.opaquesolid2_block5_skip:
+ inc de
+ inc de
+.opaquesolid2_block5_advance:
+ inc hl
+ ld a,(hl)
+
+ ld (de),a
+ inc de
+ ld (de),a
+ inc de
+ jr .opaquesolid2_block6_advance
+.opaquesolid2_block6_skip:
+ inc de
+ inc de
+.opaquesolid2_block6_advance:
+ inc hl
+ ld a,(hl)
+
+ ld (de),a
+ inc de
+ ld (de),a
+ inc de
+ jr .opaquesolid2_block7_advance
+.opaquesolid2_block7_skip:
+ inc de
+ inc de
+.opaquesolid2_block7_advance:
+ inc hl
+ dec bc
+ ld a,b
+ or a,c
+ jp nz,.opaquesolid2_blocks
+.opaquesolid2_tailsetup:
+ pop af
+ ld c,a
+ ld b,0
+ or a,a
+ jr z,.opaquesolid2_done
+.opaquesolid2_tail:
+ ld a,(hl)
+
+ ld (de),a
+ inc de
+ ld (de),a
+ inc de
+ jr .opaquesolid2_last_advance
+.opaquesolid2_last_skip:
+ inc de
+ inc de
+.opaquesolid2_last_advance:
+ inc hl
+ dec c
+ jp nz,.opaquesolid2_tail
+.opaquesolid2_done:
+ pop ix
+ ret

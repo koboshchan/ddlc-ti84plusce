@@ -1,3 +1,10 @@
+#include <time.h>
+
+#include <stdint.h>
+void ch5_motion_quant_solid1(uint8_t*,const uint8_t*,unsigned,const uint8_t*,const uint8_t*);
+void ch5_motion_quant_solid2(uint8_t*,const uint8_t*,unsigned,const uint8_t*,const uint8_t*);
+void ch5_motion_opaque_solid1(uint8_t*,const uint8_t*,unsigned);
+void ch5_motion_opaque_solid2(uint8_t*,const uint8_t*,unsigned);
 #include <stdint.h>
 #include <time.h>
 
@@ -140,6 +147,35 @@ bool ch5_motion_draw(uint8_t scene){
    if(ymap[y]<0)continue;
    const uint8_t *row=ch5_band_row(layer,ymap[y]);if(!row){goto motion_done;}
    uint8_t *dst=(uint8_t *)gfx_vbuffer+y*320;
+   /* Never assume packaged backgrounds are opaque. Scan the decoded row;
+    * unusual transparent assets retain the original guarded kernels. */
+   if(layer<2 && !memchr(row,255,tw)){
+   if(opaque){
+    if(linear)memcpy(dst+first,row+xmap[first],span);
+    else if(odd_doubled && !doubled && span>=3){
+     ch5_motion_opaque_solid1(dst+first,row+xmap[first],1);
+     unsigned remaining=span-1,even=remaining&~1u;
+     ch5_motion_opaque_solid2(dst+first+1,row+xmap[first+1],even/2);
+     if(remaining!=even)ch5_motion_opaque_solid1(dst+first+1+even,row+xmap[first+1+even],1);
+    }else if(doubled && span>=2){
+     unsigned even=span&~1u;
+     ch5_motion_opaque_solid2(dst+first,row+xmap[first],even/2);
+     if(span!=even)ch5_motion_opaque_solid1(dst+first+even,row+xmap[first+even],1);
+    }else ch5_motion_opaque_fast(dst+first,row,xmap+first,span);
+   }else{
+    if(linear)ch5_motion_quant_solid1(dst+first,row+xmap[first],span,pages,ramlut);
+    else if(odd_doubled && !doubled && span>=3){
+     ch5_motion_quant_solid1(dst+first,row+xmap[first],1,pages,ramlut);
+     unsigned remaining=span-1,even=remaining&~1u;
+     ch5_motion_quant_solid2(dst+first+1,row+xmap[first+1],even/2,pages,ramlut);
+     if(remaining!=even)ch5_motion_quant_solid1(dst+first+1+even,row+xmap[first+1+even],1,pages,ramlut);
+    }else if(doubled && span>=2){
+     unsigned even=span&~1u;
+     ch5_motion_quant_solid2(dst+first,row+xmap[first],even/2,pages,ramlut);
+     if(span!=even)ch5_motion_quant_fast(dst+first+even,row,xmap+first+even,1,pages,ramlut);
+    }else ch5_motion_quant_fast(dst+first,row,xmap+first,span,pages,ramlut);
+   }
+   }else{
    if(opaque){
     if(linear)ch5_motion_opaque_direct1(dst+first,row+xmap[first],span);
     else if(odd_doubled && !doubled && span>=3){
@@ -165,8 +201,9 @@ bool ch5_motion_draw(uint8_t scene){
      if(span!=even)ch5_motion_quant_fast(dst+first+even,row,xmap+first+even,1,pages,ramlut);
     }else ch5_motion_quant_fast(dst+first,row,xmap+first,span,pages,ramlut);
    }
+   }
   }
-
+  
  }
  success=true;
 motion_done:
