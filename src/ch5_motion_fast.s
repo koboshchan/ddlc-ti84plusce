@@ -1068,10 +1068,6 @@ _ch5_motion_quant_solid1:
  ld a,(iy)
  ld (de),a
  inc de
- jr .quantsolid1_block0_advance
-.quantsolid1_block0_skip:
- inc de
-.quantsolid1_block0_advance:
  inc hl
  ld a,(hl)
 
@@ -1083,10 +1079,6 @@ _ch5_motion_quant_solid1:
  ld a,(iy)
  ld (de),a
  inc de
- jr .quantsolid1_block1_advance
-.quantsolid1_block1_skip:
- inc de
-.quantsolid1_block1_advance:
  inc hl
  ld a,(hl)
 
@@ -1098,10 +1090,6 @@ _ch5_motion_quant_solid1:
  ld a,(iy)
  ld (de),a
  inc de
- jr .quantsolid1_block2_advance
-.quantsolid1_block2_skip:
- inc de
-.quantsolid1_block2_advance:
  inc hl
  ld a,(hl)
 
@@ -1113,10 +1101,6 @@ _ch5_motion_quant_solid1:
  ld a,(iy)
  ld (de),a
  inc de
- jr .quantsolid1_block3_advance
-.quantsolid1_block3_skip:
- inc de
-.quantsolid1_block3_advance:
  inc hl
  ld a,(hl)
 
@@ -1128,10 +1112,6 @@ _ch5_motion_quant_solid1:
  ld a,(iy)
  ld (de),a
  inc de
- jr .quantsolid1_block4_advance
-.quantsolid1_block4_skip:
- inc de
-.quantsolid1_block4_advance:
  inc hl
  ld a,(hl)
 
@@ -1143,10 +1123,6 @@ _ch5_motion_quant_solid1:
  ld a,(iy)
  ld (de),a
  inc de
- jr .quantsolid1_block5_advance
-.quantsolid1_block5_skip:
- inc de
-.quantsolid1_block5_advance:
  inc hl
  ld a,(hl)
 
@@ -1158,10 +1134,6 @@ _ch5_motion_quant_solid1:
  ld a,(iy)
  ld (de),a
  inc de
- jr .quantsolid1_block6_advance
-.quantsolid1_block6_skip:
- inc de
-.quantsolid1_block6_advance:
  inc hl
  ld a,(hl)
 
@@ -1173,10 +1145,6 @@ _ch5_motion_quant_solid1:
  ld a,(iy)
  ld (de),a
  inc de
- jr .quantsolid1_block7_advance
-.quantsolid1_block7_skip:
- inc de
-.quantsolid1_block7_advance:
  inc hl
  dec bc
  ld a,b
@@ -1199,10 +1167,6 @@ _ch5_motion_quant_solid1:
  ld a,(iy)
  ld (de),a
  inc de
- jr .quantsolid1_last_advance
-.quantsolid1_last_skip:
- inc de
-.quantsolid1_last_advance:
  inc hl
  dec c
  jp nz,.quantsolid1_tail
@@ -1251,11 +1215,6 @@ _ch5_motion_quant_solid2:
  ld a,(iy)
  ld (de),a
  inc de
- jr .quantsolid2_block0_advance
-.quantsolid2_block0_skip:
- inc de
- inc de
-.quantsolid2_block0_advance:
  inc hl
  ld a,(hl)
 
@@ -1272,11 +1231,6 @@ _ch5_motion_quant_solid2:
  ld a,(iy)
  ld (de),a
  inc de
- jr .quantsolid2_block1_advance
-.quantsolid2_block1_skip:
- inc de
- inc de
-.quantsolid2_block1_advance:
  inc hl
  ld a,(hl)
 
@@ -1293,11 +1247,6 @@ _ch5_motion_quant_solid2:
  ld a,(iy)
  ld (de),a
  inc de
- jr .quantsolid2_block2_advance
-.quantsolid2_block2_skip:
- inc de
- inc de
-.quantsolid2_block2_advance:
  inc hl
  ld a,(hl)
 
@@ -1314,11 +1263,6 @@ _ch5_motion_quant_solid2:
  ld a,(iy)
  ld (de),a
  inc de
- jr .quantsolid2_block3_advance
-.quantsolid2_block3_skip:
- inc de
- inc de
-.quantsolid2_block3_advance:
  inc hl
  ld a,(hl)
 
@@ -1335,11 +1279,6 @@ _ch5_motion_quant_solid2:
  ld a,(iy)
  ld (de),a
  inc de
- jr .quantsolid2_block4_advance
-.quantsolid2_block4_skip:
- inc de
- inc de
-.quantsolid2_block4_advance:
  inc hl
  ld a,(hl)
 
@@ -1356,11 +1295,6 @@ _ch5_motion_quant_solid2:
  ld a,(iy)
  ld (de),a
  inc de
- jr .quantsolid2_block5_advance
-.quantsolid2_block5_skip:
- inc de
- inc de
-.quantsolid2_block5_advance:
  inc hl
  ld a,(hl)
 
@@ -1377,11 +1311,6 @@ _ch5_motion_quant_solid2:
  ld a,(iy)
  ld (de),a
  inc de
- jr .quantsolid2_block6_advance
-.quantsolid2_block6_skip:
- inc de
- inc de
-.quantsolid2_block6_advance:
  inc hl
  ld a,(hl)
 
@@ -1398,11 +1327,6 @@ _ch5_motion_quant_solid2:
  ld a,(iy)
  ld (de),a
  inc de
- jr .quantsolid2_block7_advance
-.quantsolid2_block7_skip:
- inc de
- inc de
-.quantsolid2_block7_advance:
  inc hl
  dec bc
  ld a,b
@@ -1430,11 +1354,6 @@ _ch5_motion_quant_solid2:
  ld a,(iy)
  ld (de),a
  inc de
- jr .quantsolid2_last_advance
-.quantsolid2_last_skip:
- inc de
- inc de
-.quantsolid2_last_advance:
  inc hl
  dec c
  jp nz,.quantsolid2_tail
@@ -1469,73 +1388,41 @@ _ch5_motion_opaque_solid1:
 
  ld (de),a
  inc de
- jr .opaquesolid1_block0_advance
-.opaquesolid1_block0_skip:
- inc de
-.opaquesolid1_block0_advance:
  inc hl
  ld a,(hl)
 
  ld (de),a
  inc de
- jr .opaquesolid1_block1_advance
-.opaquesolid1_block1_skip:
- inc de
-.opaquesolid1_block1_advance:
  inc hl
  ld a,(hl)
 
  ld (de),a
  inc de
- jr .opaquesolid1_block2_advance
-.opaquesolid1_block2_skip:
- inc de
-.opaquesolid1_block2_advance:
  inc hl
  ld a,(hl)
 
  ld (de),a
  inc de
- jr .opaquesolid1_block3_advance
-.opaquesolid1_block3_skip:
- inc de
-.opaquesolid1_block3_advance:
  inc hl
  ld a,(hl)
 
  ld (de),a
  inc de
- jr .opaquesolid1_block4_advance
-.opaquesolid1_block4_skip:
- inc de
-.opaquesolid1_block4_advance:
  inc hl
  ld a,(hl)
 
  ld (de),a
  inc de
- jr .opaquesolid1_block5_advance
-.opaquesolid1_block5_skip:
- inc de
-.opaquesolid1_block5_advance:
  inc hl
  ld a,(hl)
 
  ld (de),a
  inc de
- jr .opaquesolid1_block6_advance
-.opaquesolid1_block6_skip:
- inc de
-.opaquesolid1_block6_advance:
  inc hl
  ld a,(hl)
 
  ld (de),a
  inc de
- jr .opaquesolid1_block7_advance
-.opaquesolid1_block7_skip:
- inc de
-.opaquesolid1_block7_advance:
  inc hl
  dec bc
  ld a,b
@@ -1552,10 +1439,6 @@ _ch5_motion_opaque_solid1:
 
  ld (de),a
  inc de
- jr .opaquesolid1_last_advance
-.opaquesolid1_last_skip:
- inc de
-.opaquesolid1_last_advance:
  inc hl
  dec c
  jp nz,.opaquesolid1_tail
@@ -1591,11 +1474,6 @@ _ch5_motion_opaque_solid2:
  inc de
  ld (de),a
  inc de
- jr .opaquesolid2_block0_advance
-.opaquesolid2_block0_skip:
- inc de
- inc de
-.opaquesolid2_block0_advance:
  inc hl
  ld a,(hl)
 
@@ -1603,11 +1481,6 @@ _ch5_motion_opaque_solid2:
  inc de
  ld (de),a
  inc de
- jr .opaquesolid2_block1_advance
-.opaquesolid2_block1_skip:
- inc de
- inc de
-.opaquesolid2_block1_advance:
  inc hl
  ld a,(hl)
 
@@ -1615,11 +1488,6 @@ _ch5_motion_opaque_solid2:
  inc de
  ld (de),a
  inc de
- jr .opaquesolid2_block2_advance
-.opaquesolid2_block2_skip:
- inc de
- inc de
-.opaquesolid2_block2_advance:
  inc hl
  ld a,(hl)
 
@@ -1627,11 +1495,6 @@ _ch5_motion_opaque_solid2:
  inc de
  ld (de),a
  inc de
- jr .opaquesolid2_block3_advance
-.opaquesolid2_block3_skip:
- inc de
- inc de
-.opaquesolid2_block3_advance:
  inc hl
  ld a,(hl)
 
@@ -1639,11 +1502,6 @@ _ch5_motion_opaque_solid2:
  inc de
  ld (de),a
  inc de
- jr .opaquesolid2_block4_advance
-.opaquesolid2_block4_skip:
- inc de
- inc de
-.opaquesolid2_block4_advance:
  inc hl
  ld a,(hl)
 
@@ -1651,11 +1509,6 @@ _ch5_motion_opaque_solid2:
  inc de
  ld (de),a
  inc de
- jr .opaquesolid2_block5_advance
-.opaquesolid2_block5_skip:
- inc de
- inc de
-.opaquesolid2_block5_advance:
  inc hl
  ld a,(hl)
 
@@ -1663,11 +1516,6 @@ _ch5_motion_opaque_solid2:
  inc de
  ld (de),a
  inc de
- jr .opaquesolid2_block6_advance
-.opaquesolid2_block6_skip:
- inc de
- inc de
-.opaquesolid2_block6_advance:
  inc hl
  ld a,(hl)
 
@@ -1675,11 +1523,6 @@ _ch5_motion_opaque_solid2:
  inc de
  ld (de),a
  inc de
- jr .opaquesolid2_block7_advance
-.opaquesolid2_block7_skip:
- inc de
- inc de
-.opaquesolid2_block7_advance:
  inc hl
  dec bc
  ld a,b
@@ -1698,11 +1541,6 @@ _ch5_motion_opaque_solid2:
  inc de
  ld (de),a
  inc de
- jr .opaquesolid2_last_advance
-.opaquesolid2_last_skip:
- inc de
- inc de
-.opaquesolid2_last_advance:
  inc hl
  dec c
  jp nz,.opaquesolid2_tail
