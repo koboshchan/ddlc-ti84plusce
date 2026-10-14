@@ -57,6 +57,6 @@ void *ti_GetDataPtr(uint8_t h){assert(opened[h]);return h==1?(void*)record:h==2?
    (tmp/"graphx.h").write_text("#include <stdint.h>\nextern uint8_t *gfx_vbuffer;void gfx_SetPalette(const uint16_t*,unsigned,unsigned);\n")
    source=(ROOT/"src/ch5_motion_render.c").read_text().replace("clock()", "fixture_clock()")
    (tmp/"test.c").write_text(harness+source+main)
-   subprocess.run(["cc","-O2","-fsanitize=undefined","-I"+str(tmp),"-I"+str(ROOT/"src"),str(tmp/"test.c"),"-o",str(tmp/"test")],check=True)
+   subprocess.run(["cc","-DDDLC_EXPERIMENTAL_MOTION_LUT=1","-O2","-fsanitize=undefined","-I"+str(tmp),"-I"+str(ROOT/"src"),str(tmp/"test.c"),"-o",str(tmp/"test")],check=True)
    subprocess.run([str(tmp/"test")],check=True)
 if __name__=="__main__":unittest.main()

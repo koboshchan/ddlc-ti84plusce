@@ -68,6 +68,9 @@ bool ch5_motion_draw(uint8_t scene){
  const uint8_t *nearest=ti_GetDataPtr(blend_handle);
  gfx_SetPalette(palette,512,0);
  uint8_t bg_groups[256];bool have_groups=false;
+ /* Approximate color clustering is an explicit benchmark-only opt-in.
+  * Stale installed tables must not change the default exact renderer. */
+#ifdef DDLC_EXPERIMENTAL_MOTION_LUT
  h=ti_Open("DMOTBGM","r");
  if(h){
   if(ti_GetSize(h)==256){
@@ -76,6 +79,7 @@ bool ch5_motion_draw(uint8_t scene){
   }
   ti_Close(h);
  }
+ #endif
  bool success=false;
  /* No variable mutation/GC inside this scope; clear borrowed pointers
   * before closing the nearest-color AppVar on every exit. */
