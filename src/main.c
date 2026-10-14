@@ -1465,10 +1465,16 @@ static void wait_for_advance(vn_vm_t *vm, bool allow_pause)
             continue; /* resumed (or just loaded) -- redraw fresh next loop */
         }
         if (!quit_requested) {
-            render_scene_lazy(scene);
-            draw_dialogue_box(vm, scene, SIZE_MAX);
-            render_present(TRANS_CUT);
-            noise_tick(vm, scene, SIZE_MAX);
+            if (vm->noise_enabled) {
+                /* Effect tick owns scene, textbox and presentation. When its
+                 * deadline has not arrived, keep the visible frame untouched. */
+                noise_tick(vm, scene, SIZE_MAX);
+            } else {
+                noise_tick(vm, scene, SIZE_MAX); /* release previous effect */
+                render_scene_lazy(scene);
+                draw_dialogue_box(vm, scene, SIZE_MAX);
+                render_present(TRANS_CUT);
+            }
             gfx_Wait();
         }
     } while (!in.advance && !quit_requested);
@@ -1792,10 +1798,17 @@ static void host_say(void *ctx, const vn_scene_t *scene)
             visible = len;
         }
 
-        render_scene_lazy(scene);
-        draw_dialogue_box(vm, scene, visible);
-        render_present(TRANS_CUT);
-        noise_tick(vm, scene, visible);
+        if (vm->noise_enabled) {
+            /* A new visible prefix must appear even before the idle deadline.
+             * Still compose/present only once, never a clean frame then noise. */
+            noise_next_frame = 0;
+            noise_tick(vm, scene, visible);
+        } else {
+            noise_tick(vm, scene, visible);
+            render_scene_lazy(scene);
+            draw_dialogue_box(vm, scene, visible);
+            render_present(TRANS_CUT);
+        }
         gfx_Wait();
     }
 

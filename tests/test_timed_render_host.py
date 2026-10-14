@@ -111,6 +111,14 @@ int main(int argc,char**argv){
  pack_ok=0;motion_calls=noise_calls=draw_calls=0;motion_time=0;noise_was_enabled=false;
  memset(gfx_vbuffer+57600,0,19200);noise_tick(&vm,&vm.scene,0);
  assert(motion_calls==1 && noise_calls==1 && draw_calls==1);
+ /* Idle scheduler calls before the deadline do not render or present. */
+ unsigned before_motion=motion_calls,before_noise=noise_calls,before_draw=draw_calls;
+ noise_tick(&vm,&vm.scene,0);
+ assert(motion_calls==before_motion && noise_calls==before_noise && draw_calls==before_draw);
+ /* Typewriter forces the new prefix through one effect composition. */
+ memset(gfx_vbuffer+57600,0,19200);
+ noise_next_frame=0;noise_tick(&vm,&vm.scene,1);
+ assert(noise_calls==before_noise+1 && draw_calls==before_draw+1);
  puts("actual reader/render/scheduler/noise_tick host fault flow PASS; target proof pending");
 }
 '''

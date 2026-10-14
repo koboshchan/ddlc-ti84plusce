@@ -926,12 +926,12 @@ bool render_timed_cg(const vn_scene_t *scene, uint16_t index,
      * top 180: clear ALL 240 rows before reconstructing the authored underlay.
      * Subsequent normal textbox/window draw replaces lower UI before swap. */
     memset(gfx_vbuffer,0,320u*240u);
-    render_scene(scene);
+    /* Caller owns the sole fallback redraw after this transaction fails. */
     return false;
 }
 
 /* Scene-local schedule is tied to the motion clock, not noise startup.
- * Every false path reconstructs ALL pixels before caller presents anything. */
+ * Failure invalidates/clears staging; caller reconstructs once before presenting. */
 bool render_timed_scene(const vn_scene_t *scene) {
     uint16_t index;
     uint32_t timestamp;
@@ -945,7 +945,6 @@ bool render_timed_scene(const vn_scene_t *scene) {
         return render_timed_cg(scene,index,timestamp);
     render_invalidate_scene();
     memset(gfx_vbuffer,0,320u*240u);
-    render_scene(scene);
     return false;
 }
 
