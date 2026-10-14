@@ -193,7 +193,25 @@ int main(int argc, char **argv) {
     if (!strcmp(which, "missing_firstrun") || !strcmp(which, "missing_dpersist")) {
         seed_reset();
         assert(ti_Delete(!strcmp(which, "missing_firstrun") ? "FIRSTRUN" : "DPERSIST") != 0);
-        chars_init(); check_reset();
+        assert(chars_init()); check_reset();
+    } else if (!strcmp(which, "reset_delete_failure")) {
+        seed_reset();
+        assert(ti_Delete("FIRSTRUN") != 0);
+        failed_delete = "DPERSIST";
+        assert(!chars_init());
+        assert(exists("DPERSIST") && !exists("FIRSTRUN"));
+        assert(!chars_present(CHAR_SAYORI) && save_exists(1));
+        failed_delete = NULL;
+        assert(chars_init()); check_reset();
+    } else if (!strcmp(which, "reset_save_delete_failure")) {
+        seed_reset();
+        assert(ti_Delete("DPERSIST") != 0);
+        failed_delete = "DSAVE3";
+        assert(!chars_init());
+        assert(!exists("DPERSIST") && save_exists(3));
+        assert(!chars_present(CHAR_SAYORI));
+        failed_delete = NULL;
+        assert(chars_init()); check_reset();
     } else if (!strcmp(which, "delete_contract")) {
         uint8_t byte = 1;
         put("SAYORI", &byte, 1);
@@ -217,7 +235,7 @@ int main(int argc, char **argv) {
     } else if (!strcmp(which, "normal_deleted_sayori")) {
         seed_reset(); uint8_t byte = 9;
         put("NATSUKI", &byte, 1); put("YURI", &byte, 1);
-        chars_init();
+        assert(chars_init());
         assert(!chars_present(CHAR_SAYORI));
         assert(chars_present(CHAR_NATSUKI) && chars_present(CHAR_YURI));
         assert(exists("DPERSIST") && save_exists(SAVE_SLOTS));
@@ -341,7 +359,8 @@ def _case(case):
     return lambda self: self.run_case(case)
 
 for _name in (
-    "missing_firstrun", "missing_dpersist", "delete_contract", "normal_deleted_sayori",
+    "missing_firstrun", "missing_dpersist", "reset_delete_failure",
+    "reset_save_delete_failure", "delete_contract", "normal_deleted_sayori",
     "load_current_persistent_and_scene", "failed_chunk_unchanged",
     "null_script_unchanged", "out_of_bounds_pc_unchanged",
     "short_save_read_unchanged", "old_version_unchanged", "empty_dpslot", "one_byte_dpslot",

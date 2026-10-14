@@ -42,7 +42,9 @@ enum {
  * previous session", so it would silently resurrect a deleted character
  * the very next time the program launched.
  */
-void chars_init(void);
+/** Returns false if reset cannot be completed. The caller must stop startup
+ * rather than load old progress after a partially failed reset. */
+bool chars_init(void);
 
 /** True if @p character's AppVar still exists. */
 bool chars_present(uint8_t character);
