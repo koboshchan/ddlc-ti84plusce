@@ -1,0 +1,18 @@
+{
+  "before_ms": [
+    10664.794921875,
+    10664.97802734375
+  ],
+  "after_ms": [
+    4672.943115234375,
+    4673.03466796875
+  ],
+  "target_framebuffer_errors": 0,
+  "target_scope": "2 VRAM buffers first180rows compared at completed probe, final frame scene35 4125ms",
+  "golden_frames": 1261,
+  "golden_errors": 0,
+  "psnr_db": "infinite (identical indexed palette outputs)",
+  "goal_met": false,
+  "speedup": 2.2822436864481497,
+  "scope_note": "Motion changes isolated using identical bands, not entire main versus integrated engine."
+}
