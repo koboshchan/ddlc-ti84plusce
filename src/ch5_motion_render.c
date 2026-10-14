@@ -56,6 +56,7 @@ bool ch5_motion_draw(uint8_t scene){
  const uint8_t *p=ti_GetDataPtr(h);n=ti_GetSize(h);
  for(i=0;i+18<=n;i+=18)if(p[i]==scene){memcpy(record,p+i,18);found=true;break;}
  ti_Close(h);if(!found){last_scene=255;return false;}
+ if(record[1]>8)return false;
  h=ti_Open("DMOTPAL","r");if(!h)return false;
  if(ti_GetSize(h)!=512){ti_Close(h);return false;}
  ti_Read(palette,1,512,h);ti_Close(h);
@@ -66,9 +67,12 @@ bool ch5_motion_draw(uint8_t scene){
  if(ti_GetSize(blend_handle)!=32768u){ti_Close(blend_handle);return false;}
  const uint8_t *nearest=ti_GetDataPtr(blend_handle);
  gfx_SetPalette(palette,512,0);
+ bool success=false;
+ /* No variable mutation/GC inside this scope; clear borrowed pointers
+  * before closing the nearest-color AppVar on every exit. */
  ch5_band_begin();
  /* Validate each stream before modifying frame. Existing scene is fallback. */
- for(i=0;i<record[1];i++)if(!ch5_band_row(record[2+i*2],0)){ch5_band_end();ti_Close(blend_handle);return false;}
+ for(i=0;i<record[1];i++)if(!ch5_band_row(record[2+i*2],0)){goto motion_done;}
  memset(gfx_vbuffer,0,320*180);
  for(i=0;i<record[1];i++){
   layer=record[2+i*2];mode=record[3+i*2];
@@ -99,7 +103,7 @@ bool ch5_motion_draw(uint8_t scene){
   uint16_t previous_pair=0;uint8_t previous_color=0;bool pair_valid=false;
   for(y=0;y<180;y++){
    if(ymap[y]<0)continue;
-   const uint8_t *row=ch5_band_row(layer,ymap[y]);if(!row){ch5_band_end();ti_Close(blend_handle);return false;}
+   const uint8_t *row=ch5_band_row(layer,ymap[y]);if(!row){goto motion_done;}
    uint8_t *dst=(uint8_t *)gfx_vbuffer+y*320;
    if(opaque){
     ch5_motion_opaque_fast(dst+first,row,xmap+first,end-first);
@@ -126,9 +130,13 @@ bool ch5_motion_draw(uint8_t scene){
    }
   }
  }
+ success=true;
+motion_done:
  ch5_band_end();
  ti_Close(blend_handle);
- return true;
+ /* Bottom rows are transient work space, not scene pixels. Every caller
+  * must compose the dialogue/letterbox after this draw and before present. */
+ return success;
 }
 
 uint32_t ch5_motion_elapsed_ms(uint8_t scene) {

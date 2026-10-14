@@ -18,6 +18,7 @@ HARNESS = r"""
 #include <time.h>
 #include <assert.h>
 static clock_t authored;
+static unsigned begins,ends;static bool band_active;static int fail_row=-1;
 static clock_t fixture_clock(void){return authored;}
 static uint8_t storage[76800+64], expected[57600];
 uint8_t *gfx_vbuffer=storage;
@@ -27,15 +28,15 @@ static uint8_t nearest[32768],layers[4][57600];
 static uint32_t seed=17;
 static uint32_t random32(void){seed^=seed<<13;seed^=seed>>17;seed^=seed<<5;return seed;}
 uint8_t ti_Open(const char*n,const char*m){(void)m;return !strcmp(n,"DMOTMAP")?1:!strcmp(n,"DMOTPAL")?2:!strcmp(n,"DMOTRGB")?3:0;}
-void ti_Close(uint8_t h){(void)h;}
+void ti_Close(uint8_t h){(void)h;assert(!band_active);}
 unsigned ti_GetSize(uint8_t h){return h==1?18:h==2?512:32768;}
 void *ti_GetDataPtr(uint8_t h){return h==1?(void*)record:h==2?(void*)palette:(void*)nearest;}
 unsigned ti_Read(void*out,unsigned a,unsigned b,uint8_t h){memcpy(out,ti_GetDataPtr(h),a*b);return b;}
 void gfx_SetPalette(const uint16_t*p,unsigned n,unsigned off){(void)p;(void)n;(void)off;}
 void ch5_band_invalidate(void){}
-void ch5_band_begin(void){}
-void ch5_band_end(void){}
-const uint8_t *ch5_band_row(uint8_t l,uint16_t y){unsigned w=l<2?320:72;assert(l<4 && y<(l<2?180:263));return layers[l]+y*w;}
+void ch5_band_begin(void){assert(!band_active);band_active=true;begins++;}
+void ch5_band_end(void){assert(band_active);band_active=false;ends++;}
+const uint8_t *ch5_band_row(uint8_t l,uint16_t y){unsigned w=l<2?320:72;assert(band_active);assert(l<4 && y<(l<2?180:263));if((int)y==fail_row)return NULL;return layers[l]+y*w;}
 void ch5_motion_opaque_fast(uint8_t*d,const uint8_t*s,const int16_t*m,size_t n){
  for(size_t i=0;i<n;i++){assert(m[i]>=0);uint8_t c=s[m[i]];if(c!=255)d[i]=c;}
 }
@@ -68,10 +69,13 @@ int main(void){
  memset(storage+76800,0xA7,64);
  for(unsigned ms=0;ms<=6000;ms+=125){
   authored=(uint64_t)ms*CLOCKS_PER_SEC/1000;
-  assert(ch5_motion_draw(1));reference(ms);
+  assert(ch5_motion_draw(1));assert(!band_active && begins==ends);reference(ms);
   assert(!memcmp(expected,storage,57600));
   for(unsigned i=76800;i<sizeof storage;i++)assert(storage[i]==0xA7);
  }
+ fail_row=0;assert(!ch5_motion_draw(1));assert(!band_active && begins==ends);
+ fail_row=1;assert(!ch5_motion_draw(1));assert(!band_active && begins==ends);
+ record[1]=9;assert(!ch5_motion_draw(1));assert(!band_active && begins==ends);
  return 0;
 }
 """
