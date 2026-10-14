@@ -4,6 +4,7 @@ from pathlib import Path
 import struct,json,hashlib,subprocess
 from PIL import Image
 from ch5_blend_luts import generate_blend_luts
+from ch5_fg16_lut import generate_fg16_lut
 NAMES=("s_kill_bg","s_kill_bg2","s_kill","s_kill2")
 def generate(raw_dir,build_dir,appvar_dir,write_appvar):
  images=[]
@@ -18,12 +19,13 @@ def generate(raw_dir,build_dir,appvar_dir,write_appvar):
  rgb1555=[]
  for i in range(256):
   r,g,b=palette[3*i:3*i+3];rgb1555.append(((r>>3)<<10)|((g>>3)<<5)|(b>>3))
- output=[];reports=[]
+ output=[];reports=[];textures=[]
  for idx,(name,im) in enumerate(zip(NAMES,images)):
   indexed=bytearray(im.convert("RGB").quantize(palette=common,dither=Image.Dither.NONE).tobytes())
   alpha=im.getchannel("A").tobytes()
   for p,a in enumerate(alpha):
    if a<128:indexed[p]=255
+  textures.append(bytes(indexed))
   bands=[]
   for y in range(0,im.height,8):
    data=bytes(indexed[y*im.width:min(y+8,im.height)*im.width])
@@ -53,6 +55,7 @@ def generate(raw_dir,build_dir,appvar_dir,write_appvar):
    if distance<best:best=distance;chosen=index
   nearest[value]=chosen
  output.append(write_appvar(bytes(nearest),"DMOTRGB",appvar_dir))
+ output.append(write_appvar(generate_fg16_lut(rgb1555,nearest,textures),"DLUTQ",appvar_dir))
  # Experimental lookup tables exceed full-bundle flash headroom and have
  # visible color loss. Keep the default bundle exact; explicitly opt in
  # only for isolated benchmark fixtures.

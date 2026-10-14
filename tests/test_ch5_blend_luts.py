@@ -1,3 +1,6 @@
+import sys
+from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
 """Bounded deterministic offline blend LUT generation."""
 import unittest
 from ch5_blend_luts import generate_blend_luts

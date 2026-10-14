@@ -1,3 +1,7 @@
+#include <stdint.h>
+#include <time.h>
+
+void ch5_motion_expand_fast(uint8_t*,const uint8_t*,unsigned);
 #include "ch5_bands.h"
 #include "ch5_motion.h"
 #include "ch5_motion_fast.h"
@@ -5,27 +9,43 @@
 #include <graphx.h>
 #include <time.h>
 #include <string.h>
+#include <stdlib.h>
+#include "perf_memory.h"
+void ch5_motion_quant_direct1(uint8_t*,const uint8_t*,unsigned,const uint8_t*,const uint8_t*);
+void ch5_motion_quant_direct2(uint8_t*,const uint8_t*,unsigned,const uint8_t*,const uint8_t*);
+void ch5_motion_opaque_direct1(uint8_t*,const uint8_t*,unsigned);
+void ch5_motion_opaque_direct2(uint8_t*,const uint8_t*,unsigned);
 static int16_t xmap[320],ymap[180];
 static uint8_t last_scene=255;
+static uint8_t quant_groups[256];
+void ch5_motion_quant_fast(uint8_t*,const uint8_t*,const int16_t*,unsigned,const uint8_t*,const uint8_t*);
 static clock_t started;
 static clock_t layer_start[8];
 static uint8_t previous_mode[8]={255,255,255,255,255,255,255,255};
 /* Zoomed motion modes are exactly 1x/2x, so the million-unit scale
  * cancels before flooring. Keep general authored zooms on the wide path. */
-static void motion_axis_map(int16_t *map,unsigned count,int32_t origin,
-                            uint32_t scale,unsigned extent){
- if(scale!=1000000UL && scale!=2000000UL){
-  ch5_axis_map(map,count,origin,scale,extent);return;
+static void motion_axis_map(int16_t *map,unsigned count,int32_t origin,uint32_t scale,unsigned extent){
+ if(scale==1000000u || scale==2000000u){
+   int32_t den=scale==1000000u?1024:2048;
+   int32_t source=ch5_floor_div(-(int64_t)origin,den);
+   int32_t rem=-(int64_t)origin-(int64_t)source*den;
+   for(unsigned j=0;j<count;j++){
+    map[j]=(source<0||(uint32_t)source>=extent)?-1:(int16_t)source;
+    rem+=1024;
+    if(rem>=den){rem-=den;source++;}
+   }
+   return;
  }
- int32_t denominator=scale==1000000UL?1024:2048;
- int32_t numerator=-origin;
- int32_t source=numerator>=0?numerator/denominator:
-                    -((-numerator+denominator-1)/denominator);
- unsigned remainder=numerator-source*denominator;
+ int64_t den=(int64_t)scale*1024,num=-(int64_t)origin*1000000;
+ int32_t source=ch5_floor_div(num,den);
+ int64_t rem=num-(int64_t)source*den;
+ int64_t step=1024LL*1000000;
+ int32_t delta=step/den;
+ int64_t dr=step-(int64_t)delta*den;
  for(unsigned j=0;j<count;j++){
-  map[j]=(source<0 || (uint32_t)source>=extent)?-1:(int16_t)source;
-  remainder+=1024;
-  if(remainder>=(unsigned)denominator){remainder-=denominator;source++;}
+  map[j]=(source<0||(uint32_t)source>=extent)?-1:(int16_t)source;
+  source+=delta;rem+=dr;
+  if(rem>=den){rem-=den;source++;}
  }
 }
 bool ch5_motion_active(uint8_t scene){
@@ -67,6 +87,13 @@ bool ch5_motion_draw(uint8_t scene){
  if(ti_GetSize(blend_handle)!=32768u){ti_Close(blend_handle);return false;}
  const uint8_t *nearest=ti_GetDataPtr(blend_handle);
  gfx_SetPalette(palette,512,0);
+ uint8_t qh=ti_Open("DLUTQ","r");if(!qh){ti_Close(blend_handle);return false;}
+ if(ti_GetSize(qh)!=12560){ti_Close(qh);ti_Close(blend_handle);return false;}
+ const uint8_t *qdata=ti_GetDataPtr(qh);memcpy(quant_groups,qdata,256);
+ for(unsigned q=0;q<256;q++)if(quant_groups[q]>=16){ti_Close(qh);ti_Close(blend_handle);return false;}
+
+ ti_Close(qh);
+
  uint8_t bg_groups[256];bool have_groups=false;
  /* Benchmark-only opt-in; installed LUTs cannot affect default output. */
 #ifdef DDLC_EXPERIMENTAL_MOTION_LUT
@@ -79,6 +106,9 @@ bool ch5_motion_draw(uint8_t scene){
   ti_Close(h);
  }
 #endif
+ uint8_t *lookup_alloc=malloc(4096+256+4095);
+ if(!lookup_alloc){ti_Close(blend_handle);return false;}
+ uint8_t *lookup_aligned=(uint8_t*)(((uintptr_t)lookup_alloc+4095u)&~(uintptr_t)4095u);
  bool success=false;
  /* No variable mutation/GC inside this scope; clear borrowed pointers
   * before closing the nearest-color AppVar on every exit. */
@@ -94,66 +124,54 @@ bool ch5_motion_draw(uint8_t scene){
   motion_axis_map(xmap,320,pose.x,pose.zoom_q10,tw);
   motion_axis_map(ymap,180,pose.y,pose.zoom_q10,th);
   if(!pose.alpha_q10)continue;
-  const uint8_t *blend_lut=0;
-  if(have_groups && pose.alpha_q10!=1024){
-   unsigned level=(pose.alpha_q10*15u+512u)/1024u;
-   char lut_name[]="DMLUT00";
-   lut_name[5]='0'+level/10;lut_name[6]='0'+level%10;
-   lut_handle=ti_Open(lut_name,"r");
-   if(lut_handle){
-    if(ti_GetSize(lut_handle)==8192)blend_lut=ti_GetDataPtr(lut_handle);
-    else{ti_Close(lut_handle);lut_handle=0;}
-   }
-  }
-  /* Exact channel contributions. 128 bytes bounded stack workspace, not a
-   * per-pixel multiplication or a heap allocation at lifecycle peak. */
-  uint16_t fg_weight[32],bg_weight[32];
-  /* Exact direct-mapped pair cache lives only in the hidden dialogue rows.
-   * No heap/BSS cost; tags are invalidated for every alpha/layer. fg 255
-   * is transparent, so the all-ones tag is an impossible valid pair. */
-  uint8_t *scratch=(uint8_t *)gfx_vbuffer+320u*180u;
-  uint16_t *pair_tags=(uint16_t *)scratch;
-  uint8_t *pair_colors=scratch+8192;
-  if(pose.alpha_q10!=1024 && !blend_lut)memset(pair_tags,255,8192);
   const bool opaque=pose.alpha_q10==1024;
-  if(!opaque && !blend_lut)for(unsigned c=0;c<32;c++){
-   fg_weight[c]=c*pose.alpha_q10;
-   bg_weight[c]=c*(1024u-pose.alpha_q10);
-  }
+  uint8_t *ramlut=lookup_aligned;
+  uint8_t *pages=ramlut+4096;
+  uint8_t page_base=(uint8_t)((uintptr_t)ramlut>>8);
+  for(unsigned pg=0;pg<256;pg++)pages[pg]=page_base+quant_groups[pg];
+
+  if(!opaque)memcpy(ramlut,qdata+272+(pose.alpha_q10<352?0:pose.alpha_q10<544?4096:8192),4096);
   unsigned first=0,end=320;
   while(first<end && xmap[first]<0)first++;
   while(end>first && xmap[end-1]<0)end--;
+  unsigned span=end-first;if(!span)continue;bool linear=true,doubled=true,odd_doubled=true;
+  for(unsigned k=0;k<span;k++){if(xmap[first+k]!=xmap[first]+k)linear=false;if(xmap[first+k]!=xmap[first]+k/2)doubled=false;if(xmap[first+k]!=xmap[first]+(k+1)/2)odd_doubled=false;}
   for(y=0;y<180;y++){
    if(ymap[y]<0)continue;
    const uint8_t *row=ch5_band_row(layer,ymap[y]);if(!row){goto motion_done;}
    uint8_t *dst=(uint8_t *)gfx_vbuffer+y*320;
    if(opaque){
-    ch5_motion_opaque_fast(dst+first,row,xmap+first,end-first);
-   }else if(blend_lut){
-    ch5_motion_lut_fast(dst+first,row,xmap+first,end-first,bg_groups,blend_lut);
+    if(linear)ch5_motion_opaque_direct1(dst+first,row+xmap[first],span);
+    else if(odd_doubled && !doubled && span>=3){
+     ch5_motion_opaque_direct1(dst+first,row+xmap[first],1);
+     unsigned remaining=span-1,even=remaining&~1u;
+     ch5_motion_opaque_direct2(dst+first+1,row+xmap[first+1],even/2);
+     if(remaining!=even)ch5_motion_opaque_direct1(dst+first+1+even,row+xmap[first+1+even],1);
+    }else if(doubled && span>=2){
+     unsigned even=span&~1u;
+     ch5_motion_opaque_direct2(dst+first,row+xmap[first],even/2);
+     if(span!=even)ch5_motion_opaque_direct1(dst+first+even,row+xmap[first+even],1);
+    }else ch5_motion_opaque_fast(dst+first,row,xmap+first,span);
    }else{
-    x=first;
-    while(x<end){
-     x+=ch5_motion_cached_fast(dst+x,row,xmap+x,end-x,pair_tags,pair_colors);
-     if(x==end)break;
-     /* Assembly stops before the miss; compute only that exact pair. */
-     uint8_t color=row[xmap[x]],bg_index=dst[x];
-     uint16_t pair=((uint16_t)color<<8)|bg_index;
-     unsigned slot=(((unsigned)color<<5)-(unsigned)color+bg_index)&4095u;
-     unsigned fg=palette[color],bg=palette[bg_index];
-     unsigned rr=(fg_weight[(fg>>10)&31u]+bg_weight[(bg>>10)&31u]+512u)>>10;
-     unsigned gg=(fg_weight[(fg>>5)&31u]+bg_weight[(bg>>5)&31u]+512u)>>10;
-     unsigned bb=(fg_weight[fg&31u]+bg_weight[bg&31u]+512u)>>10;
-     uint8_t blended=nearest[(rr<<10)|(gg<<5)|bb];
-     pair_tags[slot]=pair;pair_colors[slot]=blended;dst[x++]=blended;
-    }
+    if(linear)ch5_motion_quant_direct1(dst+first,row+xmap[first],span,pages,ramlut);
+    else if(odd_doubled && !doubled && span>=3){
+     ch5_motion_quant_direct1(dst+first,row+xmap[first],1,pages,ramlut);
+     unsigned remaining=span-1,even=remaining&~1u;
+     ch5_motion_quant_direct2(dst+first+1,row+xmap[first+1],even/2,pages,ramlut);
+     if(remaining!=even)ch5_motion_quant_direct1(dst+first+1+even,row+xmap[first+1+even],1,pages,ramlut);
+    }else if(doubled && span>=2){
+     unsigned even=span&~1u;
+     ch5_motion_quant_direct2(dst+first,row+xmap[first],even/2,pages,ramlut);
+     if(span!=even)ch5_motion_quant_fast(dst+first+even,row,xmap+first+even,1,pages,ramlut);
+    }else ch5_motion_quant_fast(dst+first,row,xmap+first,span,pages,ramlut);
    }
   }
-  if(lut_handle){ti_Close(lut_handle);lut_handle=0;}
+
  }
  success=true;
 motion_done:
  ch5_band_end();
+ free(lookup_alloc);
  if(lut_handle)ti_Close(lut_handle);
  ti_Close(blend_handle);
  /* Bottom rows are transient work space, not scene pixels. Every caller
