@@ -10,7 +10,7 @@
 static uint8_t pixels_bg[2][320 * 8];
 static uint8_t pixels_fg[2][72 * 8];
 static uint8_t cached_band[4] = {255,255,255,255};
-static struct { const uint8_t *data[4]; unsigned sizes[4]; uint8_t flags[15]; } frame_cache;
+static struct { const uint8_t *data[4]; uint16_t sizes[4]; uint8_t flags[15]; } frame_cache;
 #define layer_data frame_cache.data
 #define ready frame_cache.flags
 #define layer_size frame_cache.sizes
@@ -18,8 +18,8 @@ static struct { const uint8_t *data[4]; unsigned sizes[4]; uint8_t flags[15]; } 
 uint8_t *resident;
 
 
-static unsigned u16(const uint8_t *p) {
-    return p[0] | ((unsigned)p[1] << 8);
+static uint16_t u16(const uint8_t *p) {
+    return p[0] | ((uint16_t)p[1] << 8);
 }
 void ch5_band_begin(void) {
     memset(&frame_cache,0,sizeof frame_cache);
@@ -36,7 +36,7 @@ void ch5_band_invalidate(void) {
 }
 const uint8_t *ch5_band_row(uint8_t layer,uint16_t row) {
     uint8_t band,handle;
-    unsigned width,size,offset,next;
+    uint16_t width,size,offset,next;
     const uint8_t *data;
     char name[]="DMOT0";
     width=layer<2?320:72;

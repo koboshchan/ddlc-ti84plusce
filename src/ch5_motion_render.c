@@ -36,16 +36,16 @@ static void motion_axis_map(int16_t *map,unsigned count,int32_t origin,uint32_t 
    uint8_t shift=scale==1000000u?10:11;
    int32_t start=(-origin)>>shift;
    uint8_t parity=((uint32_t)(-origin)>>10)&1u;
-   if(scale==1000000u){
-    for(unsigned j=0;j<count;j++){
-     int32_t source=start+j;
-     map[j]=(source<0||(uint32_t)source>=extent)?-1:(int16_t)source;
-    }
-   }else{
-    for(unsigned j=0;j<count;j++){
-     int32_t source=start+((j+parity)>>1);
-     map[j]=(source<0||(uint32_t)source>=extent)?-1:(int16_t)source;
-    }
+   unsigned factor=scale==1000000u?1:2;
+   if(factor==1)parity=0;
+   int32_t lo=-start*factor-parity,hi=((int32_t)extent-start)*factor-parity;
+   unsigned begin=lo<0?0:lo>(int32_t)count?count:(unsigned)lo;
+   unsigned end=hi<0?0:hi>(int32_t)count?count:(unsigned)hi;
+   memset(map,255,count*sizeof *map);
+   if(begin<end){
+    int source=(int)(start+(factor==1?begin:((begin+parity)>>1)));
+    if(factor==1){for(unsigned j=begin;j<end;j++)map[j]=source++;}
+    else {for(unsigned j=begin;j<end;j++){map[j]=source;if((j+parity)&1u)source++;}}
    }
    return;
  }
@@ -172,15 +172,16 @@ bool ch5_motion_draw(uint8_t scene){
   }else{
   for(unsigned k=0;k<span;k++){if(xmap[first+k]!=xmap[first]+k)linear=false;if(xmap[first+k]!=xmap[first]+k/2)doubled=false;if(xmap[first+k]!=xmap[first]+(k+1)/2)odd_doubled=false;}
   }
-  int16_t prior_source=-1;const uint8_t *prior_row=NULL;
+  int16_t prior_source=-1;const uint8_t *prior_row=NULL;bool prior_solid=false;
   for(y=0;y<180;y++){
    if(ymap[y]<0)continue;
    const uint8_t *row=ymap[y]==prior_source?prior_row:ch5_band_row(layer,ymap[y]);if(!row){goto motion_done;}
+   if(ymap[y]!=prior_source)prior_solid=layer<2 && !memchr(row,255,tw);
    prior_source=ymap[y];prior_row=row;
    uint8_t *dst=(uint8_t *)gfx_vbuffer+y*320;
    /* Never assume packaged backgrounds are opaque. Scan the decoded row;
     * unusual transparent assets retain the original guarded kernels. */
-   if(layer<2 && !memchr(row,255,tw)){
+   if(prior_solid){
    if(opaque){
     if(linear)memcpy(dst+first,row+xmap[first],span);
     else if(odd_doubled && !doubled && span>=3){
