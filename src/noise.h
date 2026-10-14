@@ -4,6 +4,8 @@
 #include <stdint.h>
 bool noise_begin(uint8_t scene);
 void noise_frame(unsigned elapsed_ms);
+/* Scene-only noise; caller must repaint dialogue rows before presentation. */
+void noise_frame_scene(unsigned elapsed_ms);
 void noise_end(void);
 void noise_restore(void);
 void noise_release(void);

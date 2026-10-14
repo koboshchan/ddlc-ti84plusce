@@ -16,10 +16,12 @@
 #include <fontlibc.h>
 #include <graphx.h>
 #include <sys/timers.h>
+#include "perf_overlay.h"
 
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "perf_memory.h"
 #include <string.h>
 #include <time.h>
 
@@ -71,6 +73,7 @@ void render_init(void)
 
 void render_end(void)
 {
+    perf_overlay_shutdown();
     gfx_End();
 }
 
@@ -826,7 +829,8 @@ static void scene_obscured(void);
 void render_scene(const vn_scene_t *scene)
 {
     noise_restore();
-    if (!ch5_motion_draw(scene->background)) draw_background(scene->background);
+    if (ch5_motion_draw(scene->background)) perf_overlay_mark_rendered();
+    else draw_background(scene->background);
     anim_moving = false;
 
     /* Real elapsed time, not a frame count -- render_scene() is called from
@@ -919,6 +923,7 @@ bool render_timed_cg(const vn_scene_t *scene, uint16_t index,
          * Only top 180 rows are frame data; remove sector padding below it. */
         memset((uint8_t *)gfx_vbuffer+57600u,0,19200u);
         render_apply_palette(palette);
+        perf_overlay_mark_rendered();
         have_drawn_once=false; /* never let a lazy cached underlay survive */
         return true;
     }
@@ -926,12 +931,12 @@ bool render_timed_cg(const vn_scene_t *scene, uint16_t index,
      * top 180: clear ALL 240 rows before reconstructing the authored underlay.
      * Subsequent normal textbox/window draw replaces lower UI before swap. */
     memset(gfx_vbuffer,0,320u*240u);
-    render_scene(scene);
+    /* Caller owns the sole fallback redraw after this transaction fails. */
     return false;
 }
 
 /* Scene-local schedule is tied to the motion clock, not noise startup.
- * Every false path reconstructs ALL pixels before caller presents anything. */
+ * Failure invalidates/clears staging; caller reconstructs once before presenting. */
 bool render_timed_scene(const vn_scene_t *scene) {
     uint16_t index;
     uint32_t timestamp;
@@ -945,7 +950,6 @@ bool render_timed_scene(const vn_scene_t *scene) {
         return render_timed_cg(scene,index,timestamp);
     render_invalidate_scene();
     memset(gfx_vbuffer,0,320u*240u);
-    render_scene(scene);
     return false;
 }
 
@@ -1036,6 +1040,15 @@ void render_scene_lazy(const vn_scene_t *scene)
 void render_box(const vn_scene_t *scene, const char *speaker,
                 const char *text, size_t visible)
 {
+    static bool had_namebox;
+    /* Restore scene before filling the textbox: motion uses its lower rows
+     * as temporary scratch, so a late redraw would erase the new box. */
+    if (had_namebox && (speaker == NULL || scene->window_hidden ||
+                        text == NULL || text[0] == '\0')) {
+        render_scene(scene);
+        had_namebox = false;
+    }
+
     /* `window hide` or empty text -- DDLC uses this for beats with no text
      * (e.g. splash screens, CGs, end screens, pauses) over a clean shot of
      * the scene. The letterbox area (rows 180..239) is filled matching the
@@ -1086,8 +1099,6 @@ void render_box(const vn_scene_t *scene, const char *speaker,
      * area above BOX_Y, and render_scene_lazy()'s "already correct, skip"
      * fast path has no reason to know that rectangle needs fixing, since
      * nothing about the actors/background actually changed. */
-    static bool had_namebox;
-
     if (speaker != NULL) {
         /* Pokes up above BOX_Y into the scene area, matching the real
          * game's namebox -- safe despite render_scene_lazy()'s "plate"
@@ -1123,13 +1134,6 @@ void render_box(const vn_scene_t *scene, const char *speaker,
         }
         set_font(FONT_DEFAULT);
         had_namebox = true;
-    } else if (had_namebox) {
-        /* Just transitioned from a shown namebox to narration -- redraw the
-         * scene for real (not the lazy/plate path) so whatever legitimately
-         * belongs under that rectangle (background art, an actor) replaces
-         * the stale namebox immediately, in this same frame. */
-        render_scene(scene);
-        had_namebox = false;
     }
 
     /* text_wrap() re-measures every character-width prefix of every line it
@@ -1286,6 +1290,7 @@ void render_present(uint8_t trans)
 
     gfx_SwapDraw();
     gfx_BlitScreen();
+    perf_overlay_draw();
 }
 
 /* ---------------------------------------------------------------------------
@@ -1429,7 +1434,7 @@ static void draw_title_art(uint8_t id, int dx_left, int dy_left)
     }
 }
 
-void render_title_screen(uint8_t selected, unsigned t)
+void render_title_screen(uint8_t selected, unsigned t, int16_t playthrough)
 {
     scene_obscured();
     static const char *const items[] = { "New Game", "Load Game", "Help", "Quit" };
@@ -1479,7 +1484,9 @@ void render_title_screen(uint8_t selected, unsigned t)
                    ease(bounce_remain, 256, t, F_LOGO_AT, F_LOGO_DUR));
 
     /* Frontmost pair. */
-    draw_title_art(TITLE_SAYORI, slide, rise);
+    if (playthrough == 0 || playthrough == 4) {
+        draw_title_art(TITLE_SAYORI, slide, rise);
+    }
     draw_title_art(TITLE_MONIKA, slide, rise);
 
     assets_title_end();
@@ -1505,6 +1512,7 @@ void render_title_screen(uint8_t selected, unsigned t)
 
 static uint16_t current_palette[256];
 static uint16_t fade_saved[256];
+static bool fade_active;
 
 static void fade_apply(uint8_t amount)
 {
@@ -1521,6 +1529,7 @@ static void fade_apply(uint8_t amount)
  * a handful of back-to-back palette writes with no visible time passing. */
 void render_fade_out(void)
 {
+    fade_active = true;
     memcpy(fade_saved, current_palette, sizeof(fade_saved));
 
     for (unsigned s = 1; s <= FADE_STEPS; s++) {
@@ -1539,13 +1548,18 @@ void render_fade_in(void)
     /* Restore exactly rather than trusting gfx_Darken(c, 255) to round-trip. */
     memcpy(gfx_palette, fade_saved, sizeof(fade_saved));
     memcpy(current_palette, fade_saved, sizeof(current_palette));
+    fade_active = false;
 }
 
 void render_apply_palette(const uint16_t *palette)
 {
     memcpy(current_palette, palette, sizeof(current_palette));
     memcpy(fade_saved, palette, sizeof(fade_saved));
-    memcpy(gfx_palette, palette, sizeof(current_palette));
+    if (fade_active) {
+        fade_apply(0);
+    } else {
+        memcpy(gfx_palette, palette, sizeof(current_palette));
+    }
 }
 
 void render_fade_retarget(const uint16_t *palette)

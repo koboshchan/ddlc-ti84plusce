@@ -9,6 +9,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include "perf_memory.h"
 
 /* DPSLOT: u16 count, then one u8 slot per entry -- which vars[] indices are
  * `persistent.*` (see tools/import_game.py's packaging). Compiler-generated
@@ -39,8 +40,12 @@ static uint8_t *read_whole(const char *name, uint16_t *size_out)
         ti_Close(handle);
         return NULL;
     }
-    ti_Read(buf, 1, size, handle);
+    size_t got = ti_Read(buf, 1, size, handle);
     ti_Close(handle);
+    if (got != size) {
+        free(buf);
+        return NULL;
+    }
     if (size_out) {
         *size_out = size;
     }
@@ -62,6 +67,10 @@ static void ensure_slots(void)
     /* A bundle whose script has no persistent.* variable at all ships no
      * DPSLOT -- slot_count stays 0, and both functions below correctly
      * become no-ops rather than failing. */
+    if (slot_buf && (size < 2 || read_u16le(slot_buf) > size - 2)) {
+        free(slot_buf);
+        slot_buf = NULL;
+    }
     slot_count = slot_buf ? read_u16le(slot_buf) : 0;
 }
 

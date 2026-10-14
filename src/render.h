@@ -242,7 +242,7 @@ void render_fill_rect(int x, int y, int w, int h, uint8_t color);
  * bar over the nav panel, not with the ">" prefix that suits the in-scene
  * choice menu. Requires the title palette (assets_use_title_palette()).
  */
-void render_title_screen(uint8_t selected, unsigned t);
+void render_title_screen(uint8_t selected, unsigned t, int16_t playthrough);
 void render_pause_box(int x, int y, int w, int h, uint8_t fill_color, uint8_t edge_color);
 
 #define GAME_MENU_SAVE   0
@@ -259,7 +259,8 @@ void render_splash_warning(const char *msg);
 void render_game_menu(uint8_t mode, uint8_t focused_pane, uint8_t sidebar_selected,
                       uint8_t slot_selected, bool is_in_game, unsigned t);
 
-/* Composition only, not presentation; scheduler integration pending. */
+/* Composition only, no presentation. A false return invalidates any partial
+ * external-frame write; the caller must render_scene_lazy once before use. */
 bool render_timed_scene(const vn_scene_t *scene);
 bool render_timed_cg(const vn_scene_t *scene, uint16_t index, uint32_t timestamp_ms);
 

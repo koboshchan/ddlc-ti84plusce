@@ -22,6 +22,7 @@
 #include <graphx.h>
 #include <keypadc.h>
 #include <sys/timers.h>
+#include "perf_overlay.h"
 #include <ti/getcsc.h>
 #include <ti/screen.h>
 
@@ -30,6 +31,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <stdlib.h>
+#include "perf_memory.h"
 
 /* Characters revealed per frame by the typewriter. */
 #define TYPE_SPEED 4
@@ -303,7 +306,12 @@ static uint8_t run_game_menu(vn_vm_t *vm, uint8_t initial_mode, bool is_in_game)
             } else if (mode == GAME_MENU_LOAD) {
                 if (save_exists(slot)) {
                     if (is_in_game && vm) {
-                        save_load(slot, vm);
+                        if (!save_load(slot, vm)) {
+                            returning_to_title = true;
+                            quit_requested = true;
+                            vm->status = VN_QUIT;
+                            return 0; /* Chunk backing may have been replaced. */
+                        }
                         assets_use_title_palette(false);
                         return 0; /* Resumes game at loaded position */
                     } else {
@@ -1182,7 +1190,7 @@ static __attribute__((noinline)) void run_debug_menu(vn_vm_t *vm)
     enum {
         DBG_POEM, DBG_TEXT, DBG_TAGS, DBG_FONT, DBG_ANIM, DBG_CG, DBG_LAYERED_CG,
         DBG_GLITCH, DBG_EVENTS, DBG_ASM,
-        DBG_SCENEINFO, DBG_TEAR, DBG_WINDOW, DBG_CHAPTERS,
+        DBG_SCENEINFO, DBG_TEAR, DBG_WINDOW, DBG_CHAPTERS, DBG_PERF,
         DBG_DEL_SAYORI, DBG_DEL_NATSUKI, DBG_DEL_YURI, DBG_DEL_MONIKA,
         DBG_ERASE, DBG_CLOSE, DBG_ACTION_MAX,
     };
@@ -1213,6 +1221,12 @@ static __attribute__((noinline)) void run_debug_menu(vn_vm_t *vm)
             count++;
         }
 
+#ifdef DDLC_PERF_OVERLAY
+        actions[count] = DBG_PERF;
+        sprintf(labels[count], "Performance overlay: %s",
+                perf_overlay_enabled() ? "ON" : "OFF");
+        count++;
+#endif
         if (vm) {
             actions[count] = DBG_SCENEINFO;
             strcpy(labels[count], "Scene diagnostic");
@@ -1334,6 +1348,11 @@ static __attribute__((noinline)) void run_debug_menu(vn_vm_t *vm)
                 run_debug_asm_test();
                 break;
 
+#ifdef DDLC_PERF_OVERLAY
+            case DBG_PERF:
+                perf_overlay_toggle();
+                break;
+#endif
             case DBG_SCENEINFO:
                 run_debug_scene_info(vm);
                 break;
@@ -1430,16 +1449,19 @@ static void noise_tick(vn_vm_t *vm, const vn_scene_t *scene, size_t visible) {
     if (!noise_was_enabled) { noise_started=clock(); noise_next_frame=noise_started; noise_was_enabled=true; }
     clock_t now=clock();
     if (now < noise_next_frame) return;
+    perf_overlay_begin();
     /* Restore BOTH scene and textbox before every effect frame. Never blend
      * into last frame; archive handles are closed before any asset load. */
     noise_restore();
     /* USB frame is complete before palette commit; noise_begin remaps its
      * colors against whichever palette the successful/fallback path chose. */
     if (!render_timed_scene(scene)) render_scene_lazy(scene);
-    if (noise_begin(scene->background)) noise_frame((unsigned)(((uint64_t)(now-noise_started)*1000ULL)/CLOCKS_PER_SEC));
+    if (noise_begin(scene->background)) noise_frame_scene((unsigned)(((uint64_t)(now-noise_started)*1000ULL)/CLOCKS_PER_SEC));
     noise_end();
     draw_dialogue_box(vm, scene, visible);
+    perf_overlay_end();
     gfx_BlitBuffer();
+    perf_overlay_draw();
     noise_next_frame += CLOCKS_PER_SEC/10;
     if (noise_next_frame <= clock()) noise_next_frame=clock()+CLOCKS_PER_SEC/10;
 }
@@ -1465,10 +1487,16 @@ static void wait_for_advance(vn_vm_t *vm, bool allow_pause)
             continue; /* resumed (or just loaded) -- redraw fresh next loop */
         }
         if (!quit_requested) {
-            render_scene_lazy(scene);
-            draw_dialogue_box(vm, scene, SIZE_MAX);
-            render_present(TRANS_CUT);
-            noise_tick(vm, scene, SIZE_MAX);
+            if (vm->noise_enabled) {
+                /* Effect tick owns scene, textbox and presentation. When its
+                 * deadline has not arrived, keep the visible frame untouched. */
+                noise_tick(vm, scene, SIZE_MAX);
+            } else {
+                noise_tick(vm, scene, SIZE_MAX); /* release previous effect */
+                render_scene_lazy(scene);
+                draw_dialogue_box(vm, scene, SIZE_MAX);
+                render_present(TRANS_CUT);
+            }
             gfx_Wait();
         }
     } while (!in.advance && !quit_requested);
@@ -1484,7 +1512,7 @@ static void wait_for_advance(vn_vm_t *vm, bool allow_pause)
 /** @p play_intro replays DDLC's entrance animation. Callers pass false when
  * coming back from a submenu (help, a cancelled load) -- sitting through the
  * intro every time you back out of a menu gets old fast. */
-static uint8_t run_title_screen(bool play_intro)
+static uint8_t run_title_screen(bool play_intro, int16_t playthrough)
 {
     uint8_t selected = 0;
     clock_t start = clock();
@@ -1502,7 +1530,7 @@ static uint8_t run_title_screen(bool play_intro)
         unsigned elapsed = (unsigned)((clock() - start) * 1000UL / CLOCKS_PER_SEC);
         unsigned t = skipped ? TITLE_INTRO_MS + elapsed : elapsed;
 
-        render_title_screen(selected, t);
+        render_title_screen(selected, t, playthrough);
         render_present(TRANS_CUT);
         gfx_Wait();
 
@@ -1792,10 +1820,17 @@ static void host_say(void *ctx, const vn_scene_t *scene)
             visible = len;
         }
 
-        render_scene_lazy(scene);
-        draw_dialogue_box(vm, scene, visible);
-        render_present(TRANS_CUT);
-        noise_tick(vm, scene, visible);
+        if (vm->noise_enabled) {
+            /* A new visible prefix must appear even before the idle deadline.
+             * Still compose/present only once, never a clean frame then noise. */
+            noise_next_frame = 0;
+            noise_tick(vm, scene, visible);
+        } else {
+            noise_tick(vm, scene, visible);
+            render_scene_lazy(scene);
+            draw_dialogue_box(vm, scene, visible);
+            render_present(TRANS_CUT);
+        }
         gfx_Wait();
     }
 
@@ -2225,7 +2260,9 @@ int main(void)
     assets_status_t status;
     uint32_t entry_pc;
 
-    chars_init();
+    if (!chars_init()) {
+        return 1; /* Leave the reset marker absent so the next launch retries. */
+    }
 
     /* render_init() (gfx_Begin() + gfx_SetDrawBuffer()) must run before
      * assets_init() writes gfx_palette: gfx_Begin()'s docs say it should
@@ -2252,6 +2289,7 @@ int main(void)
 
     /* Initialize vm with variable defaults and persistent state early so
      * startup splash and disclaimer checks have access to persistent.playthrough. */
+    memset(vm.vars, 0, sizeof(vm.vars));
     assets_apply_var_defaults(&vm);
     persist_load(&vm);
     int16_t playthrough = vm.vars[VN_PLAYTHROUGH_VAR];
@@ -2286,7 +2324,7 @@ int main(void)
     bool play_intro = true;
 
     while (!quit_requested) {
-        uint8_t choice = run_title_screen(play_intro);
+        uint8_t choice = run_title_screen(play_intro, vm.vars[VN_PLAYTHROUGH_VAR]);
         play_intro = false;
 
         if (choice == TITLE_HELP) {
@@ -2337,12 +2375,8 @@ int main(void)
          * after this if it runs, so applying defaults first for every path
          * costs nothing on Load and is exactly right for New Game/Continue. */
         assets_apply_var_defaults(&vm);
-        /* Overlays whatever survived from an earlier session (route
-         * clears, playthrough count, one-time-easter-egg flags) on top of
-         * those plain defaults -- see persist.h. Before the possible
-         * save_load() just below: a loaded save's own vars[] already
-         * reflects whatever was persistent as of that save, and should
-         * stand as written rather than being second-guessed here. */
+        /* Persistent progress belongs to the installation. save_load()
+         * reapplies it after restoring a snapshot's ordinary variables. */
         persist_load(&vm);
 
         if (choice == TITLE_LOAD) {
@@ -2351,7 +2385,9 @@ int main(void)
                 continue; /* cancelled -- back to the title screen */
             }
             name_load(player_name, sizeof(player_name));
-            save_load(slot, &vm);
+            if (!save_load(slot, &vm)) {
+                continue; /* Never resume dangling code or dialogue after failure. */
+            }
         }
 
         render_apply_palette(assets_scene_palette(vm.scene.background));

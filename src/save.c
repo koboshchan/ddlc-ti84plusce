@@ -6,6 +6,7 @@
 #include "save.h"
 #include "assets.h"
 #include "text.h"
+#include "persist.h"
 
 #include <fileioc.h>
 
@@ -24,7 +25,7 @@
  * into the middle of an instruction, variables holding another build's
  * values. Cheaper to stamp it than to debug it. */
 #define SAVE_MAGIC   0x444C4353UL  /* "SCLD" */
-#define SAVE_VERSION 2             /* 2: VN_MAX_VARS 64 -> 256 */
+#define SAVE_VERSION 3             /* 3: splash bytecode PCs changed; DPERSIST unchanged */
 
 typedef struct {
     uint32_t   magic;
@@ -109,6 +110,24 @@ bool save_load(uint8_t slot, vn_vm_t *vm)
         return false;
     }
 
+    if (blob.sp > VN_CALL_DEPTH) {
+        return false;
+    }
+
+    /* The chunk owns both the bytecode and its string table. Do not leave
+     * vm->code pointing at the freed entry chunk, or make the first step
+     * reload and invalidate freshly restored dialogue. */
+    if (!assets_load_chunk((uint8_t)VN_CHUNK_ID(blob.pc))) {
+        return false;
+    }
+    size_t code_size;
+    const uint8_t *code = assets_script(&code_size);
+    if (!code || (blob.pc & 0xFFFFUL) >= code_size) {
+        return false;
+    }
+    vm->code = code;
+    vm->code_size = code_size;
+    vm->chunk_id = (uint8_t)VN_CHUNK_ID(blob.pc);
     vm->pc = blob.pc;
     memcpy(vm->stack, blob.stack, sizeof(vm->stack));
     vm->sp = blob.sp;
@@ -120,7 +139,7 @@ bool save_load(uint8_t slot, vn_vm_t *vm)
     /* Load the target chunk so blob.text_index resolves against the correct
      * chunk string table, then resolve through vm->host->string() for
      * [player] substitution. */
-    assets_load_chunk((uint8_t)VN_CHUNK_ID(blob.pc));
+    persist_load(vm);
     vm->scene.text = vm->host->string(vm->host->ctx, blob.text_index);
     vm->status = VN_RUNNING;
     return true;
@@ -132,10 +151,10 @@ bool save_delete_all(void)
     for (uint8_t slot = 1; slot <= SAVE_SLOTS; slot++) {
         char name[9];
         slot_name(slot, name);
-        /* ti_Delete returns 0 on success; an already-absent slot (nothing
+        /* ti_Delete returns 0 on failure; an already-absent slot (nothing
          * was ever saved there) isn't a failure of "erase everything",
          * only a slot that exists but genuinely can't be removed is. */
-        if (ti_Delete(name) != 0 && save_exists(slot)) {
+        if (ti_Delete(name) == 0 && save_exists(slot)) {
             ok = false;
         }
     }
