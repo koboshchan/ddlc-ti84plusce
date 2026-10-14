@@ -163,7 +163,14 @@ bool ch5_motion_draw(uint8_t scene){
   while(first<end && xmap[first]<0)first++;
   while(end>first && xmap[end-1]<0)end--;
   unsigned span=end-first;if(!span)continue;bool linear=true,doubled=true,odd_doubled=true;
+  if(pose.zoom_q10==1000000u){linear=true;doubled=false;odd_doubled=false;}
+  else if(pose.zoom_q10==2000000u){
+   linear=false;
+   doubled=xmap[first+(span>1)]==xmap[first];
+   odd_doubled=!doubled;
+  }else{
   for(unsigned k=0;k<span;k++){if(xmap[first+k]!=xmap[first]+k)linear=false;if(xmap[first+k]!=xmap[first]+k/2)doubled=false;if(xmap[first+k]!=xmap[first]+(k+1)/2)odd_doubled=false;}
+  }
   for(y=0;y<180;y++){
    if(ymap[y]<0)continue;
    const uint8_t *row=ch5_band_row(layer,ymap[y]);if(!row){goto motion_done;}
