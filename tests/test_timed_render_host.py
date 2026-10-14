@@ -24,7 +24,7 @@ typedef struct {vn_scene_t scene;bool noise_enabled;} vn_vm_t;
 typedef struct {unsigned position;bool schedule;} fat_file_t;
 static uint8_t gfx_vbuffer[76800],front[76800],frame[58880],schedule[512];
 static uint16_t gfx_palette[256],original[256];
-static int fat,pack_ok=1,invalidated,unmounted,read_calls,fail_call,motion_calls,noise_calls,draw_calls;
+static int fat,pack_ok=1,invalidated,unmounted,read_calls,fail_call,motion_calls,noise_calls,draw_calls,present_calls;
 static bool restored,staging,noise_applied;
 static unsigned motion_time;
 static clock_t ticks,noise_started,noise_next_frame;
@@ -70,7 +70,7 @@ static void draw_dialogue_box(vn_vm_t*vm,const vn_scene_t*s,size_t visible){
  for(unsigned i=57600;i<76800;i++)assert(gfx_vbuffer[i]==0); /* full-screen failure cleanup */
  memset(gfx_vbuffer+57600,77,19200);
 }
-static void gfx_BlitBuffer(void){assert(noise_applied);memcpy(front,gfx_vbuffer,76800);}
+static void gfx_BlitBuffer(void){present_calls++;assert(noise_applied);memcpy(front,gfx_vbuffer,76800);}
 static void load(const char*p,void*b,unsigned n){FILE*f=fopen(p,"rb");assert(f);assert(fread(b,1,n,f)==n);fclose(f);}
 '''
   tests=r'''
@@ -88,12 +88,12 @@ int main(int argc,char**argv){
      for(unsigned j=0;j<4;j++)frame[28+j]=(uint8_t)(c>>(j*8));
     }
    }
-   pack_ok=1;read_calls=0;fail_call=failure;motion_calls=noise_calls=draw_calls=unmounted=0;motion_time=0;
+   pack_ok=1;read_calls=0;fail_call=failure;motion_calls=noise_calls=draw_calls=unmounted=present_calls=0;motion_time=0;
    restored=false;noise_applied=false;noise_was_enabled=false;ticks=32768;
    memset(gfx_vbuffer,0xee,sizeof gfx_vbuffer);memset(front,0x5a,sizeof front);
    memset(gfx_palette,0xa5,sizeof gfx_palette);
    noise_tick(&vm,&vm.scene,0);
-   assert(noise_calls==1 && draw_calls==1);
+   assert(noise_calls==1 && draw_calls==1 && present_calls==1);
    if(failure||ui_bad){
     assert(unmounted==(ui_bad==2 && !failure ? 0:1) && motion_calls==1);
     assert(!memcmp(gfx_palette,original,512));
@@ -112,13 +112,13 @@ int main(int argc,char**argv){
  memset(gfx_vbuffer+57600,0,19200);noise_tick(&vm,&vm.scene,0);
  assert(motion_calls==1 && noise_calls==1 && draw_calls==1);
  /* Idle scheduler calls before the deadline do not render or present. */
- unsigned before_motion=motion_calls,before_noise=noise_calls,before_draw=draw_calls;
+ unsigned before_motion=motion_calls,before_noise=noise_calls,before_draw=draw_calls,before_present=present_calls;
  noise_tick(&vm,&vm.scene,0);
- assert(motion_calls==before_motion && noise_calls==before_noise && draw_calls==before_draw);
+ assert(motion_calls==before_motion && noise_calls==before_noise && draw_calls==before_draw && present_calls==before_present);
  /* Typewriter forces the new prefix through one effect composition. */
  memset(gfx_vbuffer+57600,0,19200);
  noise_next_frame=0;noise_tick(&vm,&vm.scene,1);
- assert(noise_calls==before_noise+1 && draw_calls==before_draw+1);
+ assert(noise_calls==before_noise+1 && draw_calls==before_draw+1 && present_calls==before_present+1);
  puts("actual reader/render/scheduler/noise_tick host fault flow PASS; target proof pending");
 }
 '''
