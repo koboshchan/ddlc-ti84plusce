@@ -64,8 +64,8 @@ int main(void){
   ch5_motion_t p=ch5_motion(ms,3,1280,720);
   int16_t x[320],y[180];ch5_axis_map(x,320,p.x,p.zoom_q10,320);ch5_axis_map(y,180,p.y,p.zoom_q10,180);
   assert(p.alpha_q10==1024);
-  for(unsigned i=0;i<320;i++)assert(x[i]>=0 && x[i]<320);
-  for(unsigned i=0;i<180;i++)assert(y[i]>=0 && y[i]<180);
+  for(unsigned i=0;i<320;i++)assert(x[i]>=31 && x[i]<=191);
+  for(unsigned i=0;i<180;i++)assert(y[i]>=26 && y[i]<=116);
  }
  return 0;
 }

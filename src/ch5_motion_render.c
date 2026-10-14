@@ -128,10 +128,10 @@ bool ch5_motion_draw(uint8_t scene){
   * skip for other modes or assets containing transparent pixels. */
  if(record[1]>1 && record[4]==0 && record[5]==3){
   bool solid=true;
-  for(unsigned row=0;row<180;row++){
+  for(unsigned row=26;row<=116;row++){
    const uint8_t *pixels=ch5_band_row(0,row);
    if(!pixels){goto motion_done;}
-   if(memchr(pixels,255,320)){solid=false;break;}
+   if(memchr(pixels+31,255,161)){solid=false;break;}
   }
   if(solid)first_layer=1;
  }
