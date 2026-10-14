@@ -107,3 +107,110 @@ _ch5_motion_lut_fast:
 	pop iy
 	pop ix
 	ret
+
+	.global _ch5_motion_cached_fast
+	.type _ch5_motion_cached_fast,@function
+; size_t ch5_motion_cached_fast(dst,src,map,count,tags,colors)
+; Returns number consumed before first nontransparent cache miss.
+; Cache is read-only. IY keeps frame arguments; IX is clipped xmap.
+_ch5_motion_cached_fast:
+	push ix
+	push iy
+	ld iy,0
+	add iy,sp
+	ld de,(iy+9)
+	ld bc,(iy+12)
+	ld ix,(iy+15)
+	exx
+	ld bc,(iy+18)
+	exx
+.hit_loop:
+	exx
+	ld a,b
+	or a,c
+	exx
+	jr z,.hit_return
+	ld hl,0
+	ld l,(ix+0)
+	ld h,(ix+1)
+	add hl,bc
+	ld a,(hl)
+	cp a,255
+	jr z,.hit_advance
+	push bc
+	push de
+	ld hl,0
+	ld h,a
+	ld a,(de)
+	ld l,a
+	push hl
+	; Hash ((fg<<4)^bg)&4095, with no multiply helper.
+	ld a,h
+	and a,15
+	add a,a
+	add a,a
+	add a,a
+	add a,a
+	xor a,l
+	ld l,a
+	ld a,h
+	srl a
+	srl a
+	srl a
+	srl a
+	ld h,a
+	add hl,hl
+	ld bc,(iy+21)
+	add hl,bc
+	pop bc
+	ld a,(hl)
+	cp a,c
+	jr nz,.hit_miss
+	inc hl
+	ld a,(hl)
+	cp a,b
+	jr nz,.hit_miss
+	; Matching tag. Look up color with the same unsigned hash.
+	ld hl,0
+	ld a,b
+	and a,15
+	add a,a
+	add a,a
+	add a,a
+	add a,a
+	xor a,c
+	ld l,a
+	ld a,b
+	srl a
+	srl a
+	srl a
+	srl a
+	ld h,a
+	ld bc,(iy+24)
+	add hl,bc
+	ld a,(hl)
+	pop de
+	pop bc
+	ld (de),a
+.hit_advance:
+	inc de
+	lea ix,ix+2
+	exx
+	dec bc
+	exx
+	jr .hit_loop
+.hit_miss:
+	pop de
+	pop bc
+.hit_return:
+	; Return original count minus remaining in 24-bit HL.
+	exx
+	push bc
+	exx
+	pop bc
+	ld hl,(iy+18)
+	or a,a
+	sbc hl,bc
+	pop iy
+	pop ix
+	ret

@@ -123,7 +123,6 @@ bool ch5_motion_draw(uint8_t scene){
   unsigned first=0,end=320;
   while(first<end && xmap[first]<0)first++;
   while(end>first && xmap[end-1]<0)end--;
-  uint16_t previous_pair=0;uint8_t previous_color=0;bool pair_valid=false;
   for(y=0;y<180;y++){
    if(ymap[y]<0)continue;
    const uint8_t *row=ch5_band_row(layer,ymap[y]);if(!row){goto motion_done;}
@@ -133,24 +132,20 @@ bool ch5_motion_draw(uint8_t scene){
    }else if(blend_lut){
     ch5_motion_lut_fast(dst+first,row,xmap+first,end-first,bg_groups,blend_lut);
    }else{
-    for(x=first;x<end;x++){
-     uint8_t color=row[xmap[x]];
-     if(color==255)continue;
-     uint8_t bg_index=dst[x];
+    x=first;
+    while(x<end){
+     x+=ch5_motion_cached_fast(dst+x,row,xmap+x,end-x,pair_tags,pair_colors);
+     if(x==end)break;
+     /* Assembly stops before the miss; compute only that exact pair. */
+     uint8_t color=row[xmap[x]],bg_index=dst[x];
      uint16_t pair=((uint16_t)color<<8)|bg_index;
-     if(pair_valid && pair==previous_pair){dst[x]=previous_color;continue;}
      unsigned slot=(((unsigned)color<<4)^bg_index)&4095u;
-     if(pair_tags[slot]==pair){
-      previous_color=pair_colors[slot];
-      previous_pair=pair;pair_valid=true;dst[x]=previous_color;continue;
-     }
      unsigned fg=palette[color],bg=palette[bg_index];
      unsigned rr=(fg_weight[(fg>>10)&31u]+bg_weight[(bg>>10)&31u]+512u)>>10;
      unsigned gg=(fg_weight[(fg>>5)&31u]+bg_weight[(bg>>5)&31u]+512u)>>10;
      unsigned bb=(fg_weight[fg&31u]+bg_weight[bg&31u]+512u)>>10;
-     previous_color=nearest[(rr<<10)|(gg<<5)|bb];
-     pair_tags[slot]=pair;pair_colors[slot]=previous_color;
-     previous_pair=pair;pair_valid=true;dst[x]=previous_color;
+     uint8_t blended=nearest[(rr<<10)|(gg<<5)|bb];
+     pair_tags[slot]=pair;pair_colors[slot]=blended;dst[x++]=blended;
     }
    }
   }
