@@ -116,7 +116,13 @@ bool save_load(uint8_t slot, vn_vm_t *vm)
     if (!assets_load_chunk((uint8_t)VN_CHUNK_ID(blob.pc))) {
         return false;
     }
-    vm->code = assets_script(&vm->code_size);
+    size_t code_size;
+    const uint8_t *code = assets_script(&code_size);
+    if (!code || (blob.pc & 0xFFFFUL) >= code_size || blob.sp > VN_CALL_DEPTH) {
+        return false;
+    }
+    vm->code = code;
+    vm->code_size = code_size;
     vm->chunk_id = (uint8_t)VN_CHUNK_ID(blob.pc);
     vm->pc = blob.pc;
     memcpy(vm->stack, blob.stack, sizeof(vm->stack));
