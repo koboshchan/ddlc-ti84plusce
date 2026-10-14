@@ -43,7 +43,7 @@ _ch5_motion_opaque_fast:
 	.type _ch5_motion_lut_fast,@function
 ; Direct bounded offline blend table; no channel math or palette search.
 ; Main bank BC source, IX xmap, IY destination.
-; Alternate bank BC LUT, DE 256-byte background groups (0..15), HL count.
+; Alternate bank BC LUT, DE 256-byte background groups, HL count.
 _ch5_motion_lut_fast:
 	push ix
 	push iy
@@ -70,6 +70,7 @@ _ch5_motion_lut_fast:
 	jr z,.lut_transparent
 	ld hl,0
 	ld l,a
+	add hl,hl
 	add hl,hl
 	add hl,hl
 	add hl,hl

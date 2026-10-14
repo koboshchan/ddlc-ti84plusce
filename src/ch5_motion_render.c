@@ -68,18 +68,17 @@ bool ch5_motion_draw(uint8_t scene){
  const uint8_t *nearest=ti_GetDataPtr(blend_handle);
  gfx_SetPalette(palette,512,0);
  uint8_t bg_groups[256];bool have_groups=false;
- /* Approximate color clustering is an explicit benchmark-only opt-in.
-  * Stale installed tables must not change the default exact renderer. */
+ /* Benchmark-only opt-in; installed LUTs cannot affect default output. */
 #ifdef DDLC_EXPERIMENTAL_MOTION_LUT
  h=ti_Open("DMOTBGM","r");
  if(h){
   if(ti_GetSize(h)==256){
    ti_Read(bg_groups,1,256,h);have_groups=true;
-   for(unsigned g=0;g<256;g++)if(bg_groups[g]>=16){have_groups=false;break;}
+   for(unsigned g=0;g<256;g++)if(bg_groups[g]>=32){have_groups=false;break;}
   }
   ti_Close(h);
  }
- #endif
+#endif
  bool success=false;
  /* No variable mutation/GC inside this scope; clear borrowed pointers
   * before closing the nearest-color AppVar on every exit. */
@@ -97,12 +96,12 @@ bool ch5_motion_draw(uint8_t scene){
   if(!pose.alpha_q10)continue;
   const uint8_t *blend_lut=0;
   if(have_groups && pose.alpha_q10!=1024){
-   unsigned level=(pose.alpha_q10*7u+512u)/1024u;
+   unsigned level=(pose.alpha_q10*15u+512u)/1024u;
    char lut_name[]="DMLUT00";
    lut_name[5]='0'+level/10;lut_name[6]='0'+level%10;
    lut_handle=ti_Open(lut_name,"r");
    if(lut_handle){
-    if(ti_GetSize(lut_handle)==4096)blend_lut=ti_GetDataPtr(lut_handle);
+    if(ti_GetSize(lut_handle)==8192)blend_lut=ti_GetDataPtr(lut_handle);
     else{ti_Close(lut_handle);lut_handle=0;}
    }
   }
