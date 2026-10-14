@@ -69,5 +69,8 @@ bool chars_delete(uint8_t character)
     if (character >= CHAR_COUNT) {
         return false;
     }
-    return ti_Delete(chars_name[character]) == 0;
+    const char *name = chars_name[character];
+    /* FILEIOC returns zero on failure. An already-absent character is
+     * already in the requested state, not an erase failure. */
+    return ti_Delete(name) != 0 || !chars_present(character);
 }

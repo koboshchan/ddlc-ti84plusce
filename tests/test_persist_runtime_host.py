@@ -48,6 +48,7 @@ typedef struct {
 } appvar_t;
 static appvar_t files[32];
 static const char *short_read;
+static const char *failed_delete;
 static uint8_t loaded_chunk;
 static bool fail_chunk, null_script;
 static size_t target_size = 32;
@@ -100,9 +101,10 @@ size_t ti_Write(const void *in, size_t size, size_t count, uint8_t h) {
 }
 int ti_Delete(const char *name) {
     unsigned i = lookup(name, false);
-    if (!i || !files[i].exists) return 1;
+    if (!i || !files[i].exists ||
+        (failed_delete && !strcmp(failed_delete, name))) return 0;
     files[i].exists = false; free(files[i].data); files[i].data = NULL;
-    files[i].size = 0; return 0;
+    files[i].size = 0; return -1;
 }
 void ti_SetArchiveStatus(bool a, uint8_t h) { (void)a; (void)h; }
 int mini_sprintf(char *out, const char *fmt, ...) {
@@ -190,8 +192,28 @@ int main(int argc, char **argv) {
     vn_vm_t vm, saved, before;
     if (!strcmp(which, "missing_firstrun") || !strcmp(which, "missing_dpersist")) {
         seed_reset();
-        assert(ti_Delete(!strcmp(which, "missing_firstrun") ? "FIRSTRUN" : "DPERSIST") == 0);
+        assert(ti_Delete(!strcmp(which, "missing_firstrun") ? "FIRSTRUN" : "DPERSIST") != 0);
         chars_init(); check_reset();
+    } else if (!strcmp(which, "delete_contract")) {
+        uint8_t byte = 1;
+        put("SAYORI", &byte, 1);
+        assert(chars_delete(CHAR_SAYORI) && !chars_present(CHAR_SAYORI));
+        assert(chars_delete(CHAR_SAYORI)); /* already absent is success */
+        put("SAYORI", &byte, 1); failed_delete = "SAYORI";
+        assert(!chars_delete(CHAR_SAYORI) && chars_present(CHAR_SAYORI));
+        assert(!chars_delete(CHAR_COUNT));
+        failed_delete = NULL;
+        assert(save_delete_all()); /* every slot absent */
+        for (unsigned i = 1; i <= SAVE_SLOTS; i++) {
+            char name[9]; snprintf(name, sizeof(name), "DSAVE%u", i);
+            put(name, &byte, 1);
+        }
+        failed_delete = "DSAVE3";
+        assert(!save_delete_all() && save_exists(3));
+        assert(!save_exists(1) && !save_exists(SAVE_SLOTS));
+        failed_delete = NULL;
+        assert(save_delete_all() && !save_exists(3));
+        assert(save_delete_all());
     } else if (!strcmp(which, "normal_deleted_sayori")) {
         seed_reset(); uint8_t byte = 9;
         put("NATSUKI", &byte, 1); put("YURI", &byte, 1);
@@ -319,7 +341,7 @@ def _case(case):
     return lambda self: self.run_case(case)
 
 for _name in (
-    "missing_firstrun", "missing_dpersist", "normal_deleted_sayori",
+    "missing_firstrun", "missing_dpersist", "delete_contract", "normal_deleted_sayori",
     "load_current_persistent_and_scene", "failed_chunk_unchanged",
     "null_script_unchanged", "out_of_bounds_pc_unchanged",
     "short_save_read_unchanged", "old_version_unchanged", "empty_dpslot", "one_byte_dpslot",
