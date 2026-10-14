@@ -136,7 +136,8 @@ bool ch5_motion_draw(uint8_t scene){
   if(solid)first_layer=1;
  }
 
- memset(gfx_vbuffer,0,320*180);
+ /* Proven full-screen opaque mode-3 coverage overwrites every pixel. */
+ if(!first_layer)memset(gfx_vbuffer,0,320*180);
  for(i=first_layer;i<record[1];i++){
   layer=record[2+i*2];mode=record[3+i*2];
   unsigned tw=layer<2?320:72,th=layer<2?180:263;
