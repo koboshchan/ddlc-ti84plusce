@@ -74,3 +74,5 @@ int main(void){
    tmp=Path(directory);(tmp/'test.c').write_text(source)
    subprocess.run(['cc','-O2','-fsanitize=address,undefined','-I'+str(ROOT/'src'),str(tmp/'test.c'),'-o',str(tmp/'test')],check=True)
    subprocess.run([str(tmp/'test')],check=True)
+
+HARNESS += '\nuint8_t *resident;\n'

@@ -24,7 +24,7 @@ void ch5_motion_opaque_direct1(uint8_t*,const uint8_t*,unsigned);
 void ch5_motion_opaque_direct2(uint8_t*,const uint8_t*,unsigned);
 static int16_t xmap[320],ymap[180];
 static uint8_t last_scene=255;
-static uint8_t quant_groups[256];
+
 void ch5_motion_quant_fast(uint8_t*,const uint8_t*,const int16_t*,unsigned,const uint8_t*,const uint8_t*);
 static clock_t started;
 static clock_t layer_start[8];
@@ -33,9 +33,9 @@ static uint8_t previous_mode[8]={255,255,255,255,255,255,255,255};
  * cancels before flooring. Keep general authored zooms on the wide path. */
 static void motion_axis_map(int16_t *map,unsigned count,int32_t origin,uint32_t scale,unsigned extent){
  if(scale==1000000u || scale==2000000u){
-   unsigned shift=scale==1000000u?10:11;
+   uint8_t shift=scale==1000000u?10:11;
    int32_t start=(-origin)>>shift;
-   unsigned parity=((uint32_t)(-origin)>>10)&1u;
+   uint8_t parity=((uint32_t)(-origin)>>10)&1u;
    if(scale==1000000u){
     for(unsigned j=0;j<count;j++){
      int32_t source=start+j;
@@ -84,10 +84,10 @@ bool ch5_motion_sync_clock(uint8_t scene){
  ti_Close(h);return found;
 }
 bool ch5_motion_draw(uint8_t scene){
- uint8_t record[18],h,blend_handle,lut_handle=0;unsigned i,n,layer,mode,x,y;uint16_t palette[256];bool found=false;
+ uint8_t record[18],h,blend_handle,lut_handle=0;unsigned n,x;uint8_t i,layer,mode,y;uint16_t palette[256];bool found=false;
  h=ti_Open("DMOTMAP","r");if(!h)return false;
  const uint8_t *p=ti_GetDataPtr(h);n=ti_GetSize(h);
- for(i=0;i+18<=n;i+=18)if(p[i]==scene){memcpy(record,p+i,18);found=true;break;}
+ for(x=0;x+18<=n;x+=18)if(p[x]==scene){memcpy(record,p+x,18);found=true;break;}
  ti_Close(h);if(!found){last_scene=255;return false;}
  if(record[1]>8)return false;
  h=ti_Open("DMOTPAL","r");if(!h)return false;
@@ -98,12 +98,12 @@ bool ch5_motion_draw(uint8_t scene){
  blend_handle=ti_Open("DMOTRGB","r");
  if(!blend_handle)return false;
  if(ti_GetSize(blend_handle)!=32768u){ti_Close(blend_handle);return false;}
- const uint8_t *nearest=ti_GetDataPtr(blend_handle);
+ /* DMOTRGB is validated above; no unused data-pointer lookup. */
  gfx_SetPalette(palette,512,0);
  uint8_t qh=ti_Open("DLUTQ","r");if(!qh){ti_Close(blend_handle);return false;}
  if(ti_GetSize(qh)!=12560){ti_Close(qh);ti_Close(blend_handle);return false;}
- const uint8_t *qdata=ti_GetDataPtr(qh);memcpy(quant_groups,qdata,256);
- for(unsigned q=0;q<256;q++)if(quant_groups[q]>=16){ti_Close(qh);ti_Close(blend_handle);return false;}
+ const uint8_t *qdata=ti_GetDataPtr(qh);const uint8_t *quant_groups=qdata;
+ {uint8_t q=0;do{if(quant_groups[q]>=16){ti_Close(qh);ti_Close(blend_handle);return false;}}while(++q);}
 
  ti_Close(qh);
 
@@ -119,22 +119,23 @@ bool ch5_motion_draw(uint8_t scene){
   ti_Close(h);
  }
 #endif
- uint8_t *lookup_alloc=malloc(4096+256+4095);
+ uint8_t *lookup_alloc=malloc(4096+256+4095+30720);
  if(!lookup_alloc){ti_Close(blend_handle);return false;}
  uint8_t *lookup_aligned=(uint8_t*)(((uintptr_t)lookup_alloc+4095u)&~(uintptr_t)4095u);
  bool success=false;
  /* No variable mutation/GC inside this scope; clear borrowed pointers
   * before closing the nearest-color AppVar on every exit. */
+ extern uint8_t *resident;resident=lookup_aligned+4352;
  ch5_band_begin();
  /* Validate each stream before modifying frame. Existing scene is fallback. */
  for(i=0;i<record[1];i++)if(!ch5_band_row(record[2+i*2],0)){goto motion_done;}
  
- unsigned first_layer=0;
+ uint8_t first_layer=0;
  /* Authored bg_zoom has 2x coverage for every permitted phase. Never
   * skip for other modes or assets containing transparent pixels. */
  if(record[1]>1 && record[4]==0 && record[5]==3){
   bool solid=true;
-  for(unsigned row=26;row<=116;row++){
+  for(uint8_t row=26;row<=116;row++){
    const uint8_t *pixels=ch5_band_row(0,row);
    if(!pixels){goto motion_done;}
    if(memchr(pixels+31,255,161)){solid=false;break;}
@@ -149,14 +150,14 @@ bool ch5_motion_draw(uint8_t scene){
   unsigned tw=layer<2?320:72,th=layer<2?180:263;
   unsigned layer_ms=(unsigned)(((uint64_t)(clock()-layer_start[i])*1000ULL)/CLOCKS_PER_SEC);
   ch5_motion_t pose=ch5_motion(layer_ms,mode,layer<2?1280:286,layer<2?720:1050);
+  if(!pose.alpha_q10)continue;
   motion_axis_map(xmap,320,pose.x,pose.zoom_q10,tw);
   motion_axis_map(ymap,180,pose.y,pose.zoom_q10,th);
-  if(!pose.alpha_q10)continue;
   const bool opaque=pose.alpha_q10==1024;
   uint8_t *ramlut=lookup_aligned;
   uint8_t *pages=ramlut+4096;
   uint8_t page_base=(uint8_t)((uintptr_t)ramlut>>8);
-  if(!opaque)for(unsigned pg=0;pg<256;pg++)pages[pg]=page_base+quant_groups[pg];
+  if(!opaque){uint8_t pg=0;do{pages[pg]=page_base+quant_groups[pg];}while(++pg);}
 
   if(!opaque)memcpy(ramlut,qdata+272+(pose.alpha_q10<352?0:pose.alpha_q10<544?4096:8192),4096);
   unsigned first=0,end=320;
@@ -238,6 +239,7 @@ bool ch5_motion_draw(uint8_t scene){
  success=true;
 motion_done:
  ch5_band_end();
+ resident=NULL;
  free(lookup_alloc);
  if(lut_handle)ti_Close(lut_handle);
  ti_Close(blend_handle);

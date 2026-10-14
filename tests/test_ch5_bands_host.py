@@ -37,6 +37,22 @@ int main(void){
  ch5_band_end();ch5_band_invalidate();prev=opens;
  assert(ch5_band_row(0,0)&&opens==prev+1);
  streams[1][0]='X';assert(!ch5_band_row(1,8));
+
+ uint8_t guard[30720+32];memset(guard,0xA5,sizeof guard);resident=guard+16;
+ ch5_band_invalidate();ch5_band_begin();
+ unsigned before=decodes;
+ for(unsigned k=3;k<15;k++)assert(ch5_band_row(0,k*8)[0]==k);
+ assert(decodes==before+12);
+ for(unsigned k=3;k<15;k++)assert(ch5_band_row(0,k*8+7)[319]==k);
+ assert(decodes==before+12);
+ for(unsigned k=0;k<16;k++)assert(guard[k]==0xA5&&guard[30736+k]==0xA5);
+ ch5_band_end();resident=NULL;
+ ch5_band_invalidate();ch5_band_begin();
+ assert(ch5_band_row(0,24)[0]==3);assert(ch5_band_row(0,32)[0]==4);
+ ch5_band_end();
+ resident=guard+16;ch5_band_begin();before=decodes;
+ assert(ch5_band_row(0,24)[0]==3&&decodes==before+1);
+ ch5_band_end();resident=NULL;
  puts("actual bands lifetime, layer isolation and bounds PASS");
 }
 '''
