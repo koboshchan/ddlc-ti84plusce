@@ -219,8 +219,19 @@ int main(int argc, char **argv) {
     } else if (!strcmp(which, "failed_chunk_unchanged") ||
                !strcmp(which, "null_script_unchanged") ||
                !strcmp(which, "out_of_bounds_pc_unchanged") ||
-               !strcmp(which, "short_save_read_unchanged")) {
+               !strcmp(which, "short_save_read_unchanged") ||
+               !strcmp(which, "old_version_unchanged")) {
         seed_save(&saved); seed_current(&vm); before = vm;
+        if (!strcmp(which, "old_version_unchanged")) {
+            /* The production writer stamps the current layout. Locate the
+             * version after magic using offsetof rather than host padding
+             * assumptions or a duplicated version constant. */
+            struct header { uint32_t magic; uint16_t version; };
+            unsigned i = lookup("DSAVE1", false);
+            uint16_t old_version = 2;
+            memcpy(files[i].data + offsetof(struct header, version),
+                   &old_version, sizeof(old_version));
+        }
         fail_chunk = !strcmp(which, "failed_chunk_unchanged");
         null_script = !strcmp(which, "null_script_unchanged");
         if (!strcmp(which, "out_of_bounds_pc_unchanged")) target_size = 5;
@@ -228,6 +239,7 @@ int main(int argc, char **argv) {
         assert(!save_load(1, &vm));
         assert(!memcmp(&vm, &before, sizeof(vm)));
         assert(string_calls == 0);
+        if (!strcmp(which, "old_version_unchanged")) assert(chunk_calls == 0);
     } else {
         memset(&vm, 0, sizeof(vm));
         vm.vars[5] = 41; vm.vars[9] = 42; vm.vars[20] = 43;
@@ -310,7 +322,7 @@ for _name in (
     "missing_firstrun", "missing_dpersist", "normal_deleted_sayori",
     "load_current_persistent_and_scene", "failed_chunk_unchanged",
     "null_script_unchanged", "out_of_bounds_pc_unchanged",
-    "short_save_read_unchanged", "empty_dpslot", "one_byte_dpslot",
+    "short_save_read_unchanged", "old_version_unchanged", "empty_dpslot", "one_byte_dpslot",
     "truncated_dpslot", "huge_dpslot_count", "short_dpslot_read",
     "short_dpersist_read", "partial_values_prefix", "valid_roundtrip",
 ):
