@@ -6,22 +6,50 @@ from PIL import Image
 from ch5_blend_luts import generate_blend_luts
 from ch5_fg16_lut import generate_fg16_lut
 NAMES=("s_kill_bg","s_kill_bg2","s_kill","s_kill2")
+UI_INDICES=tuple(range(8))+tuple(range(10,50))
+MOTION_INDICES=tuple(i for i in range(255) if i not in UI_INDICES)
+
+def motion_palette(images,game_palette):
+ if len(game_palette)!=512:
+  raise ValueError("Expected full 256-entry game palette")
+ fixed=struct.unpack("<256H",game_palette)
+ atlas=Image.new("RGB",(max(im.width for im in images),sum(im.height for im in images)))
+ y=0
+ for im in images:
+  atlas.paste(im.convert("RGB"),(0,y));y+=im.height
+ colors=atlas.quantize(colors=len(MOTION_INDICES),method=Image.Quantize.MEDIANCUT).getpalette()
+ rgb=[0]*768
+ words=[0]*256
+ for i in UI_INDICES:
+  p=fixed[i]
+  # LCD palette bit15 is the low green bit, as in convimg's output.
+  rgb[i*3:i*3+3]=[((p>>10)&31)*8,((p>>5)&31)*8+((p>>15)&1)*4,(p&31)*8]
+  words[i]=p
+ for src,dst in enumerate(MOTION_INDICES):
+  r,g,b=colors[src*3:src*3+3]
+  rgb[dst*3:dst*3+3]=[r,g,b]
+  words[dst]=((r>>3)<<10)|((g>>3)<<5)|(b>>3)
+ # 255 is transparency only. Duplicate black prevents opaque quantization
+ # from choosing an unrelated color that would subsequently disappear.
+ rgb[765:768]=rgb[3:6]
+ words[255]=words[1]
+ common=Image.new("P",(1,1))
+ common.putpalette(rgb)
+ return common,words
+
 def generate(raw_dir,build_dir,appvar_dir,write_appvar):
  images=[]
  for name in NAMES:
   im=Image.open(raw_dir/"images/cg"/(name+".png")).convert("RGBA")
   images.append(im.resize((320,180) if "_bg" in name else (72,263),Image.Resampling.NEAREST))
- # Common palette ensures per-layer compositing shares palette indices.
- atlas=Image.new("RGB",(320,886));y=0
- for im in images:atlas.paste(im.convert("RGB"),(0,y));y+=im.height
- common=atlas.quantize(colors=255,method=Image.Quantize.MEDIANCUT)
- palette=common.getpalette()[:768];palette += [0]*(768-len(palette))
- rgb1555=[]
- for i in range(256):
-  r,g,b=palette[3*i:3*i+3];rgb1555.append(((r>>3)<<10)|((g>>3)<<5)|(b>>3))
+ # Match the immutable textbox/namebox indices used by every game scene.
+ game_palette=(build_dir/"gfx/pal_game.bin").read_bytes()
+ common,rgb1555=motion_palette(images,game_palette)
  output=[];reports=[];textures=[]
  for idx,(name,im) in enumerate(zip(NAMES,images)):
   indexed=bytearray(im.convert("RGB").quantize(palette=common,dither=Image.Dither.NONE).tobytes())
+  # PIL may choose duplicate transparency entry; opaque black stays black.
+  indexed=bytearray(1 if c==255 else c for c in indexed)
   alpha=im.getchannel("A").tobytes()
   for p,a in enumerate(alpha):
    if a<128:indexed[p]=255
@@ -55,13 +83,13 @@ def generate(raw_dir,build_dir,appvar_dir,write_appvar):
    if distance<best:best=distance;chosen=index
   nearest[value]=chosen
  output.append(write_appvar(bytes(nearest),"DMOTRGB",appvar_dir))
- output.append(write_appvar(generate_fg16_lut(rgb1555,nearest,textures),"DLUTQ",appvar_dir))
+ output.append(write_appvar(generate_fg16_lut([p&32767 for p in rgb1555],nearest,textures),"DLUTQ",appvar_dir))
  # Experimental lookup tables exceed full-bundle flash headroom and have
  # visible color loss. Keep the default bundle exact; explicitly opt in
  # only for isolated benchmark fixtures.
  import os
  if os.environ.get("DDLC_EXPERIMENTAL_MOTION_LUT")=="1":
-  groups,tables=generate_blend_luts(rgb1555,nearest)
+  groups,tables=generate_blend_luts([p&32767 for p in rgb1555],nearest)
   output.append(write_appvar(groups,"DMOTBGM",appvar_dir))
   for level,table in enumerate(tables):
    output.append(write_appvar(table,"DMLUT%02d"%level,appvar_dir))

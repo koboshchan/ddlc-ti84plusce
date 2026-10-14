@@ -26,7 +26,7 @@ void ti_Close(uint8_t h){assert(!band_active && opened[h]);opened[h]=0;}
 unsigned ti_GetSize(uint8_t h){return h==1?18:h==2?512:h==4?lut_size:32768;}
 void *ti_GetDataPtr(uint8_t h){assert(opened[h]);return h==1?(void*)record:h==2?(void*)palette:h==4?(void*)qlut:(void*)nearest;}
 unsigned ti_Read(void*out,unsigned a,unsigned b,uint8_t h){memcpy(out,ti_GetDataPtr(h),a*b);return b;}
-void gfx_SetPalette(const uint16_t*p,unsigned n,unsigned off){(void)p;(void)n;(void)off;}
+void render_apply_palette(const uint16_t*p){(void)p;}
 void ch5_band_invalidate(void){}
 void ch5_band_begin(void){assert(!band_active);band_active=true;begins++;}
 void ch5_band_end(void){assert(band_active);band_active=false;ends++;}

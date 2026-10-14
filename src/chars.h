@@ -31,7 +31,9 @@ enum {
 
 /**
  * First boot after install, creates the 4 character AppVars and marks
- * it done by creating FIRSTRUN in Archive. Every later boot, the marker
+ * it done by creating FIRSTRUN in Archive. Removing FIRSTRUN or DPERSIST
+ * resets persistent progress and save slots as well as all characters.
+ * Every later boot, the marker
  * AppVar (FIRSTRUN, never baked into the bundle -- only ever created here)
  * already exists, so this returns immediately without touching the character
  * AppVars at all, whatever state they're actually in. That distinction is the whole point:
@@ -40,7 +42,9 @@ enum {
  * previous session", so it would silently resurrect a deleted character
  * the very next time the program launched.
  */
-void chars_init(void);
+/** Returns false if reset cannot be completed. The caller must stop startup
+ * rather than load old progress after a partially failed reset. */
+bool chars_init(void);
 
 /** True if @p character's AppVar still exists. */
 bool chars_present(uint8_t character);

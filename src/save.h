@@ -34,8 +34,12 @@ bool save_exists(uint8_t slot);
 bool save_write(uint8_t slot, const vn_vm_t *vm);
 
 /** Overwrites @p vm's pc/stack/vars/scene with @p slot's saved state and
- * sets it back to VN_RUNNING. Returns false (leaving @p vm untouched) if
- * @p slot has no save. */
+ * sets it back to VN_RUNNING. Returns false for a missing, invalid or
+ * unreadable save/chunk. On false the VM fields are unchanged, but chunk
+ * loading may already have freed/replaced the backing storage for vm->code
+ * and vm->scene.text. Callers MUST unwind without stepping or rendering the
+ * old VM, then reload assets and reinitialize it before resuming gameplay.
+ * Unchanged fields do not guarantee valid backing pointers. */
 bool save_load(uint8_t slot, vn_vm_t *vm);
 
 /**

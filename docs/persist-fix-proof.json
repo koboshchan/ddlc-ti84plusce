@@ -1,0 +1,363 @@
+{
+  "schema": 1,
+  "runtime_commit": "59c1c6392c603cb584e95f9b399956c63c9d7e73",
+  "base_commit": "cdde7eaea85296e6e20d0f301ff0d670d02a0549",
+  "frozen_bundle_sha256": "096102d96965ad00dc1fa8c2739d7c75986fadcf96a776953b9caf864d565081",
+  "release": {
+    "total_bytes": 2968624,
+    "budget_bytes": 2970000,
+    "spare_bytes": 1376,
+    "unique_internal_names": 157,
+    "DLUTQ_count": 1
+  },
+  "engine_sha256": "93ecccd08317789d1d8d8bdf1824f8d416b595c5e1e5bc46a10f4317ffda2953",
+  "shipping_generator_all_eight_exact": true,
+  "host_tests": {
+    "command": "python3 -m unittest discover -s tests -v",
+    "count": 70,
+    "pass": true
+  },
+  "loaded_bindings": {
+    "DDLC": {
+      "source": "DDLC.8xp",
+      "content_bytes": 901,
+      "sha256": "3abc176f09b53043497a3fc1fb33d151afd04029d495d070422e266beb1208cb"
+    },
+    "DMOTMAP": {
+      "source": "dmotmap.8xv",
+      "content_bytes": 234,
+      "sha256": "83ba37bdb077480e184c5375e3440d91f3db1063209b8b12c09db4562282e96f"
+    },
+    "DMOT3": {
+      "source": "dmot3.8xv",
+      "content_bytes": 3661,
+      "sha256": "1d6c90a70cf6a425a52f2f8283b30698d08cc66c052c4fc79e076bf1f46d1025"
+    },
+    "DMOTPAL": {
+      "source": "dmotpal.8xv",
+      "content_bytes": 512,
+      "sha256": "46e5968b6597ef0deb461d29f3975c70df8206952192ab5869373914f69a42d1"
+    },
+    "DMOT2": {
+      "source": "dmot2.8xv",
+      "content_bytes": 6037,
+      "sha256": "63e7dd15a41284860df38d01884b7fae948ce16becc56f643ffebb665cf7f031"
+    },
+    "DLUTQ": {
+      "source": "qlut.8xv",
+      "content_bytes": 12560,
+      "sha256": "dd1289efdd0089312fcd0e5e98c6c3cce52401e7d5e6bcf1d20583a33bc902ba"
+    },
+    "DMOT1": {
+      "source": "dmot1.8xv",
+      "content_bytes": 13270,
+      "sha256": "bf8bcde6c6983b22be7fee9cc793bee8fa49ab2e8507b2bcd9cfec086c3888ef"
+    },
+    "DDLC0": {
+      "source": "DDLC.8xp.0.8xv",
+      "content_bytes": 44326,
+      "sha256": "dbd3b2ccad56ee28eb83e45aa70a4bed0cf3edadb2135e7b67d8984d97b13a64"
+    },
+    "DDLC1": {
+      "source": "DDLC.8xp.1.8xv",
+      "content_bytes": 44325,
+      "sha256": "2fa04b15a29d52dd66603ac5928a6af74fcd01c9faf3c5f68fbd3b4abf5d7f8d"
+    },
+    "DMOTRGB": {
+      "source": "dmotrgb.8xv",
+      "content_bytes": 32768,
+      "sha256": "5e33a4318c795e65be9aa2dd617577b426a8d3e796c669a01e18f296232705f0"
+    },
+    "DMOT0": {
+      "source": "dmot0.8xv",
+      "content_bytes": 24390,
+      "sha256": "62e33e70ae1d1ba5d39b3beeb5c5a0d680b54cafe23bb2bec53e7ae41ffea904"
+    }
+  },
+  "target_states": {
+    "final-candidate-03": {
+      "state_sha256": "0f2579ccc770ea45a62090d40383e528274855a5af9d4e12f5a6b62bc3b52ccb",
+      "loaded_bindings_matched": 11
+    },
+    "final-fixed-ghost-reopen-00": {
+      "state_sha256": "91a753cc8bd9fd4d0a026a1646200ea3848ec4e1c65534fac0f337fc750bf804",
+      "loaded_bindings_matched": 11
+    },
+    "final-fixed-reset-reopen-03": {
+      "state_sha256": "5c3e742fd0daf2e89ce65477b1d1aa78edeca2de5fa1c18ee683ad94208c5ab1",
+      "loaded_bindings_matched": 11
+    },
+    "final-reset-read-result": {
+      "state_sha256": "f7a9677c3b75805bd36a1b2f93a5c4df59068e73412cf85bb236830ff9360a4b",
+      "loaded_bindings_matched": 11
+    },
+    "final-reset-title-restart": {
+      "state_sha256": "36f4e2a16afd44ee7d05577659bdd66de620c3c9003659fb6bced4e8c45c4861",
+      "loaded_bindings_matched": 11
+    },
+    "final-reset-newgame-opening": {
+      "state_sha256": "b4445ba937dd2a04efa4497c1a28f0ca00d98cdd866b029024a8335d3fa5302d",
+      "loaded_bindings_matched": 11
+    },
+    "final-reset-newgame-00": {
+      "state_sha256": "16962057ccede4973b2c34ded152f8efcfee1e274e705a5a3a2dcac98ac232be",
+      "loaded_bindings_matched": 11
+    },
+    "final-reset-newgame": {
+      "state_sha256": "e52ff387f2a14e064aa1c15162a23f18b63318d2335d78814920acf7862a5542",
+      "loaded_bindings_matched": 11
+    },
+    "final-normal-save-boundary": {
+      "state_sha256": "ffb9bf0827ed2f82a0d97f3f41fe987c079a459a7f46185cd00d0b88d705fabd",
+      "loaded_bindings_matched": 11
+    },
+    "final-normal-loaded-dialogue": {
+      "state_sha256": "06bfcd9baddcaf3dd9170a63bf99eadc3393478603b1e4bceb7664b1a70560ad",
+      "loaded_bindings_matched": 11
+    }
+  },
+  "persistence": {
+    "seeded_act2_missing_sayori_title": true,
+    "reset_all_four_and_playthrough_zero": true,
+    "quit_restart_reset_survives": true,
+    "normal_newgame_street_background": true,
+    "current_v3_save_load_same_narration": true,
+    "no_skip": true
+  },
+  "noise_exact_targets": {
+    "26": {
+      "draw_mismatches": 0,
+      "undo_mismatches": 0,
+      "allocation_bank_bounds": true,
+      "framebuffer_no_alias": true,
+      "scene": 26,
+      "undo_address": "0xd0c8c3",
+      "saved_size": 14232,
+      "expected_size": 14232,
+      "saved_mismatches": 0,
+      "first_saved_mismatch": [],
+      "changed_outside_reference": 0,
+      "first_changed_outside_reference": []
+    },
+    "32": {
+      "draw_mismatches": 0,
+      "undo_mismatches": 0,
+      "allocation_bank_bounds": true,
+      "framebuffer_no_alias": true,
+      "scene": 32,
+      "undo_address": "0xd0c8c3",
+      "saved_size": 14232,
+      "expected_size": 14232,
+      "saved_mismatches": 0,
+      "first_saved_mismatch": [],
+      "changed_outside_reference": 0,
+      "first_changed_outside_reference": []
+    },
+    "35": {
+      "draw_mismatches": 0,
+      "undo_mismatches": 0,
+      "allocation_bank_bounds": true,
+      "framebuffer_no_alias": true,
+      "scene": 35,
+      "undo_address": "0xd0c8c3",
+      "saved_size": 14232,
+      "expected_size": 14232,
+      "saved_mismatches": 0,
+      "first_saved_mismatch": [],
+      "changed_outside_reference": 0,
+      "first_changed_outside_reference": []
+    }
+  },
+  "noise_loaded_code_identity": [
+    {
+      "scene": 26,
+      "loaded_noise_range": [
+        "0xd1b302",
+        "0xd1bb31"
+      ],
+      "loaded_noise_bytes": 2095,
+      "loaded_noise_sha256": "e20b2a6d7a163400a230b50c757a82f9c70ff2fa8f11a83853609701ad5e4d66",
+      "elf_noise_sha256": "6e8d2a82dd5dec01421542071f4e2f684742904f4e4bd5b8fa34f6f00c875470",
+      "elf_match": "exact except documented draw/restore CP coverage immediates changed0to4",
+      "coverage_patch_offsets": [
+        887,
+        960,
+        1033,
+        1106,
+        1179,
+        1252,
+        1325,
+        1398,
+        1471,
+        1544,
+        1617,
+        1690,
+        1763,
+        1836,
+        1909,
+        1982
+      ],
+      "snapshot_sha256": "15d9a485ba2197401688a93eb617bdb000e8b94772325ac60057b26bfe5a414f"
+    },
+    {
+      "scene": 32,
+      "loaded_noise_range": [
+        "0xd1b302",
+        "0xd1bb31"
+      ],
+      "loaded_noise_bytes": 2095,
+      "loaded_noise_sha256": "a4aa0bd2a47f1934cdf8c0ecfb2348e943bdb03dba551d8165d4dbbf5a614f5d",
+      "elf_noise_sha256": "6e8d2a82dd5dec01421542071f4e2f684742904f4e4bd5b8fa34f6f00c875470",
+      "elf_match": "exact except documented draw/restore CP coverage immediates changed0to4",
+      "coverage_patch_offsets": [
+        122,
+        159,
+        196,
+        233,
+        270,
+        307,
+        344,
+        381,
+        418,
+        455,
+        492,
+        529,
+        566,
+        603,
+        640,
+        677,
+        887,
+        960,
+        1033,
+        1106,
+        1179,
+        1252,
+        1325,
+        1398,
+        1471,
+        1544,
+        1617,
+        1690,
+        1763,
+        1836,
+        1909,
+        1982
+      ],
+      "snapshot_sha256": "2674e85e58c66cc2f17c50d7353aee9a7f39eda3f8a3e597d3715c3bcd072a2b"
+    },
+    {
+      "scene": 35,
+      "loaded_noise_range": [
+        "0xd1b302",
+        "0xd1bb31"
+      ],
+      "loaded_noise_bytes": 2095,
+      "loaded_noise_sha256": "a4aa0bd2a47f1934cdf8c0ecfb2348e943bdb03dba551d8165d4dbbf5a614f5d",
+      "elf_noise_sha256": "6e8d2a82dd5dec01421542071f4e2f684742904f4e4bd5b8fa34f6f00c875470",
+      "elf_match": "exact except documented draw/restore CP coverage immediates changed0to4",
+      "coverage_patch_offsets": [
+        122,
+        159,
+        196,
+        233,
+        270,
+        307,
+        344,
+        381,
+        418,
+        455,
+        492,
+        529,
+        566,
+        603,
+        640,
+        677,
+        887,
+        960,
+        1033,
+        1106,
+        1179,
+        1252,
+        1325,
+        1398,
+        1471,
+        1544,
+        1617,
+        1690,
+        1763,
+        1836,
+        1909,
+        1982
+      ],
+      "snapshot_sha256": "93f8167ed037f81c1885aea962d904ed583a23d8d37e38cc969e69d30499f1ef"
+    }
+  ],
+  "noise_source_manifest": {
+    "production": {
+      "noise.c": "69d487344e839581a3fbf38fe9d20fac20f0db1d5dd8ce25b0ba8a899789e47a",
+      "noise_fast.s": "b563452ed7e4274e4d5404dd7bd4c6a7ac2895a7eae9090d948e36a6bab772c3",
+      "ch5_motion_render.c": "22a36e769db9146abd2efa32d725d2e67c9e3e41bf14a28b890c37d4e73aa3cb",
+      "render.c": "4149fa1b3b5bac6774cea63efb7a95624de9fa4aead864e03441e7ba953a6931"
+    },
+    "fixture": {
+      "noise.c": "69d487344e839581a3fbf38fe9d20fac20f0db1d5dd8ce25b0ba8a899789e47a",
+      "noise_fast.s": "b563452ed7e4274e4d5404dd7bd4c6a7ac2895a7eae9090d948e36a6bab772c3",
+      "ch5_motion_render.c": "98c06d758fdb83ce874304861e746509600a6a8dbc7f4b4e79242ae4e74cfadf",
+      "main.c": "08b419f812d04a9099d609afbaa8bdcf755a38bac65ed686a6ab54c8e54c7221"
+    },
+    "binary": "d98923d8566a74593b3e36a0e4d11bf7bb356b2ceff4cc091bcacaf31e7d028f",
+    "map": "843cde87010facaaae269ecf72e45c85e6072908edef4422a9c78b7553dbcf83",
+    "assets": {
+      "dlutq.8xv": "280de457d4eb56b32366c24e92282fbdab63f48c487b70acff45d6667155237c",
+      "dmot0.8xv": "3cde237e9bb162d82febcb1b919e3f4c8c5347318043ead9407523b318f0e408",
+      "dmot1.8xv": "b89213f878dfb0033787127480aba353b1fea31a7159d83bcd977fc5642cc8d9",
+      "dmot2.8xv": "573756ba1d601919001997722f16868b86fd43f64da2f81f47e99f8f07c03509",
+      "dmot3.8xv": "129d2178579daa213e86d73b10cb1fd0f35ac23296db2a9e75af71775beeedb2",
+      "dmotmap.8xv": "f64265c7977a35556b19be1e834ab30f1c55bbbdb482e636fb203203c1e697ed",
+      "dmotpal.8xv": "2c9980a299208910d459d2567f09f99f70fcb16b965e900463b8c632d376ac64",
+      "dmotrgb.8xv": "a7800267e7a4973f9c557271cf7a82f075ea7b0e93a0231157034a480465fa2a"
+    },
+    "identity_checks": "production noise C/ASM exact, production motion wrapper clock-only modification, exact production palette/fade functions"
+  },
+  "evidence": {
+    "final-assembly-proof.json": {
+      "sha256": "d4cd6b1bbf53dc960722c05bb28dc57a3257e628efdab8102eca86114b486b04",
+      "retained_artifact": "persist-fix/final-frozen-59c1c6392c60-096102d96965/final-assembly-proof.json"
+    },
+    "final-internal-name-audit.json": {
+      "sha256": "c4156b30747210c1adaf6186405e517873bed797675c73a9f076ee2e3ebbd2df",
+      "retained_artifact": "persist-fix/final-frozen-59c1c6392c60-096102d96965/final-internal-name-audit.json"
+    },
+    "final-engine-audit.json": {
+      "sha256": "62aa3be279f89c307385f1492524af11bf21bd6493efcdc4e085cb982418826f",
+      "retained_artifact": "persist-fix/final-frozen-59c1c6392c60-096102d96965/final-engine-audit.json"
+    },
+    "reproduction-proof.json": {
+      "sha256": "5aeb009968d7ba9d01af2a6c4b36b0396b9d5b2fdb6c53a0b26d0f76cad198f2",
+      "retained_artifact": "persist-fix/final-frozen-59c1c6392c60-096102d96965/reproduction-proof.json"
+    },
+    "final-persistence-extended-proof.json": {
+      "sha256": "66c3f7900cff7ac6122bbf7be542e7effce12b9b275ff8a04d344dbbca15aa34",
+      "retained_artifact": "persist-fix/final-persistence-extended-proof.json"
+    },
+    "proof.json": {
+      "sha256": "b349bb64db2dd0ea926908d3f64bc1f2440a82c9c6e036a93f95775ffb3d6214",
+      "retained_artifact": "palette-audit/noise-fixed/proof.json"
+    },
+    "source-manifest.json": {
+      "sha256": "1baf8d0fd4a590e47d9940d903bbfc487ffb0209fbb80c5f83a78e8b144569e2",
+      "retained_artifact": "palette-audit/noise-fixed/source-manifest.json"
+    },
+    "loaded-noise-code-identity.json": {
+      "sha256": "a6f002e011ca4672eea0e8f164c53146a48b99b54b7ee1f562d6a4cd95eef032",
+      "retained_artifact": "palette-audit/noise-fixed/loaded-noise-code-identity.json"
+    }
+  },
+  "limitations": [
+    "Act2 uses an explicitly seeded diagnostic, not authentic full Act2 progression.",
+    "Normal play covers opening dialogue and a newly generated version3 save/load, not a full playthrough.",
+    "Noise and palette results use separate source-bound actual-target fixtures, not a fullgame death-scene playthrough.",
+    "IRQ clobber is an inferred mechanism, not instruction-traced; exact traversal/undo is verified.",
+    "SAVE_VERSION3 rejects legacy v2 code addresses; no per-build save identity is implemented."
+  ]
+}

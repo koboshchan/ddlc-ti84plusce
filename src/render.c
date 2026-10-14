@@ -1434,7 +1434,7 @@ static void draw_title_art(uint8_t id, int dx_left, int dy_left)
     }
 }
 
-void render_title_screen(uint8_t selected, unsigned t)
+void render_title_screen(uint8_t selected, unsigned t, int16_t playthrough)
 {
     scene_obscured();
     static const char *const items[] = { "New Game", "Load Game", "Help", "Quit" };
@@ -1484,7 +1484,9 @@ void render_title_screen(uint8_t selected, unsigned t)
                    ease(bounce_remain, 256, t, F_LOGO_AT, F_LOGO_DUR));
 
     /* Frontmost pair. */
-    draw_title_art(TITLE_SAYORI, slide, rise);
+    if (playthrough == 0 || playthrough == 4) {
+        draw_title_art(TITLE_SAYORI, slide, rise);
+    }
     draw_title_art(TITLE_MONIKA, slide, rise);
 
     assets_title_end();
@@ -1510,6 +1512,7 @@ void render_title_screen(uint8_t selected, unsigned t)
 
 static uint16_t current_palette[256];
 static uint16_t fade_saved[256];
+static bool fade_active;
 
 static void fade_apply(uint8_t amount)
 {
@@ -1526,6 +1529,7 @@ static void fade_apply(uint8_t amount)
  * a handful of back-to-back palette writes with no visible time passing. */
 void render_fade_out(void)
 {
+    fade_active = true;
     memcpy(fade_saved, current_palette, sizeof(fade_saved));
 
     for (unsigned s = 1; s <= FADE_STEPS; s++) {
@@ -1544,13 +1548,18 @@ void render_fade_in(void)
     /* Restore exactly rather than trusting gfx_Darken(c, 255) to round-trip. */
     memcpy(gfx_palette, fade_saved, sizeof(fade_saved));
     memcpy(current_palette, fade_saved, sizeof(current_palette));
+    fade_active = false;
 }
 
 void render_apply_palette(const uint16_t *palette)
 {
     memcpy(current_palette, palette, sizeof(current_palette));
     memcpy(fade_saved, palette, sizeof(fade_saved));
-    memcpy(gfx_palette, palette, sizeof(current_palette));
+    if (fade_active) {
+        fade_apply(0);
+    } else {
+        memcpy(gfx_palette, palette, sizeof(current_palette));
+    }
 }
 
 void render_fade_retarget(const uint16_t *palette)

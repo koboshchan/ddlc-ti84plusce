@@ -9,6 +9,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class NoiseContracts(unittest.TestCase):
+    def test_asm_row_counter_survives_interrupt_shadow_register_use(self):
+        asm = (ROOT / "src/noise_fast.s").read_text()
+        draw = asm[asm.index("_noise_draw_asm:"):]
+        instructions = [line.split(";")[0].strip().lower() for line in draw.splitlines()]
+        self.assertNotIn("exx", instructions)
+        self.assertIn("ld (.draw_groups),a", instructions)
+        self.assertIn("ld a,(.draw_groups)", instructions)
+        self.assertIn(".draw_groups: .byte 0", instructions)
+
     def test_complete_lfsr_period_and_undo_bound(self):
         ring = []
         state = 1

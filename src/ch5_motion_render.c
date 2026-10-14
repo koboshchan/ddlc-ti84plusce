@@ -11,6 +11,7 @@ void ch5_motion_opaque_solid2(uint8_t*,const uint8_t*,unsigned);
 #include "ch5_bands.h"
 #include "ch5_motion.h"
 #include "ch5_motion_fast.h"
+extern void render_apply_palette(const uint16_t *);
 #include <fileioc.h>
 #include <graphx.h>
 #include <time.h>
@@ -104,7 +105,6 @@ bool ch5_motion_draw(uint8_t scene){
  if(!blend_handle)return false;
  if(ti_GetSize(blend_handle)!=32768u){ti_Close(blend_handle);return false;}
  /* DMOTRGB is validated above; no unused data-pointer lookup. */
- gfx_SetPalette(palette,512,0);
  uint8_t qh=ti_Open("DLUTQ","r");if(!qh){ti_Close(blend_handle);return false;}
  if(ti_GetSize(qh)!=12560){ti_Close(qh);ti_Close(blend_handle);return false;}
  const uint8_t *qdata=ti_GetDataPtr(qh);const uint8_t *quant_groups=qdata;
@@ -263,6 +263,8 @@ bool ch5_motion_draw(uint8_t scene){
   }
   
  }
+ /* Publish palette and fade state only after dependency/stream success. */
+ render_apply_palette(palette);
  success=true;
 motion_done:
  ch5_band_end();

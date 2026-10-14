@@ -520,30 +520,28 @@ class Compiler:
         self._count(f"skip:{kind(node)}")
 
     def _var_slot(self, name: str) -> int:
-        # s_kill_early's own real setter is `if persistent.playthrough == 0:
-        # try: renpy.file("../characters/sayori.chr") except: s_kill_early =
-        # True` (splash.rpyc) -- a bare-file-existence check via try/except,
-        # which this compiler doesn't walk (no exception-handling support at
-        # all). Aliased to the SAME slot as persistent.deleted_sayori
-        # instead of left unset: this engine already tracks "has Sayori's
-        # character file been deleted" for real (see DELETED_VARS/#41's own
-        # delete_character() mechanic), which is exactly what the real
-        # try/except is checking for, just through a filesystem probe this
-        # platform has no equivalent of. Every real reference to
-        # s_kill_early -- both this dead setter (harmlessly skipped, not
-        # aliased away) and the live `if s_kill_early:` gate in
-        # splashscreen's own body -- reads/writes through this one slot, so
-        # the alternate CG sequence it gates correctly triggers exactly when
-        # Sayori's file is actually gone.
-        if name == "s_kill_early":
-            name = self.DELETED_VARS[TAG_TO_CHAR["sayori"]]
+        # This launch-only flag is not persistent.deleted_sayori: the
+        # authored splash resets it and only probes Sayori during Act 1.
+        # Give it the unused tail slot, not an encounter-order allocation.
+        # Otherwise every variable first seen after splash would move,
+        # reinterpreting existing DPERSIST/DSAVE variable arrays.
         if name in self.variables:
             return self.variables[name]
         if len(self.variables) >= VN_MAX_VARS:
             raise CompileError(
                 f"variable slot overflow: no room for {name!r} "
                 f"(VN_MAX_VARS={VN_MAX_VARS} already used: {sorted(self.variables)})")
-        slot = len(self.variables)
+        if name == "s_kill_early":
+            slot = VN_MAX_VARS - 1
+            if slot in self.variables.values():
+                raise CompileError("s_kill_early requires the reserved tail variable slot")
+        else:
+            # Skip the reserved tail even when it was allocated first.
+            used = set(self.variables.values())
+            slot = next((i for i in range(VN_MAX_VARS - 1) if i not in used), None)
+            if slot is None:
+                raise CompileError(f"variable slot overflow: no room for {name!r}; "
+                                   "tail slot reserved for s_kill_early")
         self.variables[name] = slot
         return slot
 
@@ -1947,6 +1945,11 @@ class Compiler:
             flag_slot = self._var_slot(flag_var)
             missing_label = self._gensym("char_missing")
             done_label = self._gensym("char_flag_done")
+            # Preserve both authored guards, not just the exception body.
+            self.asm.if_(self._var_slot(self.PLAYTHROUGH_VAR),
+                         vnasm.CMP_NE, 0, done_label)
+            if isinstance(stmt.test, ast.UnaryOp):
+                self.asm.if_(flag_slot, vnasm.CMP_NE, 0, done_label)
             self.asm.char_check(char_index, missing_label)
             self.asm.jump(done_label)
             self.asm.label(missing_label)
@@ -3121,8 +3124,12 @@ def _match_playthrough_char_flag_check(stmt) -> tuple[int, str] | None:
              try: renpy.file("../characters/X.chr")
              except: VAR = True`
     idiom (line ~278), gating the `s_kill_early` early game-over easter egg."""
+    outer_flag = None
     if isinstance(stmt, ast.If) and isinstance(stmt.test, ast.UnaryOp) and isinstance(stmt.test.op, ast.Not):
         if len(stmt.body) == 1 and isinstance(stmt.body[0], ast.If) and not stmt.orelse:
+            outer_flag = _ident_name(stmt.test.operand)
+            if outer_flag is None:
+                return None
             stmt = stmt.body[0]
 
     if not (isinstance(stmt, ast.If) and len(stmt.body) == 1 and not stmt.orelse):
@@ -3166,7 +3173,10 @@ def _match_playthrough_char_flag_check(stmt) -> tuple[int, str] | None:
             and _const_scalar(set_stmt.value) == 1):
         return None
 
-    return (char_index, set_stmt.targets[0].id)
+    flag_var = set_stmt.targets[0].id
+    if outer_flag is not None and outer_flag != flag_var:
+        return None
+    return (char_index, flag_var)
 
 
 def _match_act4_monika_back_check(stmt) -> tuple[int, str, str] | None:

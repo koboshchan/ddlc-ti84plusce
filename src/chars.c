@@ -4,6 +4,7 @@
  */
 
 #include "chars.h"
+#include "save.h"
 
 #include <fileioc.h>
 
@@ -12,35 +13,60 @@ static const char *const chars_name[CHAR_COUNT] = {
     "SAYORI", "NATSUKI", "YURI", "MONIKA",
 };
 
-void chars_init(void)
+bool chars_init(void)
 {
-    /* Present means some previous boot (of this same flashed .b84) already
-     * ran this -- the 4 character AppVars are whatever the player's left
-     * them as since, and this function has nothing left to do. */
+    /* Either reset marker being removed requests a clean install. Keep
+     * character deletions intact on ordinary launches, but never combine
+     * recreated characters with an old act/autoload or a stale save. */
     uint8_t handle = ti_Open("FIRSTRUN", "r");
     if (handle) {
         ti_Close(handle);
-        return;
+        handle = ti_Open("DPERSIST", "r");
+        if (handle) {
+            ti_Close(handle);
+            return true;
+        }
+    }
+    /* Refuse partial reset: a surviving progress/save AppVar must never
+     * be combined with recreated characters and a completed reset marker. */
+    ti_Delete("DPERSIST");
+    handle = ti_Open("DPERSIST", "r");
+    if (handle) {
+        ti_Close(handle);
+        return false;
+    }
+    if (!save_delete_all()) {
+        return false;
     }
 
     /* First launch: create the 4 character AppVars in Archive */
     for (uint8_t i = 0; i < CHAR_COUNT; i++) {
         uint8_t ch = ti_Open(chars_name[i], "w");
-        if (ch) {
-            uint8_t dummy = 0xFF;
-            ti_Write(&dummy, 1, 1, ch);
+        if (!ch) {
+            return false;
+        }
+        uint8_t dummy = 0xFF;
+        bool written = ti_Write(&dummy, 1, 1, ch) == 1;
+        if (written) {
             ti_SetArchiveStatus(true, ch);
-            ti_Close(ch);
+        }
+        ti_Close(ch);
+        if (!written) {
+            return false;
         }
     }
 
     handle = ti_Open("FIRSTRUN", "w");
-    if (handle) {
-        uint8_t dummy = 1;
-        ti_Write(&dummy, 1, 1, handle);
-        ti_SetArchiveStatus(true, handle);
-        ti_Close(handle);
+    if (!handle) {
+        return false;
     }
+    uint8_t dummy = 1;
+    bool written = ti_Write(&dummy, 1, 1, handle) == 1;
+    if (written) {
+        ti_SetArchiveStatus(true, handle);
+    }
+    ti_Close(handle);
+    return written;
 }
 
 bool chars_present(uint8_t character)
@@ -62,5 +88,8 @@ bool chars_delete(uint8_t character)
     if (character >= CHAR_COUNT) {
         return false;
     }
-    return ti_Delete(chars_name[character]) == 0;
+    const char *name = chars_name[character];
+    /* FILEIOC returns zero on failure. An already-absent character is
+     * already in the requested state, not an erase failure. */
+    return ti_Delete(name) != 0 || !chars_present(character);
 }

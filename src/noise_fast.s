@@ -2,7 +2,7 @@
 ; Advancing pointers once per group and register counters removes per-block
 ; LEA and RAM-counter overhead without changing the LFSR or saved-byte order.
 ; Serial non-reentrant, writable RAM code (CP immediates patched at entry).
-; IX/IY preserved; shadow BC is caller-clobbered under the CEdev ABI.
+; IX/IY preserved. Do not retain state in shadow registers across interrupts.
 	.assume adl=1
 	.section .text,"ax",@progbits
 	.global _noise_restore_asm
@@ -151,9 +151,8 @@ _noise_draw_asm:
  add iy,bc
  pop bc
 .draw_row:
- exx
- ld c,10
- exx
+ ld a,10
+ ld (.draw_groups),a
  ld hl,(.draw_mask_start)
 .macro noise_draw_block n
 .draw_pixel\n:
@@ -222,9 +221,9 @@ _noise_draw_asm:
  noise_draw_block 15
  lea iy,iy+32
  lea ix,ix+32
- exx
- dec c
- exx
+ ld a,(.draw_groups)
+ dec a
+ ld (.draw_groups),a
  jp nz,.draw_pixel0
  push bc
  ld bc,320
@@ -242,6 +241,7 @@ _noise_draw_asm:
  ret
 	.section .data,"aw",@progbits
 .draw_rows: .byte 0
+.draw_groups: .byte 0
 
 .draw_context: .long 0
 .draw_colors: .long 0

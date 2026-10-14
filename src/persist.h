@@ -32,9 +32,8 @@
  * Overlays every previously-saved persistent value onto @p vm's variables,
  * for the slots DPSLOT names. Call once per New Game/Continue, after
  * assets_apply_var_defaults() (so a real persisted value wins over a plain
- * Ren'Py default) and before a possible save_load() (so a loaded save's own
- * vars[] -- which already reflects whatever was persistent as of that save
- * -- isn't second-guessed).
+ * Ren'Py default). Also apply after loading a save: persistent progress
+ * belongs to the installation, not to an older snapshot's vars[].
  *
  * A no-op, not a failure, if this is the first time the game has ever run
  * (no DPERSIST AppVar yet) -- every persistent slot then simply keeps
