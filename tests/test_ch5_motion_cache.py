@@ -41,13 +41,8 @@ void ch5_motion_opaque_fast(uint8_t*d,const uint8_t*s,const int16_t*m,size_t n){
  for(size_t i=0;i<n;i++){assert(m[i]>=0);uint8_t c=s[m[i]];if(c!=255)d[i]=c;}
 }
 """
-HARNESS += r"""
-size_t ch5_motion_cached_fast(uint8_t*d,const uint8_t*s,const int16_t*m,size_t n,const uint16_t*t,const uint8_t*c){
- size_t i=0;for(;i<n;i++){assert(m[i]>=0);uint8_t f=s[m[i]];if(f==255)continue;
- uint16_t pair=((uint16_t)f<<8)|d[i];unsigned slot=(((unsigned)f<<4)^d[i])&4095u;
- if(t[slot]!=pair)break;d[i]=c[slot];}return i;
-}
-"""
+HARNESS += (ROOT / "src/ch5_motion_fast.c").read_text()
+
 HARNESS += r"""
 void ch5_motion_lut_fast(uint8_t*d,const uint8_t*s,const int16_t*m,size_t n,const uint8_t*g,const uint8_t*t){
  for(size_t i=0;i<n;i++){uint8_t c=s[m[i]];if(c!=255)d[i]=t[(unsigned)c*32+g[d[i]]];}

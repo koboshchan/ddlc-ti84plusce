@@ -139,7 +139,7 @@ bool ch5_motion_draw(uint8_t scene){
      /* Assembly stops before the miss; compute only that exact pair. */
      uint8_t color=row[xmap[x]],bg_index=dst[x];
      uint16_t pair=((uint16_t)color<<8)|bg_index;
-     unsigned slot=(((unsigned)color<<4)^bg_index)&4095u;
+     unsigned slot=(((unsigned)color<<5)-(unsigned)color+bg_index)&4095u;
      unsigned fg=palette[color],bg=palette[bg_index];
      unsigned rr=(fg_weight[(fg>>10)&31u]+bg_weight[(bg>>10)&31u]+512u)>>10;
      unsigned gg=(fg_weight[(fg>>5)&31u]+bg_weight[(bg>>5)&31u]+512u)>>10;
