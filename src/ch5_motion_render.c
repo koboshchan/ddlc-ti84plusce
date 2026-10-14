@@ -1,5 +1,6 @@
 #include "ch5_bands.h"
 #include "ch5_motion.h"
+#include "ch5_motion_fast.h"
 #include <fileioc.h>
 #include <graphx.h>
 #include <time.h>
@@ -9,7 +10,24 @@ static uint8_t last_scene=255;
 static clock_t started;
 static clock_t layer_start[8];
 static uint8_t previous_mode[8]={255,255,255,255,255,255,255,255};
-static uint16_t rd16(const uint8_t *p){return p[0]|((uint16_t)p[1]<<8);}
+/* Zoomed motion modes are exactly 1x/2x, so the million-unit scale
+ * cancels before flooring. Keep general authored zooms on the wide path. */
+static void motion_axis_map(int16_t *map,unsigned count,int32_t origin,
+                            uint32_t scale,unsigned extent){
+ if(scale!=1000000UL && scale!=2000000UL){
+  ch5_axis_map(map,count,origin,scale,extent);return;
+ }
+ int32_t denominator=scale==1000000UL?1024:2048;
+ int32_t numerator=-origin;
+ int32_t source=numerator>=0?numerator/denominator:
+                    -((-numerator+denominator-1)/denominator);
+ unsigned remainder=numerator-source*denominator;
+ for(unsigned j=0;j<count;j++){
+  map[j]=(source<0 || (uint32_t)source>=extent)?-1:(int16_t)source;
+  remainder+=1024;
+  if(remainder>=(unsigned)denominator){remainder-=denominator;source++;}
+ }
+}
 bool ch5_motion_active(uint8_t scene){
  char name[]="DMOTMAP"; uint8_t h=ti_Open(name,"r");bool active=false;
  if(h){const uint8_t *p=ti_GetDataPtr(h);unsigned n=ti_GetSize(h),i;
@@ -48,20 +66,28 @@ bool ch5_motion_draw(uint8_t scene){
  if(ti_GetSize(blend_handle)!=32768u){ti_Close(blend_handle);return false;}
  const uint8_t *nearest=ti_GetDataPtr(blend_handle);
  gfx_SetPalette(palette,512,0);
+ ch5_band_begin();
  /* Validate each stream before modifying frame. Existing scene is fallback. */
- for(i=0;i<record[1];i++)if(!ch5_band_row(record[2+i*2],0)){ti_Close(blend_handle);return false;}
+ for(i=0;i<record[1];i++)if(!ch5_band_row(record[2+i*2],0)){ch5_band_end();ti_Close(blend_handle);return false;}
  memset(gfx_vbuffer,0,320*180);
  for(i=0;i<record[1];i++){
   layer=record[2+i*2];mode=record[3+i*2];
   unsigned tw=layer<2?320:72,th=layer<2?180:263;
   unsigned layer_ms=(unsigned)(((uint64_t)(clock()-layer_start[i])*1000ULL)/CLOCKS_PER_SEC);
   ch5_motion_t pose=ch5_motion(layer_ms,mode,layer<2?1280:286,layer<2?720:1050);
-  ch5_axis_map(xmap,320,pose.x,pose.zoom_q10,tw);
-  ch5_axis_map(ymap,180,pose.y,pose.zoom_q10,th);
+  motion_axis_map(xmap,320,pose.x,pose.zoom_q10,tw);
+  motion_axis_map(ymap,180,pose.y,pose.zoom_q10,th);
   if(!pose.alpha_q10)continue;
   /* Exact channel contributions. 128 bytes bounded stack workspace, not a
    * per-pixel multiplication or a heap allocation at lifecycle peak. */
   uint16_t fg_weight[32],bg_weight[32];
+  /* Exact direct-mapped pair cache lives only in the hidden dialogue rows.
+   * No heap/BSS cost; tags are invalidated for every alpha/layer. fg 255
+   * is transparent, so the all-ones tag is an impossible valid pair. */
+  uint8_t *scratch=(uint8_t *)gfx_vbuffer+320u*180u;
+  uint16_t *pair_tags=(uint16_t *)scratch;
+  uint8_t *pair_colors=scratch+8192;
+  if(pose.alpha_q10!=1024)memset(pair_tags,255,8192);
   const bool opaque=pose.alpha_q10==1024;
   if(!opaque)for(unsigned c=0;c<32;c++){
    fg_weight[c]=c*pose.alpha_q10;
@@ -73,13 +99,10 @@ bool ch5_motion_draw(uint8_t scene){
   uint16_t previous_pair=0;uint8_t previous_color=0;bool pair_valid=false;
   for(y=0;y<180;y++){
    if(ymap[y]<0)continue;
-   const uint8_t *row=ch5_band_row(layer,ymap[y]);if(!row){ti_Close(blend_handle);return false;}
+   const uint8_t *row=ch5_band_row(layer,ymap[y]);if(!row){ch5_band_end();ti_Close(blend_handle);return false;}
    uint8_t *dst=(uint8_t *)gfx_vbuffer+y*320;
    if(opaque){
-    for(x=first;x<end;x++){
-     uint8_t color=row[xmap[x]];
-     if(color!=255)dst[x]=color;
-    }
+    ch5_motion_opaque_fast(dst+first,row,xmap+first,end-first);
    }else{
     for(x=first;x<end;x++){
      uint8_t color=row[xmap[x]];
@@ -87,16 +110,23 @@ bool ch5_motion_draw(uint8_t scene){
      uint8_t bg_index=dst[x];
      uint16_t pair=((uint16_t)color<<8)|bg_index;
      if(pair_valid && pair==previous_pair){dst[x]=previous_color;continue;}
+     unsigned slot=(((unsigned)color<<4)^bg_index)&4095u;
+     if(pair_tags[slot]==pair){
+      previous_color=pair_colors[slot];
+      previous_pair=pair;pair_valid=true;dst[x]=previous_color;continue;
+     }
      unsigned fg=palette[color],bg=palette[bg_index];
      unsigned rr=(fg_weight[(fg>>10)&31u]+bg_weight[(bg>>10)&31u]+512u)>>10;
      unsigned gg=(fg_weight[(fg>>5)&31u]+bg_weight[(bg>>5)&31u]+512u)>>10;
      unsigned bb=(fg_weight[fg&31u]+bg_weight[bg&31u]+512u)>>10;
      previous_color=nearest[(rr<<10)|(gg<<5)|bb];
+     pair_tags[slot]=pair;pair_colors[slot]=previous_color;
      previous_pair=pair;pair_valid=true;dst[x]=previous_color;
     }
    }
   }
  }
+ ch5_band_end();
  ti_Close(blend_handle);
  return true;
 }
