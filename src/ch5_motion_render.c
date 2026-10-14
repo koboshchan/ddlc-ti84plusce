@@ -171,9 +171,11 @@ bool ch5_motion_draw(uint8_t scene){
   }else{
   for(unsigned k=0;k<span;k++){if(xmap[first+k]!=xmap[first]+k)linear=false;if(xmap[first+k]!=xmap[first]+k/2)doubled=false;if(xmap[first+k]!=xmap[first]+(k+1)/2)odd_doubled=false;}
   }
+  int16_t prior_source=-1;const uint8_t *prior_row=NULL;
   for(y=0;y<180;y++){
    if(ymap[y]<0)continue;
-   const uint8_t *row=ch5_band_row(layer,ymap[y]);if(!row){goto motion_done;}
+   const uint8_t *row=ymap[y]==prior_source?prior_row:ch5_band_row(layer,ymap[y]);if(!row){goto motion_done;}
+   prior_source=ymap[y];prior_row=row;
    uint8_t *dst=(uint8_t *)gfx_vbuffer+y*320;
    /* Never assume packaged backgrounds are opaque. Scan the decoded row;
     * unusual transparent assets retain the original guarded kernels. */
