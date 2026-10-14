@@ -17,7 +17,7 @@ static bool palette_valid;
  * blocks in 19200 draws with coverage<=4. Four original bytes/block. */
 #define NOISE_UNDO_BYTES 19952u
 static uint8_t *undo;
-static unsigned undo_size,undo_coverage;
+static unsigned undo_size,undo_coverage,undo_rows;
 static uint16_t undo_seed;
 static uint8_t *undo_buffer;
 /* Native eZ80 unsigned is 24-bit. Keeping the recurrence native avoids
@@ -31,15 +31,15 @@ static __attribute__((always_inline)) inline unsigned noise_step_native(unsigned
 typedef struct { uint8_t *fb,*saved; unsigned seed,coverage; const uint8_t *mask,*colors; unsigned rows; } noise_asm_context;
 _Static_assert(sizeof(noise_asm_context)==21, "ADL context packing");
 extern void noise_draw_asm(noise_asm_context *ctx);
-extern void noise_restore_asm(uint8_t *fb,uint8_t *saved,unsigned seed,unsigned coverage);
+extern void noise_restore_asm(uint8_t *fb,uint8_t *saved,unsigned seed,unsigned coverage,unsigned rows);
 #endif
 void noise_restore(void){
     if(!undo_size)return;
 #ifndef NOISE_HOST_GOLDEN
-    noise_restore_asm(undo_buffer,undo,undo_seed,undo_coverage);
+    noise_restore_asm(undo_buffer,undo,undo_seed,undo_coverage,undo_rows/2u);
 #else
     unsigned row,col,n=0;unsigned seed=undo_seed;
-    for(row=0;row<240;row+=2){
+    for(row=0;row<undo_rows;row+=2){
         uint8_t *d=undo_buffer+row*320u;
         for(col=0;col<320;col+=2){
             seed=noise_step_native(seed);
@@ -85,7 +85,7 @@ bool noise_begin(uint8_t scene) {
     }
     return true;
 }
-void noise_frame(unsigned elapsed_ms) {
+static void noise_frame_rows(unsigned elapsed_ms,unsigned frame_rows) {
     unsigned row,coverage=elapsed_ms>=3000?4u:(uint32_t)elapsed_ms*4u/3000u;
     unsigned seed=(0xDD1Cu^(elapsed_ms/100u)*40503u)&65535u;
     if(!seed)seed=1;
@@ -93,7 +93,7 @@ void noise_frame(unsigned elapsed_ms) {
     if(!coverage)return;
     if(!undo)undo=malloc(NOISE_UNDO_BYTES);
     if(!undo)return;
-    undo_seed=seed;undo_coverage=coverage;
+    undo_seed=seed;undo_coverage=coverage;undo_rows=frame_rows;
     undo_buffer=(uint8_t*)gfx_vbuffer;
     unsigned saved=0;
     uint8_t mask_columns[160];
@@ -101,7 +101,7 @@ void noise_frame(unsigned elapsed_ms) {
     noise_asm_context ctx={undo_buffer,undo,seed,coverage,mask_columns,colors,10};
     /* One stripe is 20 display rows, so each authored mask row is expanded
      * once and the LFSR carries continuously across all 19200 blocks. */
-    for(row=0;row<240;row+=20){
+    for(row=0;row<frame_rows;row+=20){
         const uint8_t *mask=meta+256+(row/20u)*16u;
         for(unsigned band=0;band<16;band++)memset(mask_columns+band*10u,mask[band],10);
         ctx.fb=undo_buffer+row*320u;
@@ -110,7 +110,7 @@ void noise_frame(unsigned elapsed_ms) {
     saved=(unsigned)(ctx.saved-undo);
 #else
     unsigned col,mask_row=255;
-    for(row=0;row<240;row+=2){
+    for(row=0;row<frame_rows;row+=2){
         uint8_t *d=(uint8_t*)gfx_vbuffer+row*320u;
         unsigned current_mask_row=row/20u;
         if(current_mask_row!=mask_row){
@@ -132,3 +132,9 @@ void noise_frame(unsigned elapsed_ms) {
 #endif
     undo_size=saved;
 }
+
+/* Full-frame API retained for standalone/golden callers. The scene-only API
+ * is valid ONLY when the caller unconditionally repaints rows 180..239 before
+ * presentation. Restore remembers each frame's extent, even across API changes. */
+void noise_frame(unsigned elapsed_ms) { noise_frame_rows(elapsed_ms,240u); }
+void noise_frame_scene(unsigned elapsed_ms) { noise_frame_rows(elapsed_ms,180u); }

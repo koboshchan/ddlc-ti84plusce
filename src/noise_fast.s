@@ -8,7 +8,7 @@
 	.global _noise_restore_asm
 	.type _noise_restore_asm,@function
 ; void noise_restore_asm(uint8_t *fb, uint8_t *undo, unsigned seed,
-;                        unsigned coverage)
+;                        unsigned coverage, unsigned block_rows)
 ; Serial non-reentrant; IX/IY saved, 24-bit arguments at original SP+3*n.
 _noise_restore_asm:
  push ix
@@ -35,7 +35,7 @@ _noise_restore_asm:
  ld (.coverage_operand13),a
  ld (.coverage_operand14),a
  ld (.coverage_operand15),a
- ld a,120
+ ld a,(iy+21)
  ld (.rows),a
  push bc
  ld bc,320

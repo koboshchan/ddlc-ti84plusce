@@ -66,18 +66,20 @@ int main(void) {
   unsigned t=times[j],seed=(0xdd1cu^(t/100u)*40503u)&65535u;
   unsigned cov=t>=3000?4u:(uint32_t)t*4u/3000u;
   if(!seed)seed=1;
-  memcpy(gfx_vbuffer,original,sizeof original);noise_frame(t);
+  unsigned rows=(j&1)?180:240;
+  memcpy(gfx_vbuffer,original,sizeof original);
+  if(rows==180)noise_frame_scene(t);else noise_frame(t);
   assert(undo_size<=19952u);
   for(unsigned y=0;y<240;y+=2)for(unsigned x=0;x<320;x+=2){
    seed=(seed>>1)^((seed&1)?0xb400u:0);
    uint8_t color=colors[metadata[256+y/20*16+x/20]+((seed>>4)&16)];
    for(unsigned dy=0;dy<2;dy++)for(unsigned dx=0;dx<2;dx++){
     unsigned pos=(y+dy)*320+x+dx;
-    assert(gfx_vbuffer[pos]==((seed&15)<cov?color:original[pos]));
+    assert(gfx_vbuffer[pos]==(y<rows && (seed&15)<cov?color:original[pos]));
    }
   }
   guards();noise_restore();assert(!memcmp(gfx_vbuffer,original,sizeof original));
-  noise_frame(t);noise_frame(times[(j+1)%(sizeof(times)/sizeof(times[0]))]);
+  noise_frame_scene(t);noise_frame(times[(j+1)%(sizeof(times)/sizeof(times[0]))]);
   noise_restore();assert(!memcmp(gfx_vbuffer,original,sizeof original));guards();
  }
  noise_release();noise_release();noise_end();puts("exact pixels, guards, transitions passed");
