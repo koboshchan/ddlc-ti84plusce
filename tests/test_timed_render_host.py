@@ -63,7 +63,7 @@ static void render_scene(const vn_scene_t*s){
 static void render_scene_lazy(const vn_scene_t*s){if(!motion_calls)render_scene(s);}
 static bool have_drawn_once;
 static bool noise_begin(uint8_t id){(void)id;assert(restored);return true;}
-static void noise_frame(unsigned age){(void)age;noise_calls++;noise_applied=true;gfx_vbuffer[0]^=255;}
+static void noise_frame_scene(unsigned age){(void)age;noise_calls++;noise_applied=true;gfx_vbuffer[0]^=255;}
 static void noise_end(void){}
 static void draw_dialogue_box(vn_vm_t*vm,const vn_scene_t*s,size_t visible){
  (void)vm;(void)s;(void)visible;assert(noise_applied);draw_calls++;

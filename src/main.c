@@ -1436,7 +1436,7 @@ static void noise_tick(vn_vm_t *vm, const vn_scene_t *scene, size_t visible) {
     /* USB frame is complete before palette commit; noise_begin remaps its
      * colors against whichever palette the successful/fallback path chose. */
     if (!render_timed_scene(scene)) render_scene_lazy(scene);
-    if (noise_begin(scene->background)) noise_frame((unsigned)(((uint64_t)(now-noise_started)*1000ULL)/CLOCKS_PER_SEC));
+    if (noise_begin(scene->background)) noise_frame_scene((unsigned)(((uint64_t)(now-noise_started)*1000ULL)/CLOCKS_PER_SEC));
     noise_end();
     draw_dialogue_box(vm, scene, visible);
     gfx_BlitBuffer();

@@ -53,10 +53,15 @@ def generate(raw_dir,build_dir,appvar_dir,write_appvar):
    if distance<best:best=distance;chosen=index
   nearest[value]=chosen
  output.append(write_appvar(bytes(nearest),"DMOTRGB",appvar_dir))
- groups,tables=generate_blend_luts(rgb1555,nearest)
- output.append(write_appvar(groups,"DMOTBGM",appvar_dir))
- for level,table in enumerate(tables):
-  output.append(write_appvar(table,"DMLUT%02d"%level,appvar_dir))
+ # Experimental lookup tables exceed full-bundle flash headroom and have
+ # visible color loss. Keep the default bundle exact; explicitly opt in
+ # only for isolated benchmark fixtures.
+ import os
+ if os.environ.get("DDLC_EXPERIMENTAL_MOTION_LUT")=="1":
+  groups,tables=generate_blend_luts(rgb1555,nearest)
+  output.append(write_appvar(groups,"DMOTBGM",appvar_dir))
+  for level,table in enumerate(tables):
+   output.append(write_appvar(table,"DMLUT%02d"%level,appvar_dir))
 
  manifest=json.loads((build_dir/"manifest.json").read_text())
  entries=manifest["scenes"]
