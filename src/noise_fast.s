@@ -1,3 +1,8 @@
+; Exact sparse 2x2 noise, 16 blocks unrolled with fixed IX/IY displacements.
+; Advancing pointers once per group and register counters removes per-block
+; LEA and RAM-counter overhead without changing the LFSR or saved-byte order.
+; Serial non-reentrant, writable RAM code (CP immediates patched at entry).
+; IX/IY preserved; shadow BC is caller-clobbered under the CEdev ABI.
 	.assume adl=1
 	.section .text,"ax",@progbits
 	.global _noise_restore_asm
@@ -14,7 +19,22 @@ _noise_restore_asm:
  ld de,(iy+12)
  ld bc,(iy+15)
  ld a,(iy+18)
- ld (.coverage),a
+ ld (.coverage_operand0),a
+ ld (.coverage_operand1),a
+ ld (.coverage_operand2),a
+ ld (.coverage_operand3),a
+ ld (.coverage_operand4),a
+ ld (.coverage_operand5),a
+ ld (.coverage_operand6),a
+ ld (.coverage_operand7),a
+ ld (.coverage_operand8),a
+ ld (.coverage_operand9),a
+ ld (.coverage_operand10),a
+ ld (.coverage_operand11),a
+ ld (.coverage_operand12),a
+ ld (.coverage_operand13),a
+ ld (.coverage_operand14),a
+ ld (.coverage_operand15),a
  ld a,120
  ld (.rows),a
  push bc
@@ -24,40 +44,56 @@ _noise_restore_asm:
  add iy,bc
  pop bc
 .row:
- ld a,160
- ld (.cols),a
-.pixel:
+ ld l,10
+.macro noise_restore_block n
+.pixel\n:
  ; BC holds only 16-bit nonzero state, BCU zero. No carry from BCU.
  srl b
  rr c
- jr nc,.advanced
+ jr nc,.advanced\n
  ld a,b
  xor 0B4h
  ld b,a
-.advanced:
+.advanced\n:
  ld a,c
  and 15
- ld hl,.coverage
- cp (hl)
- jr nc,.skip
+ .byte 0FEh
+.coverage_operand\n: .byte 0
+ jr nc,.skip\n
  ld a,(de)
- ld (ix+0),a
+ ld (ix+2*\n),a
  inc de
  ld a,(de)
- ld (ix+1),a
+ ld (ix+2*\n+1),a
  inc de
  ld a,(de)
- ld (iy+0),a
+ ld (iy+2*\n),a
  inc de
  ld a,(de)
- ld (iy+1),a
+ ld (iy+2*\n+1),a
  inc de
-.skip:
- lea iy,iy+2
- lea ix,ix+2
- ld hl,.cols
- dec (hl)
- jr nz,.pixel
+.skip\n:
+.endm
+ noise_restore_block 0
+ noise_restore_block 1
+ noise_restore_block 2
+ noise_restore_block 3
+ noise_restore_block 4
+ noise_restore_block 5
+ noise_restore_block 6
+ noise_restore_block 7
+ noise_restore_block 8
+ noise_restore_block 9
+ noise_restore_block 10
+ noise_restore_block 11
+ noise_restore_block 12
+ noise_restore_block 13
+ noise_restore_block 14
+ noise_restore_block 15
+ lea iy,iy+32
+ lea ix,ix+32
+ dec l
+ jp nz,.pixel0
  push bc
  ld bc,320
  add ix,bc
@@ -65,14 +101,12 @@ _noise_restore_asm:
  pop bc
  ld hl,.rows
  dec (hl)
- jr nz,.row
+ jp nz,.row
  pop iy
  pop ix
  ret
 	.section .data,"aw",@progbits
-.coverage: .byte 0
 .rows: .byte 0
-.cols: .byte 0
 	.section .text,"ax",@progbits
 	.global _noise_draw_asm
 ; Context native24fields fb,undo,seed,coverage,mask160,colors32.
@@ -92,7 +126,22 @@ _noise_draw_asm:
  ld de,(iy+3)
  ld bc,(iy+6)
  ld a,(iy+9)
- ld (.draw_coverage_operand),a
+ ld (.draw_coverage_operand0),a
+ ld (.draw_coverage_operand1),a
+ ld (.draw_coverage_operand2),a
+ ld (.draw_coverage_operand3),a
+ ld (.draw_coverage_operand4),a
+ ld (.draw_coverage_operand5),a
+ ld (.draw_coverage_operand6),a
+ ld (.draw_coverage_operand7),a
+ ld (.draw_coverage_operand8),a
+ ld (.draw_coverage_operand9),a
+ ld (.draw_coverage_operand10),a
+ ld (.draw_coverage_operand11),a
+ ld (.draw_coverage_operand12),a
+ ld (.draw_coverage_operand13),a
+ ld (.draw_coverage_operand14),a
+ ld (.draw_coverage_operand15),a
  ld a,(iy+18)
  ld (.draw_rows),a
  push bc
@@ -102,32 +151,34 @@ _noise_draw_asm:
  add iy,bc
  pop bc
 .draw_row:
- ld a,160
- ld (.draw_cols),a
+ exx
+ ld c,10
+ exx
  ld hl,(.draw_mask_start)
-.draw_pixel:
+.macro noise_draw_block n
+.draw_pixel\n:
  srl b
  rr c
- jr nc,.draw_next
+ jr nc,.draw_next\n
  ld a,b
  xor 0B4h
  ld b,a
-.draw_next:
+.draw_next\n:
  ld a,c
  and 15
  .byte 0FEh
-.draw_coverage_operand: .byte 0
- jr nc,.draw_skip
- ld a,(ix+0)
+.draw_coverage_operand\n: .byte 0
+ jr nc,.draw_skip\n
+ ld a,(ix+2*\n)
  ld (de),a
  inc de
- ld a,(ix+1)
+ ld a,(ix+2*\n+1)
  ld (de),a
  inc de
- ld a,(iy+0)
+ ld a,(iy+2*\n)
  ld (de),a
  inc de
- ld a,(iy+1)
+ ld a,(iy+2*\n+1)
  ld (de),a
  inc de
  push hl
@@ -146,19 +197,35 @@ _noise_draw_asm:
  ld a,(hl)
  pop bc
  pop hl
- ld (ix+0),a
- ld (ix+1),a
- ld (iy+0),a
- ld (iy+1),a
-.draw_skip:
- lea iy,iy+2
- lea ix,ix+2
+ ld (ix+2*\n),a
+ ld (ix+2*\n+1),a
+ ld (iy+2*\n),a
+ ld (iy+2*\n+1),a
+.draw_skip\n:
  inc hl
- push hl
- ld hl,.draw_cols
- dec (hl)
- pop hl
- jp nz,.draw_pixel
+.endm
+ noise_draw_block 0
+ noise_draw_block 1
+ noise_draw_block 2
+ noise_draw_block 3
+ noise_draw_block 4
+ noise_draw_block 5
+ noise_draw_block 6
+ noise_draw_block 7
+ noise_draw_block 8
+ noise_draw_block 9
+ noise_draw_block 10
+ noise_draw_block 11
+ noise_draw_block 12
+ noise_draw_block 13
+ noise_draw_block 14
+ noise_draw_block 15
+ lea iy,iy+32
+ lea ix,ix+32
+ exx
+ dec c
+ exx
+ jp nz,.draw_pixel0
  push bc
  ld bc,320
  add ix,bc
@@ -174,10 +241,7 @@ _noise_draw_asm:
  pop ix
  ret
 	.section .data,"aw",@progbits
-.draw_coverage: .byte 0
 .draw_rows: .byte 0
-.draw_cols: .byte 0
-.draw_mask: .long 0
 
 .draw_context: .long 0
 .draw_colors: .long 0

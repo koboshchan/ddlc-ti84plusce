@@ -86,7 +86,7 @@ bool noise_begin(uint8_t scene) {
     return true;
 }
 void noise_frame(unsigned elapsed_ms) {
-    unsigned row,col,coverage=elapsed_ms>=3000?4u:(uint32_t)elapsed_ms*4u/3000u;
+    unsigned row,coverage=elapsed_ms>=3000?4u:(uint32_t)elapsed_ms*4u/3000u;
     unsigned seed=(0xDD1Cu^(elapsed_ms/100u)*40503u)&65535u;
     if(!seed)seed=1;
     noise_restore();
@@ -96,7 +96,7 @@ void noise_frame(unsigned elapsed_ms) {
     undo_seed=seed;undo_coverage=coverage;
     undo_buffer=(uint8_t*)gfx_vbuffer;
     unsigned saved=0;
-    uint8_t mask_columns[160];unsigned mask_row=255;
+    uint8_t mask_columns[160];
 #ifndef NOISE_HOST_GOLDEN
     noise_asm_context ctx={undo_buffer,undo,seed,coverage,mask_columns,colors,10};
     /* One stripe is 20 display rows, so each authored mask row is expanded
@@ -109,6 +109,7 @@ void noise_frame(unsigned elapsed_ms) {
     }
     saved=(unsigned)(ctx.saved-undo);
 #else
+    unsigned col,mask_row=255;
     for(row=0;row<240;row+=2){
         uint8_t *d=(uint8_t*)gfx_vbuffer+row*320u;
         unsigned current_mask_row=row/20u;
