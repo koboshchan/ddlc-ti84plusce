@@ -2584,6 +2584,12 @@ class Compiler:
             if fn == "renpy.full_restart":
                 self.asm.end()
                 return True
+            if fn == "_window_hide":
+                self.asm.window_hide()
+                return True
+            if fn == "_window_show":
+                self.asm.window_show()
+                return True
             if fn == "renpy.call_screen" and stmt.value.args:
                 screen_name = _const_scalar(stmt.value.args[0])
                 if screen_name == "dialog":

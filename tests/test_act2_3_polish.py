@@ -115,6 +115,7 @@ class Act23PolishTests(unittest.TestCase):
             "style.say_dialogue = style.edited",
             "style.say_dialogue = style.normal",
             "waittime = renpy.random.randint(4, 8)",
+            "_window_hide(None)",
         ):
             stmt = ast.parse(src).body[0]
             self.assertTrue(c._emit_python_stmt(stmt), f"failed to emit: {src}")
@@ -127,6 +128,7 @@ class Act23PolishTests(unittest.TestCase):
         var_id, lo, hi = struct.unpack("<Bhh", ops[2][1])
         self.assertEqual(var_id, c.variables["waittime"])
         self.assertEqual((lo, hi), (4, 8))
+        self.assertEqual(ops[3], (vnasm.OP_WINDOW_HIDE, b""))
 
     @unittest.skipUnless((ROOT / "assets/raw/script-ch30.rpyc").is_file(),
                          "extracted .rpyc assets required")

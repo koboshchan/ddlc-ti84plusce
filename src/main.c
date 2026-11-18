@@ -852,17 +852,12 @@ static __attribute__((noinline)) void run_debug_glitch_test(void)
     }
 }
 
-/** Debug menu's "trigger chance events" screen: DDLC's real
- * `renpy.random.randint(0, N) == 0`-gated cosmetic events (the ghost menu,
- * the disclaimer-text swap, ...), listed with their real odds and actual
- * reachability in this engine -- most are architecturally blocked on
- * persistent.playthrough always being 0 (see vn.h's own VN_PLAYTHROUGH_VAR
- * comment and TODO.md), not just "not implemented yet", so an honest status
- * readout is more useful here than a fake "trigger" button that can't
- * actually reproduce what the real game does. Where a *real* random
- * mechanic already exists in this engine (glitchtext(), the tear glitch),
- * this points at the debug menu item that already exercises it instead of
- * duplicating it here. */
+/** Debug menu's "trigger chance events" screen: lists DDLC's random
+ * `renpy.random.randint(0, N) == 0`-gated cosmetic events (ghost menu,
+ * disclaimer-text swap, Monika's-eyes glitch, poem events, glitchtext, tear)
+ * along with their real odds and implementation status. Real story state
+ * (persistent.playthrough via VN_PLAYTHROUGH_VAR) is now persisted across
+ * acts, so all listed events are genuinely reachable in-game. */
 static __attribute__((noinline)) void run_debug_events_test(void)
 {
     static const char *const lines[] = {
