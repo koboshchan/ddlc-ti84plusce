@@ -47,6 +47,7 @@ OP_POEM_VIEW = 0x1E
 
 CMP_EQ, CMP_NE, CMP_LT, CMP_LE, CMP_GT, CMP_GE = range(6)
 TRANS_CUT, TRANS_FADE = 0, 1
+TRANS_SILHOUETTE = 0x80
 
 # OP_SHOW's pos:u8 is half the on-screen center X (decode: center_x = pos*2),
 # not a bucketed enum -- see compile_script.py's _pos_from_x. Values below are

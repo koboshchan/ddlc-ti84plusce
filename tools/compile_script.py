@@ -915,6 +915,7 @@ class Compiler:
             self._skip(node, fname, "Show with empty imspec")
             return
 
+        credits_cg = None
         if len(imgname) == 1:
             credits_cg = _match_credits_cg_tag(imgname[0])
             if credits_cg is not None:
@@ -1101,6 +1102,28 @@ class Compiler:
             if scene_id is None:
                 self._skip(node, fname, f"unknown character tag in {imgname!r}")
                 return
+            if credits_cg is not None:
+                # credits.rpyc gates credits_cg1..10 on persistent.clear[N] / clearall.
+                # Locked CGs use procedural grayscale silhouette palette filtering.
+                suffix_num = credits_cg[len("credits_cg"):]
+                if suffix_num.isdigit():
+                    cg_idx = int(suffix_num) - 1
+                    unlocked_lbl = self._gensym("credits_cg_unlocked")
+                    done_lbl = self._gensym("credits_cg_done")
+                    self.asm.if_(self._var_slot("persistent.clearall"), vnasm.CMP_NE, 0, unlocked_lbl)
+                    self.asm.if_(self._var_slot(f"persistent.clear[{cg_idx}]"), vnasm.CMP_NE, 0, unlocked_lbl)
+                    self.asm.scene(scene_id, vnasm.TRANS_CUT | vnasm.TRANS_SILHOUETTE)
+                    self.asm.jump(done_lbl)
+                    self.asm.label(unlocked_lbl)
+                    self.asm.scene(scene_id, vnasm.TRANS_CUT)
+                    self.asm.label(done_lbl)
+                    self._current_bg = scene_id
+                    self.last_sprite.clear()
+                    self.last_pos.clear()
+                    self.last_flags.clear()
+                    self.visible_chars.clear()
+                    self._flash_stack.clear()
+                    return
             if (fname == "script-ch5" or fname.endswith("script-ch5.rpyc")) and imgname[0].startswith("s_kill"):
                 layer_alias = alias or imgname[0]
                 at = node.imspec[3] if len(node.imspec) > 3 else []
@@ -2068,6 +2091,10 @@ class Compiler:
             self.asm.set(flag_slot, 1)
             self.asm.label(missing_label)
             self.asm.label(skip_label)
+            return True
+
+        if (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+                and _ident_name(stmt.value.func) == "renpy.save_persistent"):
             return True
 
         if _match_clearall_check(stmt):

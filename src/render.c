@@ -1676,6 +1676,31 @@ void render_fade_retarget(const uint16_t *palette)
     fade_apply(0); /* re-hold at full black under the new palette's values */
 }
 
+const uint16_t *render_filter_palette(const vn_scene_t *scene, const uint16_t *palette)
+{
+    static uint16_t fx_palette[256];
+    if (!scene || !palette || scene->pal_fx == VN_FX_NONE) {
+        return palette;
+    }
+    if (scene->pal_fx == VN_FX_SILHOUETTE) {
+        memcpy(fx_palette, palette, 8 * sizeof(uint16_t));
+        for (unsigned i = 8; i < 256; i++) {
+            uint16_t c = palette[i];
+            unsigned r = (c >> 10) & 31U;
+            unsigned g = (c >> 5) & 31U;
+            unsigned b = c & 31U;
+            unsigned luma = (r + (g << 1) + b) >> 2;
+            unsigned gray = ((luma * 3U) >> 2) + 4U;
+            if (gray > 31U) {
+                gray = 31U;
+            }
+            fx_palette[i] = (uint16_t)((gray << 10) | (gray << 5) | gray);
+        }
+        return fx_palette;
+    }
+    return palette;
+}
+
 void render_pause_box(int x, int y, int w, int h, uint8_t fill_color, uint8_t edge_color)
 {
     scene_obscured();

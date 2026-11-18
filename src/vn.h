@@ -194,8 +194,11 @@ enum vn_cmp {
     CMP_EQ = 0, CMP_NE = 1, CMP_LT = 2, CMP_LE = 3, CMP_GT = 4, CMP_GE = 5,
 };
 
-/** Scene transitions. Only CUT and FADE are implemented for now. */
-enum vn_trans { TRANS_CUT = 0, TRANS_FADE = 1 };
+/** Scene transitions and flags carried on OP_SCENE's trans byte. */
+enum vn_trans { TRANS_CUT = 0, TRANS_FADE = 1, TRANS_SILHOUETTE = 0x80 };
+
+/** Scene-scoped palette effect applied when presenting the background palette. */
+enum vn_pal_fx { VN_FX_NONE = 0, VN_FX_SILHOUETTE = 1 };
 
 /* ---------------------------------------------------------------------------
  * Chunk-packed addresses
@@ -358,6 +361,7 @@ typedef struct {
     uint16_t overlay_text[2];
     uint8_t overlay_x[2], overlay_y[2];
     uint8_t overlay_mask;
+    uint8_t pal_fx;                     /* enum vn_pal_fx -- cleared on OP_SCENE */
     uint8_t     background;             /* bg id, or VN_NO_SPRITE            */
     vn_actor_t  actors[VN_MAX_CHARS];
     uint8_t     speaker;                /* VN_SPEAKER_NONE for narration     */

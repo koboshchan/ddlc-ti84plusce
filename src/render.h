@@ -188,6 +188,10 @@ void render_apply_palette(const uint16_t *palette);
  */
 void render_fade_retarget(const uint16_t *palette);
 
+/** Applies scene->pal_fx (e.g. grayscale silhouette for locked credits CGs) to
+ * @p palette, returning either @p palette directly or an internal scratch copy. */
+const uint16_t *render_filter_palette(const vn_scene_t *scene, const uint16_t *palette);
+
 /* ---------------------------------------------------------------------------
  * Title / pause / menu screens
  *

@@ -345,11 +345,17 @@ static uint8_t run_slot_picker(const char *title, bool require_existing)
     return run_game_menu(NULL, require_existing ? GAME_MENU_LOAD : GAME_MENU_SAVE, false);
 }
 
+static void apply_scene_palette(const vn_scene_t *scene)
+{
+    const uint16_t *base = assets_scene_palette(scene ? scene->background : VN_NO_SPRITE);
+    render_apply_palette(render_filter_palette(scene, base));
+}
+
 static bool run_pause_menu(vn_vm_t *vm)
 {
     run_game_menu(vm, GAME_MENU_SAVE, true);
     if (!returning_to_title && vm) {
-        render_apply_palette(assets_scene_palette(vm->scene.background));
+        apply_scene_palette(&vm->scene);
     }
     return returning_to_title;
 }
@@ -1309,7 +1315,7 @@ static __attribute__((noinline)) void run_debug_menu(vn_vm_t *vm)
         input_poll(&in);
         if (quit_requested || in.pause) {
             if (vm) {
-                render_apply_palette(assets_scene_palette(vm->scene.background));
+                apply_scene_palette(&vm->scene);
             } else {
                 assets_use_title_palette(true);
             }
@@ -1415,7 +1421,7 @@ static __attribute__((noinline)) void run_debug_menu(vn_vm_t *vm)
 
             case DBG_CLOSE:
                 if (vm) {
-                    render_apply_palette(assets_scene_palette(vm->scene.background));
+                    apply_scene_palette(&vm->scene);
                 } else {
                     assets_use_title_palette(true);
                 }
@@ -1810,7 +1816,8 @@ static void host_update(void *ctx, const vn_scene_t *scene, uint8_t trans)
      * draw_background() call, is also what makes the fade case below safe:
      * a fade needs to control *when* the swap becomes visible, which a
      * per-frame write inside render_scene() couldn't do. */
-    const uint16_t *palette = assets_scene_palette(scene->background);
+    const uint16_t *palette = render_filter_palette(
+        scene, assets_scene_palette(scene->background));
 
     /* Fade out first: the VM has already swapped in the new scene, but the
      * *displayed* buffer still holds the old one, so darkening the palette
@@ -2506,7 +2513,7 @@ int main(void)
             }
         }
 
-        render_apply_palette(assets_scene_palette(vm.scene.background));
+        apply_scene_palette(&vm.scene);
         returning_to_title = false;
         vn_run(&vm);
 

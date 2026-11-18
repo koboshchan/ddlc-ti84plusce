@@ -400,8 +400,9 @@ bool vn_step(vn_vm_t *vm)
             }
             /* A scene change clears the stage, matching Ren'Py semantics. */
             vm->scene.background = bg;
+            vm->scene.pal_fx = (trans & TRANS_SILHOUETTE) ? VN_FX_SILHOUETTE : VN_FX_NONE;
             actors_clear(&vm->scene);
-            vm->host->update(vm->host->ctx, &vm->scene, trans);
+            vm->host->update(vm->host->ctx, &vm->scene, (uint8_t)(trans & 0x7FU));
             break;
         }
 
