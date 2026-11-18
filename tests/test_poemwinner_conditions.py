@@ -63,6 +63,8 @@ _FIXED_OPS = {
     vnasm.OP_LAYER_FX: 3,
     vnasm.OP_TRANS: 1,
     vnasm.OP_CREDITS: 25,
+    vnasm.OP_TEXT_STYLE: 1,
+    vnasm.OP_JMP_VAR_CMP: 6,
 }
 
 
@@ -72,7 +74,10 @@ def _scan_bytecode(code: bytes) -> list[tuple[int, tuple[int, ...]]]:
     while pc < len(code):
         op = code[pc]
         pc += 1
-        if op == vnasm.OP_MENU:
+        if op == vnasm.OP_CONSOLE:
+            subop = code[pc]
+            pc += 5 if subop in (vnasm.VN_CONSOLE_SHOW, vnasm.VN_CONSOLE_SHOW_CLR) else 1
+        elif op == vnasm.OP_MENU:
             count = code[pc]
             pc += 1 + count * 5
         elif op == vnasm.OP_MENU_SPECIAL:

@@ -196,6 +196,8 @@ enum vn_op {
     OP_TRANS        = 0x29, /* trans:u8 -- 0xFF holds updates; other commits pending update with trans */
     OP_CREDITS      = 0x2A, /* stage:u8 clearall_var:u8 clear[10]:u8 scenes[13]:u8 -- credits runner */
     OP_CONSOLE      = 0x2B, /* op:u8 [cmd:u16 out:u16] -- Python console overlay */
+    OP_TEXT_STYLE   = 0x2C, /* style:u8 -- 0 = normal, 1 = Act 2 edited horror text */
+    OP_JMP_VAR_CMP  = 0x2D, /* a:u8 cmp:u8 b:u8 addr:u24 -- branch comparing vars[a] vs vars[b] */
 };
 
 /** Console overlay sub-operations for OP_CONSOLE / vn_host_t.console(). */
@@ -234,6 +236,7 @@ enum vn_overlay_fx {
     VN_OVL_ROOM_MASK = 0x10,
     VN_OVL_LIVE_TILE = 0x20,
     VN_OVL_DUST      = 0x40,
+    VN_OVL_FAKE_SKIP = 0x80,
 };
 
 /** Timed effect ids carried by OP_EFFECT / vn_scene_t.timed_fx. */
@@ -437,6 +440,7 @@ typedef struct {
     uint8_t overlay_mask;
     uint8_t pal_fx;                     /* enum vn_pal_fx -- cleared on OP_SCENE */
     uint8_t box_style;                  /* 0 = normal box, 1 = Monika Act 3 box */
+    uint8_t text_edited;                /* 0 = normal dialogue font, 1 = style.edited horror text */
     uint8_t menu_mode;                  /* enum vn_menu_mode during host->menu() */
     uint8_t timed_fx;                   /* enum vn_timed_fx -- cleared on OP_SCENE */
     uint8_t timed_fx_seq;               /* bumped on every OP_EFFECT trigger */

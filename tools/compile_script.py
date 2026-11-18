@@ -394,6 +394,8 @@ _OVERLAY_FX_BY_TAG = {
     "blood_eye2": vnasm.VN_OVL_BLOOD_EYE,
     "room_mask": vnasm.VN_OVL_ROOM_MASK,
     "room_mask2": vnasm.VN_OVL_ROOM_MASK,
+    "rm": vnasm.VN_OVL_ROOM_MASK,
+    "rm2": vnasm.VN_OVL_ROOM_MASK,
 }
 _CH30_SPACEROOM_TAGS = {
     "monika_bg",
@@ -1257,6 +1259,24 @@ class Compiler:
             if (fname == "script-ch5" or fname.endswith("script-ch5.rpyc")) and imgname[0] == "vignette":
                 return
 
+            # Outside ch5/splash/credits, `noise` and `vignette` are live camera/mood
+            # overlays above characters rather than opaque full-screen scenes.
+            if (fname not in ("script-ch5", "splash", "credits")
+                    and not fname.endswith(("script-ch5.rpyc", "splash.rpyc", "credits.rpyc"))):
+                if imgname[0] == "vignette":
+                    vkey = alias or imgname[0]
+                    self._flush_pending_scene(vnasm.TRANS_CUT)
+                    self._effect_tags.add(vkey)
+                    self.asm.effect(vnasm.VN_EFFECT_DIM_HALF, 0, 0)
+                    return
+                if imgname[0] == "noise":
+                    at_strs = [str(a) for a in ((node.imspec[3] if len(node.imspec) > 3 else None) or [])]
+                    if any(a.startswith("noisefade(") for a in at_strs):
+                        return
+                    self._flush_pending_scene(vnasm.TRANS_CUT)
+                    self.asm.noise(True)
+                    return
+
             scene_id = self.resolver.scene_id(imgname)
             if scene_id is None:
                 self._skip(node, fname, f"unknown character tag in {imgname!r}")
@@ -1473,6 +1493,12 @@ class Compiler:
                 self._ch30_room_mask_pending = False
             return
         if (fname == "script-ch5" or fname.endswith("script-ch5.rpyc")) and tag == "vignette":
+            return
+        if (tag == "noise"
+                and fname not in ("script-ch5", "splash", "credits")
+                and not fname.endswith(("script-ch5.rpyc", "splash.rpyc", "credits.rpyc"))):
+            self._flush_pending_scene(vnasm.TRANS_CUT)
+            self.asm.noise(False)
             return
         if fname in ("script-ch5", "script-ch5.rpyc") and tag is not None:
             layers = getattr(self, "_ch5_original_layers", [])
@@ -2342,6 +2368,17 @@ class Compiler:
                 return
             self.asm.pause(0)
             return
+        if stripped == "show screen fake_skip_indicator":
+            self._flush_pending_scene(vnasm.TRANS_CUT)
+            self.asm.overlay_fx(vnasm.VN_OVL_FAKE_SKIP, 1)
+            return
+        if stripped == "hide screen fake_skip_indicator":
+            self._flush_pending_scene(vnasm.TRANS_CUT)
+            self.asm.overlay_fx(vnasm.VN_OVL_FAKE_SKIP, 0)
+            return
+        if stripped == "pause pause_length":
+            self.asm.pause(4000)
+            return
         if stripped.startswith("pause "):
             # Ren'Py's own `pause N` statement (a literal duration, unlike
             # the bare `pause` above) -- credits.rpyc's own `pause 9.3`/
@@ -2547,6 +2584,21 @@ class Compiler:
             if fn == "renpy.full_restart":
                 self.asm.end()
                 return True
+            if fn == "renpy.call_screen" and stmt.value.args:
+                screen_name = _const_scalar(stmt.value.args[0])
+                if screen_name == "dialog":
+                    msg = None
+                    if len(stmt.value.args) >= 2:
+                        msg = _const_scalar(stmt.value.args[1])
+                    if msg is None:
+                        for kw in stmt.value.keywords:
+                            if kw.arg == "message":
+                                msg = _const_scalar(kw.value)
+                                break
+                    if isinstance(msg, str):
+                        self.asm.menu_special(vnasm.VN_MENU_CONFIRM_OK, 0xFF,
+                                              [_strip_text_tags(msg), "OK"])
+                        return True
             if fn == "renpy.display_menu":
                 parsed = _match_display_menu_call(stmt.value)
                 if parsed is not None:
@@ -2566,6 +2618,12 @@ class Compiler:
                     return True
                 if rhs in ("style.window", "style.default"):
                     self.asm.window_style(0)
+                    return True
+                if rhs == "style.edited":
+                    self.asm.text_style(1)
+                    return True
+                if rhs == "style.normal":
+                    self.asm.text_style(0)
                     return True
             if var == "consolehistory" and isinstance(stmt.value, ast.List) and not stmt.value.elts:
                 self.asm.console(vnasm.VN_CONSOLE_CLEAR)
@@ -2642,6 +2700,11 @@ class Compiler:
                     self.asm.set(ch2_slot, self._intern("Natsuki"))
                     self.asm.label(lbl_done)
                     return True
+                if var is not None:
+                    rb = _randint_call(stmt.value)
+                    if rb is not None:
+                        self.asm.random(self._var_slot(var), rb[0], rb[1])
+                        return True
                 if var == "ch4_name" and isinstance(stmt.value, ast.Call):
                     scene_slot = self._var_slot("ch4_scene")
                     ch4_slot = self._var_slot("ch4_name")
@@ -2826,6 +2889,12 @@ class Compiler:
                 return
             lhs_name = _ident_name(expr.left)
             slot = self._var_slot(lhs_name)
+            rhs_name = _ident_name(expr.comparators[0])
+            if rhs_name is not None and _const_scalar(expr.comparators[0]) is None:
+                rhs_slot = self._var_slot(rhs_name)
+                self.asm.if_vars(slot, cmp, rhs_slot, true_label)
+                self.asm.jump(false_label)
+                return
         val = self._const_operand_for_var(lhs_name if bounds is None else None, expr.comparators[0])
         self.asm.if_(slot, cmp, val, true_label)
         self.asm.jump(false_label)
@@ -4119,5 +4188,6 @@ def _condition_supported(expr) -> bool:
         # _const_scalar, not _const_int: a string comparand is fine, it just
         # becomes an interned id at emit time (see Compiler._const_operand).
         return (_ident_name(expr.left) is not None
-                and _const_scalar(expr.comparators[0]) is not None)
+                and (_const_scalar(expr.comparators[0]) is not None
+                     or _ident_name(expr.comparators[0]) is not None))
     return False

@@ -928,6 +928,42 @@ bool vn_step(vn_vm_t *vm)
             break;
         }
 
+        case OP_TEXT_STYLE: {
+            uint8_t style = read_u8(vm);
+            if (vm->status == VN_RUNNING) {
+                vm->scene.text_edited = style;
+            }
+            break;
+        }
+
+        case OP_JMP_VAR_CMP: {
+            uint8_t  a   = read_u8(vm);
+            uint8_t  cmp = read_u8(vm);
+            uint8_t  b   = read_u8(vm);
+            uint32_t tgt = read_u24(vm);
+            if (vm->status != VN_RUNNING) {
+                break;
+            }
+            int16_t lhs = vm->vars[a];
+            int16_t rhs = vm->vars[b];
+            bool match = false;
+            switch (cmp) {
+                case CMP_EQ: match = (lhs == rhs); break;
+                case CMP_NE: match = (lhs != rhs); break;
+                case CMP_LT: match = (lhs <  rhs); break;
+                case CMP_LE: match = (lhs <= rhs); break;
+                case CMP_GT: match = (lhs >  rhs); break;
+                case CMP_GE: match = (lhs >= rhs); break;
+                default:
+                    vm->status = VN_ERR_OPCODE;
+                    break;
+            }
+            if (match) {
+                vm->pc = tgt;
+            }
+            break;
+        }
+
         case OP_END:
             vm->status = VN_FINISHED;
             break;

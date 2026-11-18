@@ -135,6 +135,7 @@ bool save_load(uint8_t slot, vn_vm_t *vm)
     vm->scene.background = blob.background;
     vm->scene.pal_fx     = VN_FX_NONE;
     vm->scene.box_style  = 0;
+    vm->scene.text_edited = 0;
     vm->scene.timed_fx   = VN_EFFECT_NONE;
     vm->scene.overlay_fx_mask = 0;
     vm->scene.layer_fx   = VN_LAYER_NONE;

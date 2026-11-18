@@ -1978,9 +1978,13 @@ static uint8_t host_menu(void *ctx, const vn_scene_t *scene,
     if (scene->menu_mode == VN_MENU_CONFIRM_OK) {
         for (;;) {
             render_scene(scene);
-            render_pause_box(90, 68, 140, 46, COL_BOX_FILL, COL_BOX_EDGE);
-            render_menu(choices, count, 0);
             draw_dialogue_box(ctx, scene, SIZE_MAX);
+            if (count >= 2) {
+                render_dialog_ok(choices[0], choices[1]);
+            } else {
+                render_pause_box(90, 68, 140, 46, COL_BOX_FILL, COL_BOX_EDGE);
+                render_menu(choices, count, 0);
+            }
             render_present(TRANS_CUT);
             gfx_Wait();
 

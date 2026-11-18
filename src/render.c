@@ -1301,9 +1301,27 @@ void render_box(const vn_scene_t *scene, const char *speaker,
     }
 
     for (uint8_t i = 0; i < shown.count; i++) {
-        print_slice_outlined(shown.lines[i].start, shown.lines[i].len, pad, y,
-                             COL_WHITE, COL_BLACK);
+        if (scene->text_edited) {
+            /* Thick black double-stroke matching DDLC's heavy VerilySerifMono edited style */
+            print_slice_outlined(shown.lines[i].start, shown.lines[i].len, pad - 1, y,
+                                 COL_WHITE, COL_BLACK);
+            print_slice_outlined(shown.lines[i].start, shown.lines[i].len, pad + 1, y,
+                                 COL_WHITE, COL_BLACK);
+            fontlib_SetForegroundColor(COL_WHITE);
+            print_slice(shown.lines[i].start, shown.lines[i].len, pad, y);
+        } else {
+            print_slice_outlined(shown.lines[i].start, shown.lines[i].len, pad, y,
+                                 COL_WHITE, COL_BLACK);
+        }
         y += 10;
+    }
+
+    if (scene->overlay_fx_mask & VN_OVL_FAKE_SKIP) {
+        gfx_SetColor(COL_BOX_FILL);
+        gfx_FillRectangle_NoClip(4, 4, 82, 14);
+        gfx_SetColor(COL_BOX_EDGE);
+        gfx_Rectangle(4, 4, 82, 14);
+        render_text("Skipping >>", 9, 6, COL_WHITE);
     }
 }
 
@@ -1425,6 +1443,39 @@ void render_menu(const char *const *choices, uint8_t count, uint8_t selected)
         fontlib_SetForegroundColor(is_sel ? COL_BLACK : COL_WHITE);
         print_slice(choices[i], len, text_x, text_y);
     }
+}
+
+void render_dialog_ok(const char *msg, const char *ok_label)
+{
+    const int bx = 46, by = 46, bw = 228, bh = 78;
+    render_pause_box(bx, by, bw, bh, COL_BOX_FILL, COL_BOX_EDGE);
+    if (msg && msg[0] != '\0') {
+        text_layout_t layout;
+        text_wrap(&layout, msg, (unsigned)(bw - 18), measure, NULL);
+        int ty = by + 10;
+        for (uint8_t i = 0; i < layout.count && i < 3; i++) {
+            int lw = (int)measure(NULL, layout.lines[i].start, layout.lines[i].len);
+            int lx = bx + (bw - lw) / 2;
+            if (lx < bx + 6) lx = bx + 6;
+            fontlib_SetForegroundColor(COL_BLACK);
+            print_slice(layout.lines[i].start, layout.lines[i].len, lx + 1, ty + 1);
+            fontlib_SetForegroundColor(COL_WHITE);
+            print_slice(layout.lines[i].start, layout.lines[i].len, lx, ty);
+            ty += 12;
+        }
+    }
+    const char *ok = (ok_label && ok_label[0] != '\0') ? ok_label : "OK";
+    const int btn_w = 88, btn_h = 20;
+    const int btn_x = bx + (bw - btn_w) / 2;
+    const int btn_y = by + bh - btn_h - 8;
+    gfx_SetColor(COL_HIGHLIGHT);
+    gfx_FillRectangle(btn_x, btn_y, btn_w, btn_h);
+    gfx_SetColor(COL_BOX_EDGE);
+    gfx_Rectangle(btn_x, btn_y, btn_w, btn_h);
+    size_t olen = strlen(ok);
+    int ow = (int)measure(NULL, ok, olen);
+    fontlib_SetForegroundColor(COL_BLACK);
+    print_slice(ok, olen, btn_x + (btn_w - ow) / 2, btn_y + 3);
 }
 
 void render_present(uint8_t trans)

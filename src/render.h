@@ -157,6 +157,9 @@ void render_debug_bg_preview(uint8_t bg_id);
 /** Draw the choice menu over the current scene, highlighting @p selected. */
 void render_menu(const char *const *choices, uint8_t count, uint8_t selected);
 
+/** Draw a modal confirmation box with centered @p msg and highlighted @p ok_label. */
+void render_dialog_ok(const char *msg, const char *ok_label);
+
 /** Present the back buffer, optionally with a fade (enum vn_trans). */
 void render_present(uint8_t trans);
 

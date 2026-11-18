@@ -44,6 +44,7 @@ OP_QUIT = 0x1B
 OP_PAUSE_LONG = 0x1C
 OP_MENU_COND = 0x1D
 OP_POEM_VIEW = 0x1E
+OP_NOISE = 0x1F
 OP_WINDOW_STYLE = 0x23
 OP_MONIKA_TOPIC = 0x24
 OP_MENU_SPECIAL = 0x25
@@ -53,6 +54,8 @@ OP_LAYER_FX = 0x28
 OP_TRANS = 0x29
 OP_CREDITS = 0x2A
 OP_CONSOLE = 0x2B
+OP_TEXT_STYLE = 0x2C
+OP_JMP_VAR_CMP = 0x2D
 
 VN_CONSOLE_SHOW = 0
 VN_CONSOLE_SHOW_CLR = 1
@@ -89,6 +92,7 @@ VN_OVL_BLOOD_EYE = 0x08
 VN_OVL_ROOM_MASK = 0x10
 VN_OVL_LIVE_TILE = 0x20
 VN_OVL_DUST = 0x40
+VN_OVL_FAKE_SKIP = 0x80
 
 VN_MENU_NORMAL = 0
 VN_MENU_FLASH = 1
@@ -356,6 +360,11 @@ class Assembler:
         self._i16(offset_max)
         self._u16(period_ms)
 
+    def noise(self, enabled: bool) -> None:
+        """Enables or disables live static noise overlay. See OP_NOISE."""
+        self._u8(OP_NOISE)
+        self._u8(1 if enabled else 0)
+
     def tear_hide(self) -> None:
         """Compiles `hide screen tear`. See OP_TEAR_HIDE."""
         self._u8(OP_TEAR_HIDE)
@@ -429,6 +438,19 @@ class Assembler:
         if op in (VN_CONSOLE_SHOW, VN_CONSOLE_SHOW_CLR):
             self._u16(self.string(cmd))
             self._u16(self.string(out))
+
+    def text_style(self, style: int) -> None:
+        """Switches dialogue font weight (0 = normal, 1 = edited). See OP_TEXT_STYLE."""
+        self._u8(OP_TEXT_STYLE)
+        self._u8(style & 0xFF)
+
+    def if_vars(self, var_a: int, cmp_op: int, var_b: int, target: str) -> None:
+        """Branches to @p target if vars[var_a] <cmp_op> vars[var_b]."""
+        self._u8(OP_JMP_VAR_CMP)
+        self._u8(var_a)
+        self._u8(cmp_op)
+        self._u8(var_b)
+        self._ref(target)
 
     def ret(self) -> None:
         self._u8(OP_RETURN)
