@@ -373,6 +373,15 @@ static void host_show_poem(void *ctx, uint8_t poem_id)
     }
 }
 
+static void host_console(void *ctx, uint8_t op, const char *cmd, const char *out)
+{
+    (void)ctx;
+    if (opt_trace) {
+        printf("[console op=%u cmd=%s out=%s]\n", op,
+               cmd ? cmd : "", out ? out : "");
+    }
+}
+
 static const vn_host_t host = {
     .string        = host_string,
     .say           = host_say,
@@ -388,6 +397,7 @@ static const vn_host_t host = {
     .char_delete   = host_char_delete,
     .request_quit  = host_request_quit,
     .show_poem     = host_show_poem,
+    .console       = host_console,
     .ctx           = NULL,
 };
 

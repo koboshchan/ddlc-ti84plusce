@@ -208,6 +208,18 @@ static void credits_run_stage1(bool clearall, uint16_t clear_mask,
         { "Special Thanks", "Alecia Bardachino", "Matt Naples", "os.remove(\"images/cg/s_cg3.png\")", true },
         { "Special Thanks", "Monika", NULL, "os.remove(\"images/cg/m_cg1.png\")", false },
     };
+    static const char *const cg_outs[10] = {
+        "n_cg1.png deleted successfully.",
+        "n_cg2.png deleted successfully.",
+        "y_cg1.png deleted successfully.",
+        "y_cg2.png deleted successfully.",
+        "n_cg3.png deleted successfully.",
+        "y_cg3.png deleted successfully.",
+        "s_cg1.png deleted successfully.",
+        "s_cg2.png deleted successfully.",
+        "s_cg3.png deleted successfully.",
+        "m_cg1.png deleted successfully.",
+    };
 
     if (scenes && scenes[0] != VN_NO_SPRITE) {
         credits_hold_scene(scenes[0], 3200U); /* credits_logo */
@@ -216,6 +228,7 @@ static void credits_run_stage1(bool clearall, uint16_t clear_mask,
         return;
     }
 
+    render_console_clear();
     uint8_t *thumb = malloc((size_t)CREDITS_THUMB_W * CREDITS_THUMB_H);
 
     for (unsigned i = 0; i < 10 && !quit_requested; i++) {
@@ -256,10 +269,18 @@ static void credits_run_stage1(bool clearall, uint16_t clear_mask,
 
         clock_t start = clock();
         const unsigned card_ms = 3400U;
+        bool committed_out = false;
+        if (!clearall) {
+            render_console_set(entries[i].del_msg, NULL, false);
+        }
         while (!quit_requested) {
             unsigned elapsed = credits_ticks_to_ms(clock() - start);
             if (elapsed >= card_ms || credits_poll_skip()) {
                 break;
+            }
+            if (!clearall && !committed_out && elapsed >= 650U) {
+                render_console_set(entries[i].del_msg, cg_outs[i], false);
+                committed_out = true;
             }
             int scroll_y = 200 - (int)((elapsed * 260UL) / card_ms);
 
@@ -272,11 +293,16 @@ static void credits_run_stage1(bool clearall, uint16_t clear_mask,
             if (l2 && l2[0] != '\0') {
                 credits_draw_centered_text(l2, txt_cx, scroll_y + 48, COL_WHITE);
             }
-            if (!clearall && entries[i].del_msg) {
-                render_text(entries[i].del_msg, 8, 222, COL_WHITE);
+            if (!clearall) {
+                size_t cmd_len = strlen(entries[i].del_msg);
+                size_t vis = committed_out ? 0 : (size_t)((elapsed * cmd_len) / 600U + 1U);
+                render_console_draw_step(committed_out ? NULL : entries[i].del_msg, vis);
             }
             gfx_SwapDraw();
             gfx_Wait();
+        }
+        if (!clearall && !committed_out) {
+            render_console_set(entries[i].del_msg, cg_outs[i], false);
         }
 
         if (i == 7 && !quit_requested) {
@@ -285,6 +311,46 @@ static void credits_run_stage1(bool clearall, uint16_t clear_mask,
     }
 
     free(thumb);
+
+    /* Core game script deletions right before credits_ts (credits.rpyc). */
+    if (!quit_requested) {
+        static const struct {
+            const char *cmd;
+            const char *out;
+        } tail_del[4] = {
+            { "os.remove(\"game/screens.rpy\")", "screens.rpy deleted successfully." },
+            { "os.remove(\"game/gui.rpy\")", "gui.rpy deleted successfully." },
+            { "os.remove(\"game/menu.rpy\")", "menu.rpy deleted successfully." },
+            { "os.remove(\"game/script.rpy\")", "script.rpy deleted successfully." },
+        };
+        render_apply_palette(assets_scene_palette(VN_NO_SPRITE));
+        for (unsigned j = 0; j < 4 && !quit_requested; j++) {
+            clock_t start = clock();
+            bool committed = false;
+            render_console_set(tail_del[j].cmd, NULL, false);
+            while (!quit_requested) {
+                unsigned elapsed = credits_ticks_to_ms(clock() - start);
+                if (elapsed >= 900U || credits_poll_skip()) {
+                    break;
+                }
+                if (!committed && elapsed >= 450U) {
+                    render_console_set(tail_del[j].cmd, tail_del[j].out, false);
+                    committed = true;
+                }
+                gfx_FillScreen(COL_BLACK);
+                size_t clen = strlen(tail_del[j].cmd);
+                size_t vis = committed ? 0 : (size_t)((elapsed * clen) / 420U + 1U);
+                render_console_draw_step(committed ? NULL : tail_del[j].cmd, vis);
+                gfx_SwapDraw();
+                gfx_Wait();
+            }
+            if (!committed) {
+                render_console_set(tail_del[j].cmd, tail_del[j].out, false);
+            }
+        }
+    }
+    render_console_hide();
+    render_console_clear();
 
     if (!quit_requested && scenes && scenes[1] != VN_NO_SPRITE) {
         render_apply_palette(assets_scene_palette(scenes[1]));

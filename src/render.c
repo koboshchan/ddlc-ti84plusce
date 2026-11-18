@@ -2690,3 +2690,182 @@ void render_eyes_open_reveal(void)
     gfx_SetDrawBuffer();
 }
 
+/* ---------------------------------------------------------------------------
+ * Monika's Python Console Terminal Overlay (Act 2/3 & Credits)
+ * ------------------------------------------------------------------------ */
+
+#define CONSOLE_HIST_MAX 4
+#define CONSOLE_LINE_MAX 48
+
+static bool console_active;
+static char console_hist[CONSOLE_HIST_MAX][CONSOLE_LINE_MAX];
+static uint8_t console_hist_count;
+
+/* Compact 3x5 monospace bitmaps (row-major 15 bits) for ASCII 0x20..0x7A.
+ * Covers punctuation, digits, uppercase, and readable lowercase forms so
+ * os.remove("characters/natsuki.chr") fits comfortably inside 204x46 px. */
+static uint16_t console_glyph3x5(char ch)
+{
+    uint8_t c = (uint8_t)ch;
+    static const uint16_t digits[10] = {
+        31599, 11415, 29671, 29647, 23497, 31183, 31215, 29257, 31727, 31695
+    };
+    static const uint16_t upper[26] = {
+        11245, 27566, 31015, 27502, 31143, 31140, 31087, 23533, 29847,  9370,
+        23277, 18727, 24557, 24573, 31599, 27556, 31611, 27565, 31183, 29842,
+        23407, 23402, 23549, 23213, 23186, 29351
+    };
+    static const uint16_t lower[26] = {
+         3803, 18927,  3699,  7659,  3827, 11730,  3806, 18925,  8274,  4178,
+        18861, 18726,  7149,  7021,  3434,  7596,  3811,  3620,  3662, 10899,
+         5487,  5482,  5629,  5293,  5598,  7335
+    };
+    if (c >= '0' && c <= '9') return digits[c - '0'];
+    if (c >= 'A' && c <= 'Z') return upper[c - 'A'];
+    if (c >= 'a' && c <= 'z') return lower[c - 'a'];
+    switch (c) {
+        case ' ': return 0;
+        case '!': return 9346;
+        case '"': return 20480;
+        case '#': return 11263;
+        case '\'': return 8192;
+        case '(': return 10530;
+        case ')': return 17492;
+        case '*': return 21162;
+        case '+': return 1488;
+        case ',': return 18;
+        case '-': return 448;
+        case '.': return 2;
+        case '/': return 4772;
+        case ':': return 1040;
+        case ';': return 1042;
+        case '<': return 5265;
+        case '=': return 3640;
+        case '>': return 17490;
+        case '?': return 25218;
+        case '[': return 14954;
+        case '\\': return 17041;
+        case ']': return 17514;
+        case '_': return 7;
+        default: return 0;
+    }
+}
+
+static void console_draw_str(uint8_t *fb, const char *s, int x, int y,
+                             int max_x, uint8_t ink)
+{
+    for (; *s && x + 3 <= max_x; s++, x += 4) {
+        uint16_t bits = console_glyph3x5(*s);
+        for (int row = 0; row < 5; row++) {
+            for (int col = 0; col < 3; col++) {
+                if (bits & (1U << (14 - row * 3 - col))) {
+                    fb[(size_t)(y + row) * SCREEN_W + (size_t)(x + col)] = ink;
+                }
+            }
+        }
+    }
+}
+
+void render_console_clear(void)
+{
+    console_hist_count = 0;
+    memset(console_hist, 0, sizeof(console_hist));
+}
+
+void render_console_hide(void)
+{
+    console_active = false;
+}
+
+bool render_console_is_active(void)
+{
+    return console_active;
+}
+
+void render_console_set(const char *cmd, const char *out, bool clear_first)
+{
+    (void)cmd;
+    if (clear_first) {
+        render_console_clear();
+    }
+    console_active = true;
+    if (out && out[0] != '\0') {
+        if (console_hist_count >= CONSOLE_HIST_MAX) {
+            memmove(console_hist[0], console_hist[1],
+                    (CONSOLE_HIST_MAX - 1) * CONSOLE_LINE_MAX);
+            console_hist_count = CONSOLE_HIST_MAX - 1;
+        }
+        strncpy(console_hist[console_hist_count], out, CONSOLE_LINE_MAX - 1);
+        console_hist[console_hist_count][CONSOLE_LINE_MAX - 1] = '\0';
+        console_hist_count++;
+    }
+}
+
+void render_console_draw_step(const char *typing_cmd, size_t visible_chars)
+{
+    if (!console_active) {
+        return;
+    }
+    enum { CX = 2, CY = 2, CW = 204, CH = 46 };
+    uint8_t *fb = (uint8_t *)gfx_vbuffer;
+
+    /* Pick darkest paper and brightest ink from the live palette so the
+     * terminal stays legible under every scene/CG/credits palette. */
+    unsigned darkest = ~0U, brightest = 0;
+    uint8_t paper = 0, ink = 255;
+    for (unsigned i = 0; i < 256; i++) {
+        unsigned c = gfx_palette[i];
+        unsigned l = ((c >> 10) & 31U) * 3U + ((c >> 5) & 31U) * 6U + (c & 31U);
+        if (l < darkest) { darkest = l; paper = (uint8_t)i; }
+        if (l > brightest) { brightest = l; ink = (uint8_t)i; }
+    }
+
+    /* Translucent-look 75% stipple over scene background */
+    for (int y = CY; y < CY + CH; y++) {
+        uint8_t *row = fb + (size_t)y * SCREEN_W + CX;
+        for (int x = 0; x < CW; x++) {
+            if (((x + y) & 3) != 0) {
+                row[x] = paper;
+            }
+        }
+    }
+    /* Crisp thin border */
+    memset(fb + (size_t)CY * SCREEN_W + CX, ink, CW);
+    memset(fb + (size_t)(CY + CH - 1) * SCREEN_W + CX, ink, CW);
+    for (int y = CY; y < CY + CH; y++) {
+        fb[(size_t)y * SCREEN_W + CX] = ink;
+        fb[(size_t)y * SCREEN_W + CX + CW - 1] = ink;
+    }
+
+    /* Prompt row: "> <typing_cmd>_" */
+    char prompt[CONSOLE_LINE_MAX + 4];
+    prompt[0] = '>';
+    prompt[1] = ' ';
+    size_t plen = 2;
+    if (typing_cmd) {
+        size_t slen = strlen(typing_cmd);
+        if (visible_chars < slen) {
+            slen = visible_chars;
+        }
+        if (slen > CONSOLE_LINE_MAX - 2) {
+            slen = CONSOLE_LINE_MAX - 2;
+        }
+        memcpy(prompt + plen, typing_cmd, slen);
+        plen += slen;
+    }
+    prompt[plen++] = '_';
+    prompt[plen] = '\0';
+    console_draw_str(fb, prompt, CX + 4, CY + 4, CX + CW - 4, ink);
+
+    /* Subtle divider */
+    for (int x = CX + 3; x < CX + CW - 3; x += 2) {
+        fb[(size_t)(CY + 11) * SCREEN_W + (size_t)x] = ink;
+    }
+
+    /* History rows */
+    for (uint8_t i = 0; i < console_hist_count && i < CONSOLE_HIST_MAX; i++) {
+        console_draw_str(fb, console_hist[i], CX + 4, CY + 14 + (int)i * 8,
+                         CX + CW - 4, ink);
+    }
+}
+

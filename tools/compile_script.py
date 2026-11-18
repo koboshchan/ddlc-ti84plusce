@@ -1844,6 +1844,36 @@ class Compiler:
             self._emit_appeal_increment(winner_slot)
             self._emit_eyes_check()
             return
+        if node.label == "hideconsole":
+            self.asm.console(vnasm.VN_CONSOLE_HIDE)
+            return
+        if node.label in ("updateconsole", "updateconsole_old", "updateconsole_clearall"):
+            info = getattr(node, "arguments", None)
+            args = list(info.arguments) if info is not None and info.arguments else []
+            cmd_str = ""
+            out_str = ""
+            pos_vals = []
+            kw_vals = {}
+            for kw, val_src in args:
+                expr = _parse_condition_expr(val_src)
+                val = _const_scalar(expr) if expr is not None else None
+                if isinstance(val, str):
+                    if kw is None:
+                        pos_vals.append(val)
+                    else:
+                        kw_vals[kw] = val
+            if "text" in kw_vals:
+                cmd_str = kw_vals["text"]
+            elif len(pos_vals) >= 1:
+                cmd_str = pos_vals[0]
+            if "history" in kw_vals:
+                out_str = kw_vals["history"]
+            elif len(pos_vals) >= 2:
+                out_str = pos_vals[1]
+            op = (vnasm.VN_CONSOLE_SHOW_CLR if node.label == "updateconsole_clearall"
+                  else vnasm.VN_CONSOLE_SHOW)
+            self.asm.console(op, cmd_str, out_str)
+            return
         if node.label == "showpoem":
             info = getattr(node, "arguments", None)
             args = list(info.arguments) if info is not None and info.arguments else []
@@ -2537,6 +2567,9 @@ class Compiler:
                 if rhs in ("style.window", "style.default"):
                     self.asm.window_style(0)
                     return True
+            if var == "consolehistory" and isinstance(stmt.value, ast.List) and not stmt.value.elts:
+                self.asm.console(vnasm.VN_CONSOLE_CLEAR)
+                return True
             if var == "persistent.monikatopics" and isinstance(stmt.value, ast.List) and not stmt.value.elts:
                 for w in range(4):
                     self.asm.set(self._var_slot(f"persistent.ch30_m{w}"), 0)

@@ -1201,6 +1201,8 @@ static __attribute__((noinline)) bool run_debug_chapter_menu(vn_vm_t *vm)
             vm->sp = 0;
             vm->scene.speaker = VN_SPEAKER_NONE;
             vm->scene.text    = "";
+            render_console_hide();
+            render_console_clear();
             return true;
         }
     }
@@ -1471,6 +1473,7 @@ static void draw_dialogue_box(vn_vm_t *vm, const vn_scene_t *scene, size_t visib
             }
         }
     }
+    render_console_draw_step(NULL, 0);
 }
 static void noise_tick(vn_vm_t *vm, const vn_scene_t *scene, size_t visible) {
     if (!vm->noise_enabled) { noise_release(); noise_was_enabled=false; return; }
@@ -2153,6 +2156,49 @@ static void host_credits(void *ctx, uint8_t stage, bool clearall,
     credits_run(stage, clearall, clear_mask, scenes, player_name);
 }
 
+static void host_console(void *ctx, uint8_t op, const char *cmd, const char *out)
+{
+    vn_vm_t *vm = ctx;
+    if (op == VN_CONSOLE_HIDE) {
+        render_console_hide();
+        return;
+    }
+    if (op == VN_CONSOLE_CLEAR) {
+        render_console_clear();
+        return;
+    }
+
+    bool clr = (op == VN_CONSOLE_SHOW_CLR);
+    render_console_set(cmd, NULL, clr);
+    if (!vm || quit_requested) {
+        render_console_set(cmd, out, false);
+        return;
+    }
+
+    size_t len = cmd ? strlen(cmd) : 0;
+    for (size_t vis = 1; vis <= len && !quit_requested; vis += 2) {
+        input_t in;
+        input_poll(&in);
+        if (in.advance) {
+            break;
+        }
+        render_scene(&vm->scene);
+        draw_dialogue_box(vm, &vm->scene, SIZE_MAX);
+        render_console_draw_step(cmd, vis);
+        render_present(TRANS_CUT);
+        gfx_Wait();
+        msleep(20);
+    }
+
+    render_console_set(NULL, out, false);
+    if (!quit_requested) {
+        render_scene(&vm->scene);
+        draw_dialogue_box(vm, &vm->scene, SIZE_MAX);
+        render_present(TRANS_CUT);
+        host_pause(vm, 250);
+    }
+}
+
 /* .ctx is set to &vm once, in main(), after vm exists -- host_say needs it
  * to reach the pause menu (see wait_for_advance). */
 static vn_host_t host = {
@@ -2171,6 +2217,7 @@ static vn_host_t host = {
     .request_quit  = host_request_quit,
     .show_poem     = host_show_poem,
     .credits       = host_credits,
+    .console       = host_console,
     .ctx        = NULL,
 };
 

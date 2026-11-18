@@ -252,6 +252,9 @@ void vn_init(vn_vm_t *vm, const uint8_t *code, size_t code_size,
     vm->scene.speaker    = VN_SPEAKER_NONE;
     vm->scene.text       = "";
     actors_clear(&vm->scene);
+    if (host && host->console) {
+        host->console(host->ctx, VN_CONSOLE_CLEAR, NULL, NULL);
+    }
 }
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -901,6 +904,27 @@ bool vn_step(vn_vm_t *vm)
             }
             vm->scene.speaker = VN_SPEAKER_NONE;
             vm->scene.text    = "";
+            break;
+        }
+
+        case OP_CONSOLE: {
+            uint8_t subop = read_u8(vm);
+            const char *cmd = NULL;
+            const char *out = NULL;
+            if (subop == VN_CONSOLE_SHOW || subop == VN_CONSOLE_SHOW_CLR) {
+                uint16_t cmd_id = read_u16(vm);
+                uint16_t out_id = read_u16(vm);
+                if (vm->status == VN_RUNNING && vm->host->string) {
+                    cmd = vm->host->string(vm->host->ctx, cmd_id);
+                    out = vm->host->string(vm->host->ctx, out_id);
+                }
+            }
+            if (vm->status != VN_RUNNING) {
+                break;
+            }
+            if (vm->host->console) {
+                vm->host->console(vm->host->ctx, subop, cmd, out);
+            }
             break;
         }
 

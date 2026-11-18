@@ -52,6 +52,12 @@ OP_OVERLAY_FX = 0x27
 OP_LAYER_FX = 0x28
 OP_TRANS = 0x29
 OP_CREDITS = 0x2A
+OP_CONSOLE = 0x2B
+
+VN_CONSOLE_SHOW = 0
+VN_CONSOLE_SHOW_CLR = 1
+VN_CONSOLE_HIDE = 2
+VN_CONSOLE_CLEAR = 3
 
 VN_LAYER_NONE = 0
 VN_LAYER_DRIFT = 1
@@ -415,6 +421,14 @@ class Assembler:
             self._u8((clear_vars[i] if i < len(clear_vars) else 0xFF) & 0xFF)
         for i in range(13):
             self._u8((scenes[i] if i < len(scenes) else 0xFF) & 0xFF)
+
+    def console(self, op: int, cmd: str = "", out: str = "") -> None:
+        """Controls Monika's Python terminal overlay. See OP_CONSOLE."""
+        self._u8(OP_CONSOLE)
+        self._u8(op & 0xFF)
+        if op in (VN_CONSOLE_SHOW, VN_CONSOLE_SHOW_CLR):
+            self._u16(self.string(cmd))
+            self._u16(self.string(out))
 
     def ret(self) -> None:
         self._u8(OP_RETURN)

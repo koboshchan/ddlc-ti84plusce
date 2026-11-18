@@ -180,6 +180,13 @@ void render_wipe_left_reveal(void);
 void render_eyes_close_anim(void);
 void render_eyes_open_reveal(void);
 
+/** Monika's Act 2/3/Credits Python console overlay. */
+void render_console_set(const char *cmd, const char *out, bool clear_first);
+void render_console_hide(void);
+void render_console_clear(void);
+bool render_console_is_active(void);
+void render_console_draw_step(const char *typing_cmd, size_t visible_chars);
+
 /** Writes @p palette (256 RGB565 entries, e.g. from assets_scene_palette())
  * straight to @c gfx_palette -- an instant pop, visible immediately (no
  * fade in progress). */

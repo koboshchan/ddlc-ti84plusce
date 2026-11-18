@@ -195,6 +195,15 @@ enum vn_op {
     OP_LAYER_FX     = 0x28, /* fx:u8 param:u16 -- ShowLayer camera/layer transform effect */
     OP_TRANS        = 0x29, /* trans:u8 -- 0xFF holds updates; other commits pending update with trans */
     OP_CREDITS      = 0x2A, /* stage:u8 clearall_var:u8 clear[10]:u8 scenes[13]:u8 -- credits runner */
+    OP_CONSOLE      = 0x2B, /* op:u8 [cmd:u16 out:u16] -- Python console overlay */
+};
+
+/** Console overlay sub-operations for OP_CONSOLE / vn_host_t.console(). */
+enum vn_console_op {
+    VN_CONSOLE_SHOW     = 0,
+    VN_CONSOLE_SHOW_CLR = 1,
+    VN_CONSOLE_HIDE     = 2,
+    VN_CONSOLE_CLEAR    = 3,
 };
 
 /** Layer camera/viewport effects carried by OP_LAYER_FX / vn_scene_t.layer_fx. */
@@ -583,6 +592,7 @@ typedef struct {
     void (*show_poem)(void *ctx, uint8_t poem_id);
     void (*credits)(void *ctx, uint8_t stage, bool clearall,
                     uint16_t clear_mask, const uint8_t *scenes);
+    void (*console)(void *ctx, uint8_t op, const char *cmd, const char *out);
 
     void *ctx;
 } vn_host_t;
