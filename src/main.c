@@ -2335,13 +2335,24 @@ int main(void)
     host.ctx = &vm;
 
     /* Initialize vm with variable defaults and persistent state early so
-     * startup splash and disclaimer checks have access to persistent.playthrough. */
+     * splashscreen checks (tos/s_kill_early/ghost_menu) and disclaimer have
+     * persistent.playthrough before any splash graphics run. */
     memset(vm.vars, 0, sizeof(vm.vars));
     assets_apply_var_defaults(&vm);
     persist_load(&vm);
+
+    /* 1. splash.rpyc boot checks: first-run TOS/consent, s_kill_early (sayori.chr
+     * deleted -> early end & quit), and 1-in-64 Act 2 ghost menu roll. */
+    run_splashscreen_check(&vm);
+    if (quit_requested) {
+        cgpack_end();
+        render_end();
+        return 0;
+    }
+
     int16_t playthrough = vm.vars[VN_PLAYTHROUGH_VAR];
 
-    /* 1. Team Salvato Logo Splash */
+    /* 2. Team Salvato Logo Splash */
     run_splash_screens();
     if (quit_requested) {
         cgpack_end();
@@ -2349,17 +2360,9 @@ int main(void)
         return 0;
     }
 
-    /* 2. Splash Warning: "This game is not suitable for children or those who are easily disturbed."
+    /* 3. Splash Warning: "This game is not suitable for children or those who are easily disturbed."
      * In Act 2 (playthrough == 2), there is a 1 in 4 chance of a corrupted variant. */
     run_splash_warning(playthrough);
-    if (quit_requested) {
-        cgpack_end();
-        render_end();
-        return 0;
-    }
-
-    /* 4. Easter egg / ghost menu / s_kill_early check */
-    run_splashscreen_check(&vm);
     if (quit_requested) {
         cgpack_end();
         render_end();

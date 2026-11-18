@@ -174,6 +174,38 @@ def audit_bundle(bundle_path: Path, engine_path: Path | None = None) -> dict:
     apps = [r for r in rows if r["type"] == 21]
     all_pass = not errors and len(mains) == 1 and bool(apps) and all(r["passes"] for r in rows)
 
+    def _category(row: dict) -> str:
+        name = row["name"]
+        if name in ("DDLC", "DDLC0", "DDLC1"):
+            return "engine"
+        if name.startswith("DSPR"):
+            return "sprites"
+        if name.startswith("DSCN"):
+            return "scenes"
+        if name.startswith("DSCR"):
+            return "scripts"
+        if name.startswith("DMOT") or name == "DLUTQ":
+            return "ch5_motion"
+        if name.startswith("DCG"):
+            return "cg_palettes"
+        if name.startswith("DTIL") or name == "DPALTTL":
+            return "title"
+        if name.startswith("DPOEM") or name == "DSTKRS":
+            return "poems"
+        return "ui_fonts_tables"
+
+    size_table: dict[str, dict] = {}
+    for row in rows:
+        cat = _category(row)
+        entry = size_table.setdefault(cat, {"count": 0, "data_bytes": 0, "max_var_bytes": 0})
+        entry["count"] += 1
+        entry["data_bytes"] += row["data_bytes"]
+        if row["data_bytes"] > entry["max_var_bytes"]:
+            entry["max_var_bytes"] = row["data_bytes"]
+
+    flash_budget_bytes = 3 * 1024 * 1024
+    flash_total_bytes = sum(r["data_bytes"] for r in rows)
+
     return {
         "bundle": str(bundle_path),
         "sha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
@@ -184,6 +216,10 @@ def audit_bundle(bundle_path: Path, engine_path: Path | None = None) -> dict:
         "engine_unsplit": not dependency_checks,
         "all_pass": all_pass,
         "variable_count": len(rows),
+        "flash_total_bytes": flash_total_bytes,
+        "flash_budget_bytes": flash_budget_bytes,
+        "flash_headroom_bytes": flash_budget_bytes - flash_total_bytes,
+        "size_table": size_table,
         "main": mains,
         "largest_appvar": max(apps, key=lambda r: r["data_bytes"]) if apps else None,
         "variables": rows,
@@ -204,9 +240,15 @@ def main() -> int:
 
     summary = {
         k: result[k]
-        for k in ("all_pass", "variable_count", "main", "largest_appvar", "errors")
+        for k in ("all_pass", "variable_count", "flash_total_bytes",
+                  "flash_headroom_bytes", "main", "largest_appvar", "errors")
     }
     print(json.dumps(summary))
+    print("\nCategory           Count    Total Bytes   Max Var")
+    print("----------------  ------  -------------  --------")
+    for cat, stats in sorted(result["size_table"].items(), key=lambda kv: -kv[1]["data_bytes"]):
+        print(f"{cat:<16}  {stats['count']:>6}  {stats['data_bytes']:>13,}  {stats['max_var_bytes']:>8,}")
+    print(f"{'TOTAL':<16}  {result['variable_count']:>6}  {result['flash_total_bytes']:>13,}  (headroom: {result['flash_headroom_bytes']:,} B / 3 MiB)")
     return 0 if result["all_pass"] else 1
 
 

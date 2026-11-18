@@ -451,18 +451,6 @@ static void draw_background(uint8_t bg)
     if (bg == VN_NO_SPRITE || !assets_scene(bg, (uint8_t *)gfx_vbuffer)) {
         gfx_SetColor(COL_BLACK);
         gfx_FillRectangle_NoClip(0, 0, SCREEN_W, SCENE_H);
-
-        /* TEMP diagnostic for the still-open "New Game shows a black
-         * screen" bug -- draw_background() has no other way to surface
-         * *why* the real background didn't render (VN_NO_SPRITE, meaning
-         * scene->background was never set to a real id, vs. a specific id
-         * that assets_scene() itself couldn't resolve/open). Remove once
-         * that bug is root-caused. */
-        char diag[24];
-        sprintf(diag, bg == VN_NO_SPRITE ? "bg=NONE (0xFF)" : "bg=%u (load failed)", bg);
-        fontlib_SetForegroundColor(COL_WHITE);
-        fontlib_SetCursorPosition(4, 4);
-        fontlib_DrawString(diag);
     }
 }
 
