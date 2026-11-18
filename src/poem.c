@@ -6,6 +6,7 @@
 #include "poem.h"
 
 #include "assets.h"
+#include "perf_memory.h"
 #include "render.h"
 #include "text.h"
 
@@ -42,7 +43,7 @@ typedef struct {
     bool    glitch;
 } poem_word_t;
 
-static poem_word_t poem_words[POEM_WORDS_CAP];
+static poem_word_t *poem_words;
 static uint16_t     poem_word_count;
 
 /* Which words are still available to draw this game -- indices into
@@ -51,8 +52,8 @@ static uint16_t     poem_word_count;
  * range, an O(1) draw-without-replacement instead of rejection sampling
  * (which would slow down a lot near the end: 20 rounds * 10 draws consumes
  * 200 of 228 words, an 88% pool by the last round). */
-static uint16_t pool[POEM_WORDS_CAP];
-static uint16_t pool_remaining;
+static uint16_t *pool;
+static uint16_t  pool_remaining;
 
 /** Reads DPOEM (see docs/FORMAT.md's "Poem minigame") into poem_words[].
  * Reads and copies out fully before this handle closes or any other AppVar
@@ -67,12 +68,29 @@ static bool load_words(void)
 
     const uint8_t *data = ti_GetDataPtr(handle);
     uint16_t total = (uint16_t)(data[0] | ((uint16_t)data[1] << 8));
+    uint16_t cap   = total < POEM_WORDS_CAP ? total : POEM_WORDS_CAP;
+    if (cap == 0) {
+        ti_Close(handle);
+        return false;
+    }
+
+    poem_words = malloc((size_t)cap * sizeof(*poem_words));
+    pool = malloc((size_t)cap * sizeof(*pool));
+    if (!poem_words || !pool) {
+        free(poem_words);
+        free(pool);
+        poem_words = NULL;
+        pool = NULL;
+        ti_Close(handle);
+        return false;
+    }
+
     size_t   pos   = 2;
     uint16_t kept  = 0;
 
     for (uint16_t i = 0; i < total; i++) {
         uint8_t len = data[pos++];
-        if (kept < POEM_WORDS_CAP) {
+        if (kept < cap) {
             uint8_t copy_len = len < POEM_WORD_MAX ? len : POEM_WORD_MAX;
             memcpy(poem_words[kept].word, data + pos, copy_len);
             poem_words[kept].word[copy_len] = '\0';
@@ -82,7 +100,7 @@ static bool load_words(void)
         uint8_t s = data[pos], n = data[pos + 1], y = data[pos + 2];
         pos += 3;
 
-        if (kept < POEM_WORDS_CAP) {
+        if (kept < cap) {
             poem_words[kept].sPoint = s;
             poem_words[kept].nPoint = n;
             poem_words[kept].yPoint = y;
@@ -93,7 +111,14 @@ static bool load_words(void)
 
     ti_Close(handle);
     poem_word_count = kept;
-    return poem_word_count > 0;
+    if (poem_word_count == 0) {
+        free(poem_words);
+        free(pool);
+        poem_words = NULL;
+        pool = NULL;
+        return false;
+    }
+    return true;
 }
 
 static void pool_init(void)
@@ -302,6 +327,7 @@ uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal, int16_
     pool_init();
 
     uint16_t totals[3] = { 0, 0, 0 };
+    uint8_t winner = 0;
     bool poemgame_glitched = false;
     bool played_baa = false;
 
@@ -342,7 +368,7 @@ uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal, int16_
             poem_input_t in;
             poem_poll(&in);
             if (in.quit) {
-                return 0;
+                goto poem_done;
             }
             dirty = in.up || in.down || in.left || in.right;
             if (in.up) {
@@ -411,7 +437,6 @@ uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal, int16_
         totals[2] += picked->yPoint;
     }
 
-    uint8_t winner = 0;
     if (playthrough > 0) {
         winner = (totals[1] > totals[2]) ? 1 : 2;
     } else {
@@ -429,6 +454,13 @@ uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal, int16_
     if (s_appeal) *s_appeal = (int16_t)totals[0];
     if (n_appeal) *n_appeal = (int16_t)totals[1];
     if (y_appeal) *y_appeal = (int16_t)totals[2];
+
+poem_done:
+    free(poem_words);
+    free(pool);
+    poem_words = NULL;
+    pool = NULL;
+    poem_word_count = 0;
     return winner;
 }
 
@@ -469,7 +501,11 @@ void poem_view(uint8_t poem_id)
     const dpoem_entry_t *poem = (const dpoem_entry_t *)(data + offsets[poem_id]);
 
     /* Split and word-wrap poem text into lines */
-    poem_line_slice_t lines[POEM_VIEW_MAX_LINES];
+    poem_line_slice_t *lines = malloc(POEM_VIEW_MAX_LINES * sizeof(*lines));
+    if (!lines) {
+        ti_Close(handle);
+        return;
+    }
     uint16_t total_lines = 0;
 
     const char *p = poem->text;
@@ -543,11 +579,9 @@ void poem_view(uint8_t poem_id)
                 uint16_t l_idx = scroll + i;
                 if (l_idx >= total_lines) break;
                 if (lines[l_idx].len > 0) {
-                    char buf[96];
-                    size_t l = lines[l_idx].len < sizeof(buf) - 1 ? lines[l_idx].len : sizeof(buf) - 1;
-                    memcpy(buf, lines[l_idx].start, l);
-                    buf[l] = '\0';
-                    render_text(buf, POEM_TEXT_X, POEM_TEXT_Y0 + i * POEM_LINE_H, COL_BLACK);
+                    fontlib_SetForegroundColor(COL_BLACK);
+                    fontlib_SetCursorPosition(POEM_TEXT_X, (uint8_t)(POEM_TEXT_Y0 + i * POEM_LINE_H));
+                    fontlib_DrawStringL(lines[l_idx].start, lines[l_idx].len);
                 }
             }
 
@@ -595,5 +629,6 @@ void poem_view(uint8_t poem_id)
             }
         }
     }
+    free(lines);
     ti_Close(handle);
 }

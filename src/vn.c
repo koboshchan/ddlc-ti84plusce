@@ -246,6 +246,72 @@ void vn_init(vn_vm_t *vm, const uint8_t *code, size_t code_size,
     actors_clear(&vm->scene);
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#endif
+static void exec_menu(vn_vm_t *vm, bool conditional)
+{
+    if (conditional && !vm->host->menu) {
+        vm->status = VN_ERR_BOUNDS;
+        return;
+    }
+
+    const char *choices[VN_MAX_CHOICES];
+    char        choice_bufs[VN_MAX_CHOICES][64];
+    uint32_t    targets[VN_MAX_CHOICES];
+
+    uint8_t count = read_u8(vm);
+    if (vm->status != VN_RUNNING) {
+        return;
+    }
+
+    uint8_t shown = 0;
+    for (uint8_t i = 0; i < count; i++) {
+        bool match = true;
+        if (conditional) {
+            uint8_t cond_count = read_u8(vm);
+            for (uint8_t c = 0; c < cond_count; c++) {
+                uint8_t var = read_u8(vm);
+                uint8_t cmp = read_u8(vm);
+                int16_t val = read_i16(vm);
+                if (!compare(vm->vars[var], cmp, val)) {
+                    match = false;
+                }
+            }
+        }
+        uint16_t text = read_u16(vm);
+        uint32_t tgt  = read_u24(vm);
+        if (vm->status != VN_RUNNING) {
+            break;
+        }
+        /* Options past VN_MAX_CHOICES are parsed but not offered, so
+         * an oversized menu still leaves pc at the next instruction.
+         * Copy string into dedicated buffer to prevent pointer aliasing
+         * if multiple choices undergo [player] tag substitutions. */
+        if (match && shown < VN_MAX_CHOICES) {
+            const char *s = vm->host->string(vm->host->ctx, text);
+            strncpy(choice_bufs[shown], s ? s : "", sizeof(choice_bufs[shown]) - 1);
+            choice_bufs[shown][sizeof(choice_bufs[shown]) - 1] = '\0';
+            choices[shown] = choice_bufs[shown];
+            targets[shown] = tgt;
+            shown++;
+        }
+    }
+    if (vm->status != VN_RUNNING || shown == 0) {
+        return;
+    }
+    if (!vm->host->menu) {
+        vm->status = VN_ERR_BOUNDS;
+        return;
+    }
+
+    uint8_t picked = vm->host->menu(vm->host->ctx, &vm->scene, choices, shown);
+    if (picked >= shown) {
+        picked = 0;
+    }
+    vm->pc = targets[picked];
+}
+
 bool vn_step(vn_vm_t *vm)
 {
     if (vm->status != VN_RUNNING) {
@@ -362,105 +428,13 @@ bool vn_step(vn_vm_t *vm)
             break;
         }
 
-        case OP_MENU: {
-            const char *choices[VN_MAX_CHOICES];
-            char        choice_bufs[VN_MAX_CHOICES][64];
-            uint32_t    targets[VN_MAX_CHOICES];
-
-            uint8_t count = read_u8(vm);
-            if (vm->status != VN_RUNNING) {
-                break;
-            }
-
-            uint8_t shown = 0;
-            for (uint8_t i = 0; i < count; i++) {
-                uint16_t text = read_u16(vm);
-                uint32_t tgt  = read_u24(vm);
-                if (vm->status != VN_RUNNING) {
-                    break;
-                }
-                /* Options past VN_MAX_CHOICES are parsed but not offered, so
-                 * an oversized menu still leaves pc at the next instruction.
-                 * Copy string into dedicated buffer to prevent pointer aliasing
-                 * if multiple choices undergo [player] tag substitutions. */
-                if (shown < VN_MAX_CHOICES) {
-                    const char *s = vm->host->string(vm->host->ctx, text);
-                    strncpy(choice_bufs[shown], s ? s : "", sizeof(choice_bufs[shown]) - 1);
-                    choice_bufs[shown][sizeof(choice_bufs[shown]) - 1] = '\0';
-                    choices[shown] = choice_bufs[shown];
-                    targets[shown] = tgt;
-                    shown++;
-                }
-            }
-            if (vm->status != VN_RUNNING || shown == 0) {
-                break;
-            }
-
-            uint8_t picked = vm->host->menu(vm->host->ctx, &vm->scene,
-                                            choices, shown);
-            if (picked >= shown) {
-                picked = 0;
-            }
-            vm->pc = targets[picked];
+        case OP_MENU:
+            exec_menu(vm, false);
             break;
-        }
 
-        case OP_MENU_COND: {
-            if (vm->status != VN_RUNNING) {
-                break;
-            }
-            if (!vm->host->menu) {
-                vm->status = VN_ERR_BOUNDS;
-                break;
-            }
-
-            const char *choices[VN_MAX_CHOICES];
-            char        choice_bufs[VN_MAX_CHOICES][64];
-            uint32_t    targets[VN_MAX_CHOICES];
-
-            uint8_t count = read_u8(vm);
-            if (vm->status != VN_RUNNING) {
-                break;
-            }
-
-            uint8_t shown = 0;
-            for (uint8_t i = 0; i < count; i++) {
-                uint8_t cond_count = read_u8(vm);
-                bool match = true;
-                for (uint8_t c = 0; c < cond_count; c++) {
-                    uint8_t var = read_u8(vm);
-                    uint8_t cmp = read_u8(vm);
-                    int16_t val = read_i16(vm);
-                    if (!compare(vm->vars[var], cmp, val)) {
-                        match = false;
-                    }
-                }
-                uint16_t text = read_u16(vm);
-                uint32_t tgt  = read_u24(vm);
-                if (vm->status != VN_RUNNING) {
-                    break;
-                }
-                if (match && shown < VN_MAX_CHOICES) {
-                    const char *s = vm->host->string(vm->host->ctx, text);
-                    strncpy(choice_bufs[shown], s ? s : "", sizeof(choice_bufs[shown]) - 1);
-                    choice_bufs[shown][sizeof(choice_bufs[shown]) - 1] = '\0';
-                    choices[shown] = choice_bufs[shown];
-                    targets[shown] = tgt;
-                    shown++;
-                }
-            }
-            if (vm->status != VN_RUNNING || shown == 0) {
-                break;
-            }
-
-            uint8_t picked = vm->host->menu(vm->host->ctx, &vm->scene,
-                                            choices, shown);
-            if (picked >= shown) {
-                picked = 0;
-            }
-            vm->pc = targets[picked];
+        case OP_MENU_COND:
+            exec_menu(vm, true);
             break;
-        }
 
         case OP_POEM_VIEW: {
             uint8_t poem_id = read_u8(vm);

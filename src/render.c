@@ -94,12 +94,25 @@ void render_end(void)
 #define FONT_DEFAULT 0
 #define FONT_NAME    1
 
+static fontlib_font_t *fonts[4];
+static bool fonts_probed;
 static fontlib_font_t *active_font = NULL;
 static uint8_t active_font_index;
 
+static void ensure_fonts(void)
+{
+    if (!fonts_probed) {
+        fonts_probed = true;
+        for (uint8_t i = 0; i < 4; i++) {
+            fonts[i] = fontlib_GetFontByIndex("DFONTS", i);
+        }
+    }
+}
+
 static void set_font(uint8_t index)
 {
-    fontlib_font_t *f = fontlib_GetFontByIndex("DFONTS", index);
+    ensure_fonts();
+    fontlib_font_t *f = (index < 4) ? fonts[index] : NULL;
     if (f) {
         fontlib_SetFont(f, 0);
         active_font = f;
@@ -145,22 +158,18 @@ static unsigned string_width(const char *s)
     return w;
 }
 
-/* 256 bytes comfortably covers a full dialogue line even in narrow proportional
- * fonts like Aller_Rg without truncation or UTF-8 slicing. Off-screen coordinate
- * guards prevent unsigned 24-bit integer wrap into arbitrary memory in fontlib. */
+/* Off-screen coordinate guards prevent unsigned 24-bit integer wrap into
+ * arbitrary memory in fontlib. Zero-copy slice draw via fontlib_DrawStringL. */
 static void print_slice(const char *str, size_t len, int x, int y)
 {
-    if (!active_font || x < 0 || x >= SCREEN_W || y < 0 || y >= SCREEN_H) {
+    if (!active_font || !str || len == 0 || x < 0 || x >= SCREEN_W || y < 0 || y >= SCREEN_H) {
         return;
     }
-    char buf[256];
-    if (len >= sizeof(buf)) {
-        len = sizeof(buf) - 1;
+    if (len > 255) {
+        len = 255;
     }
-    memcpy(buf, str, len);
-    buf[len] = '\0';
     fontlib_SetCursorPosition((unsigned int)x, (uint8_t)y);
-    fontlib_DrawString(buf);
+    fontlib_DrawStringL(str, len);
 }
 
 /* Outline masks are cardinal-dilated at asset build time (font indexes 2/3).
@@ -170,7 +179,7 @@ static void print_slice(const char *str, size_t len, int x, int y)
 static void print_slice_outlined(const char *str, size_t len, int x, int y,
                                  uint8_t fill, uint8_t outline)
 {
-    fontlib_font_t *expanded = fontlib_GetFontByIndex("DFONTS", active_font_index + 2);
+    fontlib_font_t *expanded = (active_font_index < 2) ? fonts[active_font_index + 2] : NULL;
     if (expanded && x > 0 && y > 0 &&
         x + (int)measure(NULL, str, len) + 1 < SCREEN_W &&
         y + fontlib_GetCurrentFontHeight() + 1 < SCREEN_H) {
@@ -689,9 +698,8 @@ static bool plate_capture(const vn_actor_t *a, int slot)
  * source call's arguments map onto this.
  * ------------------------------------------------------------------------ */
 
-#define TEAR_MAX_CHUNKS 64  /* generous headroom over every real call site
-                             * (8 or 20 chunks) -- a chunk count above this
-                             * clamps rather than overflowing tear_offset[]. */
+#define TEAR_MAX_CHUNKS 32  /* headroom over real call sites (8 or 20 chunks)
+                             * -- a chunk count above this clamps cleanly. */
 
 /* Independent of vn.c's OP_RANDOM state (vn_vm_t.rng_state) on purpose:
  * this drives a cosmetic screen effect with no bearing on story branching,
@@ -784,7 +792,7 @@ static void apply_tear(const vn_scene_t *scene, unsigned t)
         if (y1 > SCENE_H) {
             y1 = SCENE_H;
         }
-        static uint8_t tear_scratch[SCREEN_W];
+        uint8_t *tear_scratch = (uint8_t *)gfx_vbuffer + (size_t)SCENE_H * SCREEN_W;
         for (int y = y0; y < y1; y++) {
             uint8_t *row = (uint8_t *)gfx_vbuffer + (size_t)y * SCREEN_W;
             if (off_wrapped == 0) {
@@ -826,6 +834,17 @@ static int mover_slot = -1;
  * time instead and papered over this by redrawing for 500ms regardless. */
 static void scene_obscured(void);
 
+static unsigned ticks_to_ms(clock_t ticks)
+{
+    uint32_t dt = (uint32_t)ticks;
+#ifdef __TICE__
+    _Static_assert(CLOCKS_PER_SEC == 32768, "32-bit shift requires 32768Hz clock");
+    return (unsigned)(((dt >> 15) * 1000UL) + (((dt & 0x7FFFUL) * 125UL) >> 12));
+#else
+    return (unsigned)(((uint64_t)dt * 1000ULL) / CLOCKS_PER_SEC);
+#endif
+}
+
 void render_scene(const vn_scene_t *scene)
 {
     noise_restore();
@@ -838,9 +857,8 @@ void render_scene(const vn_scene_t *scene)
      * menu overlay) rather than one central per-frame driver like the title
      * screen has, so zoom_fallback_offset()/hop_offset() sample the clock
      * themselves here rather than threading a @p t parameter through every
-     * one of those call sites. 64-bit multiply prevents clock() * 1000 from
-     * overflowing 32-bit arithmetic after ~131 seconds of device uptime. */
-    unsigned t = (unsigned)(((uint64_t)clock() * 1000ULL) / CLOCKS_PER_SEC);
+     * one of those call sites. */
+    unsigned t = ticks_to_ms(clock());
 
     /* Capturing the plate needs the actor's rear neighbours already drawn
      * and the actor itself not yet -- so it happens mid-loop, at the slot
@@ -870,6 +888,7 @@ void render_scene(const vn_scene_t *scene)
             }
         }
     }
+    assets_sprite_end();
 
     mover_slot  = (movers == 1) ? first_mover : -1;
     plate_valid = captured && movers == 1 && first_mover == capture_at;
@@ -964,7 +983,7 @@ static void render_scene_moving(const vn_scene_t *scene)
     }
     plate_blit(false);
 
-    unsigned t = (unsigned)(((uint64_t)clock() * 1000ULL) / CLOCKS_PER_SEC);
+    unsigned t = ticks_to_ms(clock());
     anim_moving = false;
 
     for (int i = plate_slot; i < VN_MAX_CHARS; i++) {
@@ -973,6 +992,7 @@ static void render_scene_moving(const vn_scene_t *scene)
             draw_actor(actor, t);
         }
     }
+    assets_sprite_end();
 
     scene_settled = !anim_moving;
     if (scene_settled) {
@@ -994,6 +1014,11 @@ void render_invalidate_scene(void)
      * skip" shortcut. See its own doc comment in render.h for why this
      * exists (src/cgpack.c's availability changing mid-scene). */
     have_drawn_once = false;
+}
+
+bool render_scene_is_settled(uint8_t bg_id)
+{
+    return have_drawn_once && scene_settled && !ch5_motion_active(bg_id);
 }
 
 void render_scene_lazy(const vn_scene_t *scene)
@@ -1063,7 +1088,7 @@ void render_box(const vn_scene_t *scene, const char *speaker,
         if (scene->window_hidden && text != NULL && text[0] != '\0') {
             int sw = (int)string_width(text);
             /* Ren'Py AST uses xalign 0.8, yalign 0.5 for floating text like s_kill_early */
-            int cx = (int)(0.80f * (SCREEN_W - sw));
+            int cx = ((SCREEN_W - sw) * 4) / 5;
             if (cx < 6) {
                 cx = 6;
             }
@@ -1164,6 +1189,7 @@ void render_box(const vn_scene_t *scene, const char *speaker,
     }
 }
 
+#ifdef DDLC_DEBUG_MENU
 /* Debug menu's dialogue text-render test -- runs the real text_wrap() +
  * print_slice_outlined() pipeline render_box() itself uses (rather than a
  * plain gfx_PrintStringXY() call) against a couple of known-tricky
@@ -1235,6 +1261,7 @@ void render_debug_bg_preview(uint8_t bg_id)
     gfx_SetColor(COL_BLACK);
     gfx_FillRectangle_NoClip(0, SCENE_H, SCREEN_W, BOX_H);
 }
+#endif
 
 void render_menu(const char *const *choices, uint8_t count, uint8_t selected)
 {

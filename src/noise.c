@@ -12,7 +12,7 @@
 static ti_var_t h[1];
 static const uint8_t *meta;
 static uint8_t colors[32];
-static uint16_t cached_palette[256];
+static uint32_t cached_palette_hash;
 static bool palette_valid;
 /* Proven over all 65535 nonzero LFSR starting states: <=4988 selected
  * blocks in 19200 draws with coverage<=4. Four original bytes/block. */
@@ -21,12 +21,13 @@ static uint8_t *undo;
 static unsigned undo_size,undo_coverage,undo_rows;
 static uint16_t undo_seed;
 static uint8_t *undo_buffer;
+#ifdef NOISE_HOST_GOLDEN
 /* Native eZ80 unsigned is 24-bit. Keeping the recurrence native avoids
  * 16-bit helper calls, and forced inlining overrides -fno-inline-functions. */
 static __attribute__((always_inline)) inline unsigned noise_step_native(unsigned s) {
     return (s >> 1) ^ ((0u - (s & 1u)) & 0xB400u);
 }
-#ifndef NOISE_HOST_GOLDEN
+#else
 /* CEdev unsigned/pointer fields are 3-byte native ADL words. ASM preserves
  * IX/IY and uses only bounded 160-column, 10-block-row stripes. */
 typedef struct { uint8_t *fb,*saved; unsigned seed,coverage; const uint8_t *mask,*colors; unsigned rows; } noise_asm_context;
@@ -71,8 +72,14 @@ bool noise_begin(uint8_t scene) {
     }
     meta=ti_GetDataPtr(h[0]);
     (void)scene; /* explicit VM lifetime flag, never inferred from scene */
-    if (palette_valid && !memcmp(cached_palette, gfx_palette, sizeof cached_palette)) return true;
-    memcpy(cached_palette, gfx_palette, sizeof cached_palette);
+    uint32_t hash = 2166136261UL;
+    const uint8_t *pal_bytes = (const uint8_t *)gfx_palette;
+    for (unsigned b = 0; b < 512; b++) {
+        hash ^= pal_bytes[b];
+        hash *= 16777619UL;
+    }
+    if (palette_valid && hash == cached_palette_hash) return true;
+    cached_palette_hash = hash;
     palette_valid=true;
     for(k=0;k<32;k++) {
         unsigned target = k<16?0:31-(k-16)*23/15;

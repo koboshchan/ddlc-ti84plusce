@@ -206,6 +206,12 @@ bool assets_draw_sprite_scaled(uint16_t id, int center_x, int feet_y, unsigned i
  * allocation this program makes); exposed for any other caller that is about
  * to want a lot of memory at once.
  */
+/**
+ * Closes any cached sprite AppVar handle held open across a scene's actor
+ * draws, and clears any transient zoom state. Called automatically at the end
+ * of actor composition and on chunk/scene transitions.
+ */
+void assets_sprite_end(void);
 void assets_zoom_cache_clear(void);
 
 /**

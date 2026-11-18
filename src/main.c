@@ -74,6 +74,18 @@ typedef struct {
     bool quit;      /* clear       */
 } input_t;
 
+static unsigned main_ticks_to_ms(clock_t ticks)
+{
+    uint32_t dt = (uint32_t)ticks;
+#ifdef __TICE__
+    _Static_assert(CLOCKS_PER_SEC == 32768, "32-bit shift requires 32768Hz clock");
+    return (unsigned)(((dt >> 15) * 1000UL) + (((dt & 0x7FFFUL) * 125UL) >> 12));
+#else
+    return (unsigned)(((uint64_t)dt * 1000ULL) / CLOCKS_PER_SEC);
+#endif
+}
+
+#ifdef DDLC_DEBUG_MENU
 /* Set once the Konami code below has been entered; consumed (and cleared)
  * by whichever screen notices it next -- see run_debug_menu(). Global like
  * quit_requested because the same sequence has to be recognized from both
@@ -115,6 +127,7 @@ static void konami_check(const input_t *in)
         match = (pressed == sequence[0]) ? 1 : 0;
     }
 }
+#endif
 
 static void input_poll(input_t *in)
 {
@@ -149,7 +162,9 @@ static void input_poll(input_t *in)
         quit_requested = true;
     }
 
+#ifdef DDLC_DEBUG_MENU
     konami_check(in);
+#endif
 }
 
 /* ---------------------------------------------------------------------------
@@ -186,7 +201,7 @@ static uint8_t run_game_menu(vn_vm_t *vm, uint8_t initial_mode, bool is_in_game)
     assets_use_title_palette(true);
 
     for (;;) {
-        unsigned elapsed = (unsigned)((clock() - start) * 1000UL / CLOCKS_PER_SEC);
+        unsigned elapsed = main_ticks_to_ms(clock() - start);
         render_game_menu(mode, focused_pane, sidebar_selected, slot_selected, is_in_game, elapsed);
         render_present(TRANS_CUT);
         gfx_Wait();
@@ -350,6 +365,7 @@ static char player_name[NAME_MAX_LEN + 1] = "you";
 static const char *speaker_display_name(const vn_vm_t *vm, uint8_t speaker);
 static const char *substitute_dialogue_tags(const vn_vm_t *vm, const char *s);
 
+#ifdef DDLC_DEBUG_MENU
 /** Runs the real poem minigame screen (the same src/poem.c code a `call
  * poem` site drives) and shows its result -- winner plus every character's
  * cumulative appeal total, the same values a chapter-indexed `call poem`
@@ -449,16 +465,17 @@ static __attribute__((noinline)) void run_debug_tags_test(vn_vm_t *vm)
     const uint8_t num_cases = (uint8_t)(sizeof(test_cases) / sizeof(test_cases[0]));
 
     /* If vm is NULL (e.g. debug menu accessed from title screen before game start),
-     * use a static fallback VM so tag evaluation and glitch buffer are valid. */
-    static vn_vm_t fallback_vm;
+     * allocate a temporary fallback VM so tag evaluation and glitch buffer are valid. */
+    vn_vm_t *fallback_vm = NULL;
     vn_vm_t *active_vm = vm;
     char saved_glitch[VN_GLITCH_MAX + 1];
     memset(saved_glitch, 0, sizeof(saved_glitch));
 
     if (!active_vm) {
-        memset(&fallback_vm, 0, sizeof(fallback_vm));
-        strcpy(fallback_vm.glitch_buf, "bbbbbb");
-        active_vm = &fallback_vm;
+        fallback_vm = calloc(1, sizeof(*fallback_vm));
+        if (!fallback_vm) return;
+        strcpy(fallback_vm->glitch_buf, "bbbbbb");
+        active_vm = fallback_vm;
     } else {
         strncpy(saved_glitch, active_vm->glitch_buf, sizeof(saved_glitch) - 1);
         if (active_vm->glitch_buf[0] == '\0') {
@@ -525,6 +542,7 @@ static __attribute__((noinline)) void run_debug_tags_test(vn_vm_t *vm)
         }
     }
 
+    free(fallback_vm);
     if (vm && saved_glitch[0]) {
         strncpy(vm->glitch_buf, saved_glitch, sizeof(vm->glitch_buf));
     }
@@ -896,7 +914,7 @@ static __attribute__((noinline)) void run_debug_asm_test(void)
             for (int it = 0; it < 5; it++) {
                 fast_cg_upscale_2x(fb, cg_src);
             }
-            t_cg = (unsigned)((clock() - start) * 1000UL / CLOCKS_PER_SEC / 5);
+            t_cg = main_ticks_to_ms(clock() - start) / 5;
 
             for (int y = 0; y < 60; y++) {
                 for (int x = 0; x < 160; x++) {
@@ -913,16 +931,16 @@ static __attribute__((noinline)) void run_debug_asm_test(void)
 
         /* 2. Verify fast_rect_blit */
         {
-            static uint8_t blit_src[32 * 32];
-            for (int i = 0; i < 32 * 32; i++) blit_src[i] = (uint8_t)(i + 7);
             uint8_t *fb = (uint8_t *)gfx_vbuffer;
+            uint8_t *blit_src = fb + 320 * 180;
+            for (int i = 0; i < 32 * 32; i++) blit_src[i] = (uint8_t)(i + 7);
             memset(fb, 0, 320 * 40);
 
             clock_t start = clock();
             for (int it = 0; it < 50; it++) {
                 fast_rect_blit(fb, 320, blit_src, 32, 32, 32);
             }
-            t_blit = (unsigned)((clock() - start) * 1000UL / CLOCKS_PER_SEC / 50);
+            t_blit = main_ticks_to_ms(clock() - start) / 50;
 
             for (int r = 0; r < 32; r++) {
                 for (int c = 0; c < 32; c++) {
@@ -944,7 +962,7 @@ static __attribute__((noinline)) void run_debug_asm_test(void)
             for (int it = 0; it < 500; it++) {
                 fast_zoom_row(z_dst, z_src, 64);
             }
-            t_zoom = (unsigned)((clock() - start) * 1000UL / CLOCKS_PER_SEC);
+            t_zoom = main_ticks_to_ms(clock() - start);
 
             int sx = 0, ax = 0;
             for (int x = 0; x < 64; x++) {
@@ -963,7 +981,7 @@ static __attribute__((noinline)) void run_debug_asm_test(void)
             for (int it = 0; it < 320; it++) {
                 fast_row_shift(shift_row, scratch, 1);
             }
-            t_shift = (unsigned)((clock() - start) * 1000UL / CLOCKS_PER_SEC);
+            t_shift = main_ticks_to_ms(clock() - start);
 
             for (int i = 0; i < 320; i++) {
                 if (shift_row[i] != (uint8_t)i) { pass_shift = false; break; }
@@ -972,8 +990,8 @@ static __attribute__((noinline)) void run_debug_asm_test(void)
 
         /* 5. Verify fast_scale_sprite_trans */
         {
-            static uint8_t s_src[40 * 40];
             uint8_t *s_dst = (uint8_t *)gfx_vbuffer;
+            uint8_t *s_src = s_dst + 320 * 180;
             for (int i = 0; i < 40 * 40; i++) s_src[i] = (uint8_t)(i % 2 ? 10 + i % 30 : 0);
             memset(s_dst, 0xFF, 320 * 44);
 
@@ -981,7 +999,7 @@ static __attribute__((noinline)) void run_debug_asm_test(void)
             for (int it = 0; it < 50; it++) {
                 fast_scale_sprite_trans(s_dst, 320, s_src, 40, 40, 42, 42);
             }
-            t_scale = (unsigned)((clock() - start) * 1000UL / CLOCKS_PER_SEC / 50);
+            t_scale = main_ticks_to_ms(clock() - start) / 50;
 
             for (int y = 0; y < 42; y++) {
                 int sy = (y * 40 + 21) / 42;
@@ -1405,6 +1423,7 @@ static __attribute__((noinline)) void run_debug_menu(vn_vm_t *vm)
         }
     }
 }
+#endif
 
 /** Block until any of the tracked keys goes down, or a quit is requested.
  * Keeps redrawing @p vm's scene each frame (render_scene_lazy(), so this
@@ -1456,7 +1475,15 @@ static void noise_tick(vn_vm_t *vm, const vn_scene_t *scene, size_t visible) {
     /* USB frame is complete before palette commit; noise_begin remaps its
      * colors against whichever palette the successful/fallback path chose. */
     if (!render_timed_scene(scene)) render_scene_lazy(scene);
-    if (noise_begin(scene->background)) noise_frame_scene((unsigned)(((uint64_t)(now-noise_started)*1000ULL)/CLOCKS_PER_SEC));
+    if (noise_begin(scene->background)) {
+        uint32_t ndt = (uint32_t)(now - noise_started);
+#ifdef __TICE__
+        unsigned nms = (unsigned)(((ndt >> 15) * 1000UL) + (((ndt & 0x7FFFUL) * 125UL) >> 12));
+#else
+        unsigned nms = (unsigned)(((uint64_t)ndt * 1000ULL) / CLOCKS_PER_SEC);
+#endif
+        noise_frame_scene(nms);
+    }
     noise_end();
     draw_dialogue_box(vm, scene, visible);
     perf_overlay_end();
@@ -1470,20 +1497,25 @@ static void wait_for_advance(vn_vm_t *vm, bool allow_pause)
 {
     const vn_scene_t *scene = &vm->scene;
     input_t in;
+    bool idle_drawn = false;
 
     do {
         input_poll(&in);
+#ifdef DDLC_DEBUG_MENU
         if (debug_menu_requested) {
             debug_menu_requested = false;
             run_debug_menu(vm);
+            idle_drawn = false;
             continue;
         }
+#endif
         if (allow_pause && in.pause) {
             if (run_pause_menu(vm)) {
                 returning_to_title = true;
                 quit_requested = true;
                 return;
             }
+            idle_drawn = false;
             continue; /* resumed (or just loaded) -- redraw fresh next loop */
         }
         if (!quit_requested) {
@@ -1491,11 +1523,15 @@ static void wait_for_advance(vn_vm_t *vm, bool allow_pause)
                 /* Effect tick owns scene, textbox and presentation. When its
                  * deadline has not arrived, keep the visible frame untouched. */
                 noise_tick(vm, scene, SIZE_MAX);
+                idle_drawn = false;
             } else {
                 noise_tick(vm, scene, SIZE_MAX); /* release previous effect */
-                render_scene_lazy(scene);
-                draw_dialogue_box(vm, scene, SIZE_MAX);
-                render_present(TRANS_CUT);
+                if (!idle_drawn || !render_scene_is_settled(scene->background)) {
+                    render_scene_lazy(scene);
+                    draw_dialogue_box(vm, scene, SIZE_MAX);
+                    render_present(TRANS_CUT);
+                    idle_drawn = true;
+                }
             }
             gfx_Wait();
         }
@@ -1527,7 +1563,7 @@ static uint8_t run_title_screen(bool play_intro, int16_t playthrough)
     assets_use_title_palette(true);
 
     for (;;) {
-        unsigned elapsed = (unsigned)((clock() - start) * 1000UL / CLOCKS_PER_SEC);
+        unsigned elapsed = main_ticks_to_ms(clock() - start);
         unsigned t = skipped ? TITLE_INTRO_MS + elapsed : elapsed;
 
         render_title_screen(selected, t, playthrough);
@@ -1540,11 +1576,13 @@ static uint8_t run_title_screen(bool play_intro, int16_t playthrough)
             assets_use_title_palette(false);
             return TITLE_QUIT;
         }
+#ifdef DDLC_DEBUG_MENU
         if (debug_menu_requested) {
             debug_menu_requested = false;
             run_debug_menu(NULL);
             continue;
         }
+#endif
 
         /* During the intro any key skips to the resting layout and is
          * swallowed, so the same press doesn't also pick a menu item. */
@@ -1895,7 +1933,7 @@ static void host_pause(void *ctx, uint32_t ms)
     for (;;) {
         input_poll(&in);
         if (quit_requested || in.advance) break;
-        if (ms && (clock()-start)*1000UL/CLOCKS_PER_SEC >= ms) break;
+        if (ms && main_ticks_to_ms(clock() - start) >= ms) break;
         noise_tick(vm, &vm->scene, SIZE_MAX);
         gfx_Wait();
     }

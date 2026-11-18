@@ -100,6 +100,37 @@ void fast_scale_sprite_trans(uint8_t *dest, size_t dest_pitch,
                              const uint8_t *src, size_t src_w, size_t src_h,
                              size_t dst_w, size_t dst_h);
 
+/**
+ * Skip @p n_rows rows in an RLET sprite data stream without decoding pixels.
+ *
+ * @param rlet   Pointer into gfx_rletsprite_t->data at a row boundary
+ * @param n_rows Number of rows to advance
+ * @param width  Sprite width in pixels (1..255)
+ * @return Updated pointer at the start of row @p n_rows
+ */
+const uint8_t *fast_rlet_skip_rows(const uint8_t *rlet, size_t n_rows, uint8_t width);
+
+/**
+ * Decode a single RLET row into an uncompressed destination row buffer.
+ * Transparent runs are written as 0.
+ *
+ * @param dst_row Destination buffer of @p width bytes
+ * @param rlet    Pointer into gfx_rletsprite_t->data at a row boundary
+ * @param width   Sprite width in pixels (1..255)
+ * @return Updated pointer at the start of the following row
+ */
+const uint8_t *fast_rlet_decode_row(uint8_t *dst_row, const uint8_t *rlet, uint8_t width);
+
+/**
+ * Blit the 320x240 scrolling title background from a 370x50 tile strip.
+ *
+ * @param dest  320x240 destination framebuffer
+ * @param strip 370x50 tiled strip in flash
+ * @param px    Horizontal tile offset in [0, 50)
+ * @param py    Vertical tile offset in [0, 50)
+ */
+void fast_title_bg(uint8_t *dest, const uint8_t *strip, uint8_t px, uint8_t py);
+
 #ifdef __cplusplus
 }
 #endif

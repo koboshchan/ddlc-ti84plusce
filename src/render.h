@@ -118,6 +118,12 @@ void render_scene_lazy(const vn_scene_t *scene);
 void render_invalidate_scene(void);
 
 /**
+ * Returns true when the composed scene for @p bg_id is already in the draw
+ * buffer and has no active animation, tear, or motion redraws pending.
+ */
+bool render_scene_is_settled(uint8_t bg_id);
+
+/**
  * Draw the dialogue box with @p text revealed up to @p visible characters.
  * Pass SIZE_MAX to reveal the whole line.
  *
@@ -132,6 +138,7 @@ void render_invalidate_scene(void);
 void render_box(const vn_scene_t *scene, const char *speaker,
                 const char *text, size_t visible);
 
+#ifdef DDLC_DEBUG_MENU
 /** Debug menu's dialogue text-render test -- see its own doc comment in
  * render.c. Draws only; caller handles input/present, same as render_text
  * and friends. */
@@ -145,6 +152,7 @@ void render_debug_font_test(void);
  * draw_background() path (transparently upgrading to the full-res cgpack
  * version when available). Draws only; caller handles input/present. */
 void render_debug_bg_preview(uint8_t bg_id);
+#endif
 
 /** Draw the choice menu over the current scene, highlighting @p selected. */
 void render_menu(const char *const *choices, uint8_t count, uint8_t selected);

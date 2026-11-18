@@ -10,6 +10,9 @@ const uint8_t *ch5_band_row(uint8_t layer,uint16_t row);
 void ch5_band_invalidate(void);
 void ch5_band_begin(void);
 void ch5_band_end(void);
+#ifdef __TICE__
+extern uint8_t *ch5_band_scratch; /* 6272-byte transient work buffer (rows 180..239) */
+#endif
 bool ch5_motion_draw(uint8_t scene);
 bool ch5_motion_active(uint8_t scene);
 bool ch5_motion_sync_clock(uint8_t scene);

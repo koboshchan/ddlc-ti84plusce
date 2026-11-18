@@ -8,12 +8,14 @@ DESCRIPTION = "Doki Doki Literature Club (fan port)"
 COMPRESSED = NO
 ARCHIVED = YES
 
-CFLAGS = -Wall -Wextra -Oz -fno-inline-functions
-# Balanced contiguous code parts; stock convbin extractor copies real part lengths.
+CFLAGS = -Wall -Wextra -Oz
+# Balanced contiguous code parts when >64KB; stock convbin extractor copies real part lengths.
 # Split derived from actual token-stripped engine by wrapper.
 
 ifeq ($(PERF_OVERLAY),1)
-CFLAGS += -DDDLC_PERF_OVERLAY
+CFLAGS += -DDDLC_PERF_OVERLAY -DDDLC_DEBUG_MENU
+else ifeq ($(DEBUG_MENU),1)
+CFLAGS += -DDDLC_DEBUG_MENU
 endif
 
 CXXFLAGS = -Wall -Wextra -Oz

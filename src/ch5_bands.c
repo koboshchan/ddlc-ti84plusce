@@ -7,9 +7,14 @@
 
 
 /* Layer-local caches keep decoded rows valid while another layer is sampled.
- * No framebuffer scratch: textbox drawing and graphx swaps overwrite it. */
-static uint8_t pixels_bg[2][320 * 8];
-static uint8_t pixels_fg[2][72 * 8];
+ * On-calc (__TICE__), ch5_band_scratch points into the 19,200B bottom scratch
+ * region of gfx_vbuffer during ch5_motion_draw(), saving 6,272 B of .bss. */
+#ifdef __TICE__
+uint8_t *ch5_band_scratch;
+#else
+static uint8_t host_band_scratch[2 * 320 * 8 + 2 * 72 * 8];
+static uint8_t *ch5_band_scratch = host_band_scratch;
+#endif
 static uint8_t cached_band[4] = {255,255,255,255};
 static struct { const uint8_t *data[4]; uint16_t sizes[4]; uint8_t flags[15]; } frame_cache;
 #define layer_data frame_cache.data
@@ -45,7 +50,10 @@ const uint8_t *ch5_band_row(uint8_t layer,uint16_t row) {
     if(layer>3 || row>=(layer<2?180:263))return 0;
     band=row>>3;
 
-    uint8_t *pixels=layer<2?pixels_bg[layer]:pixels_fg[layer-2];
+    if (!ch5_band_scratch) return 0;
+    uint8_t *pixels = layer < 2
+        ? (ch5_band_scratch + (size_t)layer * (320u * 8u))
+        : (ch5_band_scratch + 2u * 320u * 8u + (size_t)(layer - 2u) * (72u * 8u));
     bool keep=layer==0 && (uint8_t)(band-3)<12 && resident;
     if(keep)pixels=resident+(band-3)*2560;
     if((keep && ready[band]) || (!keep && cached_band[layer]==band))return pixels+(row&7u)*width;

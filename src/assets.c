@@ -41,7 +41,7 @@
  * single compiled chunk seen so far (script-poemresponses) uses 1257. Table
  * of pointers, not copies: each points directly into script_buf (this
  * module's private copy of the current chunk's bytes). */
-#define MAX_STRINGS 2048
+#define MAX_STRINGS 512
 
 static uint8_t         *script_buf; /* owns the current chunk's bytes */
 static const uint8_t   *script_code;
@@ -50,10 +50,10 @@ static const char       *string_ptrs[MAX_STRINGS];
 static uint16_t          string_count;
 
 /* The interned variable-string pool (DVSTR). Small and fixed for the
- * whole game -- 37 strings, under a kilobyte -- so unlike the per-chunk
+ * whole game -- ~37 strings, under a kilobyte -- so unlike the per-chunk
  * dialogue pool above it is loaded once and never swapped: a name
  * assigned in one chunk has to still resolve several chunks later. */
-#define MAX_VAR_STRINGS 256
+#define MAX_VAR_STRINGS 64
 static uint8_t          *var_string_buf;
 static const char       *var_string_ptrs[MAX_VAR_STRINGS];
 static uint16_t          var_string_count;
@@ -620,57 +620,66 @@ static bool sprite_lookup(uint16_t id, uint8_t *appvar_out, uint16_t *offset_out
  * enough. Reverted rather than chase that fragmentation further -- sprites
  * read straight off flash need no heap at all, so there's nothing left to
  * fragment. */
-bool assets_draw_sprite(uint16_t id, int center_x, int feet_y)
+static uint8_t sprite_handle;
+static uint8_t sprite_handle_idx;
+
+void assets_sprite_end(void)
+{
+    if (sprite_handle) {
+        ti_Close(sprite_handle);
+        sprite_handle = 0;
+    }
+}
+
+static bool sprite_open_rlet(uint16_t id, const gfx_rletsprite_t **rle_out,
+                             int16_t *dx_out, int16_t *dy_out)
 {
     uint8_t appvar_idx;
     uint16_t offset;
-    int16_t dx, dy;
-    if (!sprite_lookup(id, &appvar_idx, &offset, &dx, &dy)) {
+    if (!sprite_lookup(id, &appvar_idx, &offset, dx_out, dy_out)) {
         return false;
     }
 
-    char name[9];
-    sprintf(name, "DSPR%u", appvar_idx);
-    uint8_t handle = ti_Open(name, "r");
-    if (!handle) {
-        return false;
+    if (sprite_handle && sprite_handle_idx != appvar_idx) {
+        assets_sprite_end();
+    }
+    if (!sprite_handle) {
+        char name[9];
+        sprintf(name, "DSPR%u", appvar_idx);
+        sprite_handle = ti_Open(name, "r");
+        if (!sprite_handle) {
+            return false;
+        }
+        sprite_handle_idx = appvar_idx;
     }
 
-    const uint8_t *data = ti_GetDataPtr(handle);
-    const gfx_rletsprite_t *sprite = (const gfx_rletsprite_t *)(data + offset);
-    gfx_RLETSprite(sprite, center_x - sprite->width / 2 + dx, feet_y - sprite->height + dy);
-
-    ti_Close(handle);
+    const uint8_t *data = ti_GetDataPtr(sprite_handle);
+    *rle_out = (const gfx_rletsprite_t *)(data + offset);
     return true;
 }
 
-/* Zoom is always exactly 1.05x -- DDLC's real `focus`/`hopfocus` speaking
- * zoom, the only scale this engine ever needs -- so this is a fixed 21:20
- * nearest-neighbor resample rather than a general scaler: no per-pixel
- * division beyond that one fixed ratio, and no dependency on graphx's
- * gfx_RotateScaleSprite (which requires a *square* input sprite -- see its
- * own doc comment in graphx.h -- and character atoms never are). */
+bool assets_draw_sprite(uint16_t id, int center_x, int feet_y)
+{
+    const gfx_rletsprite_t *sprite;
+    int16_t dx, dy;
+    if (!sprite_open_rlet(id, &sprite, &dx, &dy)) {
+        return false;
+    }
+
+    gfx_RLETSprite(sprite, center_x - sprite->width / 2 + dx, feet_y - sprite->height + dy);
+    return true;
+}
+
 bool assets_sprite_bounds(uint16_t id, int *w, int *h, int *dx, int *dy)
 {
-    uint8_t appvar_idx;
-    uint16_t offset;
+    const gfx_rletsprite_t *sprite;
     int16_t sdx, sdy;
-    if (!sprite_lookup(id, &appvar_idx, &offset, &sdx, &sdy)) {
+    if (!sprite_open_rlet(id, &sprite, &sdx, &sdy)) {
         return false;
     }
 
-    char name[9];
-    sprintf(name, "DSPR%u", appvar_idx);
-    uint8_t handle = ti_Open(name, "r");
-    if (!handle) {
-        return false;
-    }
-
-    const gfx_rletsprite_t *sprite =
-        (const gfx_rletsprite_t *)(ti_GetDataPtr(handle) + offset);
     *w = sprite->width;
     *h = sprite->height;
-    ti_Close(handle);
     *dx = sdx;
     *dy = sdy;
     return true;
@@ -703,98 +712,32 @@ bool assets_sprite_bounds(uint16_t id, int *w, int *h, int *dx, int *dy)
  * save a redraw that is merely nice to have.
  */
 
-#define ZOOM_CACHE_SLOTS 2
-
-static struct {
-    uint16_t      id;
-    gfx_sprite_t *spr;   /* NULL == this slot is empty */
-} zoom_cache[ZOOM_CACHE_SLOTS];
-
-static uint8_t zoom_cache_next;
-
 void assets_zoom_cache_clear(void)
 {
-    for (uint8_t i = 0; i < ZOOM_CACHE_SLOTS; i++) {
-        free(zoom_cache[i].spr);
-        zoom_cache[i].spr = NULL;
-    }
-    zoom_cache_next = 0;
-}
-
-static gfx_sprite_t *zoom_cache_find(uint16_t id)
-{
-    for (uint8_t i = 0; i < ZOOM_CACHE_SLOTS; i++) {
-        if (zoom_cache[i].spr != NULL && zoom_cache[i].id == id) {
-            return zoom_cache[i].spr;
-        }
-    }
-    return NULL;
-}
-
-/* Builds sprite @p id's uncompressed 1.00x bitmap into a free (or round-robin evicted)
- * slot and returns it, or NULL if anything along the way fails -- a missing
- * id, an unopenable AppVar, or the allocation. Callers treat NULL as
- * "draw this one unscaled off flash instead", never as fatal.
- *
- * Reads the source sprite straight off flash -- only the uncompressed 1.00x
- * destination is allocated here, which is retained across the speaking line.
- * Continuous scaling (1.00x - 1.05x) renders directly to gfx_vbuffer via eZ80 asm
- * without any further allocations. */
-static gfx_sprite_t *zoom_cache_fill(uint16_t id)
-{
-    uint8_t appvar_idx;
-    uint16_t offset;
-    int16_t dx, dy;
-    if (!sprite_lookup(id, &appvar_idx, &offset, &dx, &dy)) {
-        return NULL;
-    }
-
-    char name[9];
-    sprintf(name, "DSPR%u", appvar_idx);
-    uint8_t handle = ti_Open(name, "r");
-    if (!handle) {
-        return NULL;
-    }
-
-    const gfx_rletsprite_t *rle =
-        (const gfx_rletsprite_t *)(ti_GetDataPtr(handle) + offset);
-
-    gfx_sprite_t *plain = malloc((size_t)2 + (size_t)rle->width * rle->height);
-    if (plain == NULL) {
-        ti_Close(handle);
-        return NULL;
-    }
-    gfx_ConvertFromRLETSprite(rle, plain);
-    ti_Close(handle);
-
-    free(zoom_cache[zoom_cache_next].spr);
-    zoom_cache[zoom_cache_next].id  = id;
-    zoom_cache[zoom_cache_next].spr = plain;
-    zoom_cache_next = (uint8_t)((zoom_cache_next + 1) % ZOOM_CACHE_SLOTS);
-    return plain;
+    assets_sprite_end();
 }
 
 bool assets_zoom_prepare(uint16_t id)
 {
-    return zoom_cache_find(id) != NULL || zoom_cache_fill(id) != NULL;
+    uint8_t appvar_idx;
+    uint16_t offset;
+    int16_t dx, dy;
+    return sprite_lookup(id, &appvar_idx, &offset, &dx, &dy);
 }
 
 bool assets_draw_sprite_scaled(uint16_t id, int center_x, int feet_y, unsigned int scale_permille)
 {
-    gfx_sprite_t *spr = zoom_cache_find(id);
-    if (spr == NULL && (spr = zoom_cache_fill(id)) == NULL) {
-        return false;
-    }
-
-    uint8_t appvar_idx;
-    uint16_t offset;
+    const gfx_rletsprite_t *rle;
     int16_t dx, dy;
-    if (!sprite_lookup(id, &appvar_idx, &offset, &dx, &dy)) {
+    if (!sprite_open_rlet(id, &rle, &dx, &dy)) {
         return false;
     }
 
-    int src_w = spr->width;
-    int src_h = spr->height;
+    int src_w = rle->width;
+    int src_h = rle->height;
+    if (src_w <= 0 || src_h <= 0) {
+        return true;
+    }
 
     int dst_w = (int)(((uint32_t)src_w * scale_permille + 500) / 1000);
     int dst_h = (int)(((uint32_t)src_h * scale_permille + 500) / 1000);
@@ -808,7 +751,7 @@ bool assets_draw_sprite_scaled(uint16_t id, int center_x, int feet_y, unsigned i
     int dst_y = feet_y - dst_h + zdy;
 
     if (dst_w == src_w && dst_h == src_h) {
-        gfx_TransparentSprite(spr, dst_x, dst_y);
+        gfx_RLETSprite(rle, dst_x, dst_y);
         return true;
     }
 
@@ -818,6 +761,7 @@ bool assets_draw_sprite_scaled(uint16_t id, int center_x, int feet_y, unsigned i
     int y1 = (dst_y + dst_h) < SCREEN_H ? (dst_y + dst_h) : SCREEN_H;
 
     if (x0 < x1 && y0 < y1) {
+        uint8_t row_buf[256];
         int vis_w = x1 - x0;
         int vis_h = y1 - y0;
         int start_dx = x0 - dst_x;
@@ -830,17 +774,36 @@ bool assets_draw_sprite_scaled(uint16_t id, int center_x, int feet_y, unsigned i
         uint32_t init_num_y = (uint32_t)start_dy * (uint32_t)src_h + (uint32_t)(dst_h / 2);
         int start_sy = (int)(init_num_y / (uint32_t)dst_h);
         uint32_t acc_y = init_num_y % (uint32_t)dst_h;
+        if (start_sy >= src_h) {
+            start_sy = src_h - 1;
+        }
 
-        const uint8_t *src_row = spr->data + (size_t)start_sy * src_w + start_sx;
+        const uint8_t *rlet_ptr = rle->data;
+        if (start_sy > 0) {
+            rlet_ptr = fast_rlet_skip_rows(rlet_ptr, (size_t)start_sy, (uint8_t)src_w);
+        }
+        int next_sy = start_sy;
+        int cur_sy = start_sy;
+        int decoded_sy = -1;
         uint8_t *dest_row = (uint8_t *)gfx_vbuffer + (size_t)y0 * SCREEN_W + x0;
 
         for (int y = 0; y < vis_h; y++) {
-            fast_scale_row_trans(dest_row, src_row, (size_t)vis_w, init_acc_x, (unsigned int)src_w, (unsigned int)dst_w);
+            int want_sy = cur_sy < src_h ? cur_sy : (src_h - 1);
+            if (want_sy != decoded_sy) {
+                if (want_sy > next_sy) {
+                    rlet_ptr = fast_rlet_skip_rows(rlet_ptr, (size_t)(want_sy - next_sy), (uint8_t)src_w);
+                }
+                rlet_ptr = fast_rlet_decode_row(row_buf, rlet_ptr, (uint8_t)src_w);
+                decoded_sy = want_sy;
+                next_sy = want_sy + 1;
+            }
+            fast_scale_row_trans(dest_row, row_buf + start_sx, (size_t)vis_w, init_acc_x,
+                                 (unsigned int)src_w, (unsigned int)dst_w);
             dest_row += SCREEN_W;
             acc_y += (uint32_t)src_h;
             while (acc_y >= (uint32_t)dst_h) {
                 acc_y -= (uint32_t)dst_h;
-                src_row += src_w;
+                cur_sy++;
             }
         }
     }
@@ -943,13 +906,9 @@ bool assets_title_bg(uint8_t px, uint8_t py, uint8_t *dest)
         return false;
     }
 
-    const uint8_t *strip = ti_GetDataPtr(handle);
     px %= TITLE_TILE;
-    for (int y = 0; y < 240; y++) {
-        unsigned src_row = (unsigned)(y + py) % TITLE_TILE;
-        memcpy(dest + (size_t)y * 320,
-               strip + src_row * TITLE_STRIP_W + px, 320);
-    }
+    py %= TITLE_TILE;
+    fast_title_bg(dest, ti_GetDataPtr(handle), px, py);
 
     ti_Close(handle);
     return true;
@@ -1073,6 +1032,7 @@ bool assets_debug_is_cg(uint8_t id)
 
 bool assets_scene(uint8_t id, uint8_t *dest)
 {
+    assets_sprite_end();
     if (is_cg(id) && cgpack_read_pixels(id, dest)) {
         return true;
     }

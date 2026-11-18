@@ -1,6 +1,6 @@
 /**
  * @file text.c
- * @brief Greedy word wrapping. See text.h.
+ * @brief Greedy word wrapping and compact formatting. See text.h.
  */
 
 #include "text.h"
@@ -27,43 +27,48 @@ void text_wrap(text_layout_t *out, const char *str, unsigned max_width,
         return;
     }
 
-    const char *line = str;   /* start of the line being built     */
-    const char *last = NULL;  /* last break opportunity seen       */
+    const char *line = str;
     const char *p    = str;
 
     while (*p != '\0' && out->count < TEXT_MAX_LINES) {
-        if (*p == '\n') {
-            push_line(out, line, (size_t)(p - line));
-            line = p + 1;
-            last = NULL;
+        /* Advance to the end of the current word or newline/NUL. */
+        const char *word_start = p;
+        while (*p != '\0' && *p != '\n' && *p != ' ') {
             p++;
-            continue;
         }
 
-        if (*p == ' ') {
-            last = p;
-        }
-
-        size_t len = (size_t)(p - line) + 1;
-        if (measure(ctx, line, len) > max_width) {
-            if (last != NULL && last > line) {
-                /* Break at the space; it is consumed, not rendered. */
-                push_line(out, line, (size_t)(last - line));
-                line = last + 1;
-                p    = line;
-            } else {
-                /* A single word wider than the box: hard-break it so the
-                 * text stays inside the dialogue area. */
-                size_t take = len > 1 ? len - 1 : 1;
-                push_line(out, line, take);
-                line += take;
-                p     = line;
+        size_t len = (size_t)(p - line);
+        if (len > 0 && measure(ctx, line, len) > max_width) {
+            if (word_start > line) {
+                /* Break before this word (consuming the trailing space). */
+                const char *end = word_start;
+                if (end > line && end[-1] == ' ') {
+                    end--;
+                }
+                push_line(out, line, (size_t)(end - line));
+                line = word_start;
+                p    = word_start;
+                continue;
             }
-            last = NULL;
+            /* Single word wider than max_width: binary-step or char-scan within it. */
+            size_t take = 1;
+            while (take < len && measure(ctx, line, take + 1) <= max_width) {
+                take++;
+            }
+            push_line(out, line, take);
+            line += take;
+            p     = line;
             continue;
         }
 
-        p++;
+        if (*p == '\n') {
+            push_line(out, line, len);
+            line = p + 1;
+            p    = line;
+        } else if (*p == ' ') {
+            /* Include the space if there is more text, or check it on the next word. */
+            p++;
+        }
     }
 
     if (*line != '\0' && out->count < TEXT_MAX_LINES) {
@@ -106,7 +111,7 @@ int mini_vsnprintf(char *out, size_t max, const char *fmt, va_list ap)
             out[written++] = *p++;
             continue;
         }
-        p++; // skip '%'
+        p++;
         if (*p == '%') {
             out[written++] = *p++;
             continue;
@@ -123,69 +128,56 @@ int mini_vsnprintf(char *out, size_t max, const char *fmt, va_list ap)
             p++;
         }
 
-        if (*p == 's') {
-            p++;
+        char spec = *p;
+        if (!spec) {
+            break;
+        }
+        p++;
+
+        if (spec == 's') {
             const char *s = va_arg(ap, const char *);
             if (!s) s = "(null)";
             while (*s && written + 1 < max) {
                 out[written++] = *s++;
             }
-        } else if (*p == 'd') {
-            p++;
-            int val = va_arg(ap, int);
+            continue;
+        }
+
+        if (spec == 'd' || spec == 'u' || spec == 'x' || spec == 'X') {
             unsigned uval;
-            if (val < 0) {
-                if (written + 1 < max) out[written++] = '-';
-                uval = (unsigned)(-val);
+            if (spec == 'd') {
+                int val = va_arg(ap, int);
+                if (val < 0) {
+                    if (written + 1 < max) out[written++] = '-';
+                    uval = (unsigned)(-val);
+                } else {
+                    uval = (unsigned)val;
+                }
             } else {
-                uval = (unsigned)val;
+                uval = va_arg(ap, unsigned);
             }
+
+            unsigned base = (spec == 'x' || spec == 'X') ? 16u : 10u;
+            char hex_a = (spec == 'X') ? 'A' : 'a';
             char buf[12];
             int bi = 0;
             do {
-                buf[bi++] = (char)('0' + (uval % 10));
-                uval /= 10;
+                unsigned rem = uval % base;
+                buf[bi++] = (rem < 10u) ? (char)('0' + rem) : (char)(hex_a + rem - 10u);
+                uval /= base;
             } while (uval > 0 && bi < 12);
+
             while (bi < width && bi < 12 && pad == '0') {
                 buf[bi++] = '0';
             }
             while (bi > 0 && written + 1 < max) {
                 out[written++] = buf[--bi];
             }
-        } else if (*p == 'u') {
-            p++;
-            unsigned uval = va_arg(ap, unsigned);
-            char buf[12];
-            int bi = 0;
-            do {
-                buf[bi++] = (char)('0' + (uval % 10));
-                uval /= 10;
-            } while (uval > 0 && bi < 12);
-            while (bi < width && bi < 12 && pad == '0') {
-                buf[bi++] = '0';
-            }
-            while (bi > 0 && written + 1 < max) {
-                out[written++] = buf[--bi];
-            }
-        } else if (*p == 'x' || *p == 'X') {
-            char base = (*p == 'X') ? 'A' : 'a';
-            p++;
-            unsigned uval = va_arg(ap, unsigned);
-            char buf[12];
-            int bi = 0;
-            do {
-                unsigned rem = uval & 0xF;
-                buf[bi++] = (rem < 10) ? (char)('0' + rem) : (char)(base + rem - 10);
-                uval >>= 4;
-            } while (uval > 0 && bi < 12);
-            while (bi < width && bi < 12 && pad == '0') {
-                buf[bi++] = '0';
-            }
-            while (bi > 0 && written + 1 < max) {
-                out[written++] = buf[--bi];
-            }
-        } else {
-            if (written + 1 < max) out[written++] = *p++;
+            continue;
+        }
+
+        if (written + 1 < max) {
+            out[written++] = spec;
         }
     }
 
