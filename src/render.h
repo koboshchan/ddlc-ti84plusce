@@ -171,6 +171,14 @@ void render_present(uint8_t trans);
  */
 void render_fade_out(void);
 void render_fade_in(void);
+bool render_palette_matches(const uint16_t *palette);
+void render_dissolve_out(void);
+void render_dissolve_in(void);
+void render_dissolve_bayer(void);
+void render_wipe_curtain_out(void);
+void render_wipe_left_reveal(void);
+void render_eyes_close_anim(void);
+void render_eyes_open_reveal(void);
 
 /** Writes @p palette (256 RGB565 entries, e.g. from assets_scene_palette())
  * straight to @c gfx_palette -- an instant pop, visible immediately (no

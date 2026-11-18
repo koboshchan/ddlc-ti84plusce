@@ -73,6 +73,23 @@ int main(void) {
   if(dst[0]!=255||dst[dw+1]!=255)ok=false;
   fail+=!ok;n++;
  }
+ {
+  gfx_SetDrawScreen();
+  uint8_t *bsrc=(uint8_t *)gfx_vbuffer;
+  gfx_SetDrawBuffer();
+  uint8_t *bdst=(uint8_t *)gfx_vbuffer;
+  for(unsigned y=0;y<180;y++)for(unsigned x=0;x<320;x++){
+   bsrc[y*320+x]=(uint8_t)((x+y)%250+1);bdst[y*320+x]=0;
+  }
+  fast_bayer_dissolve(bdst,bsrc,1);ok=true;
+  for(unsigned x=0;x<320;x++){
+   if((x&1)==0&&bdst[x]!=bsrc[x])ok=false;
+   if((x&1)!=0&&bdst[x]!=0)ok=false;
+   if((x&1)!=0&&bdst[320+x]!=bsrc[320+x])ok=false;
+   if((x&1)==0&&bdst[320+x]!=0)ok=false;
+  }
+  fail+=!ok;n++;
+ }
  gfx_FillScreen(0);gfx_SetTextFGColor(1);char msg[60];
  sprintf(msg,"%u checks, %u failures",n,fail);gfx_PrintStringXY(msg,10,20);
 

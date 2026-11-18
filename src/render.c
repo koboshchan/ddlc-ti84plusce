@@ -2581,3 +2581,112 @@ void render_game_menu(uint8_t mode, uint8_t focused_pane, uint8_t sidebar_select
     render_text(hint_str, hint_x, 222, COL_BOX_FILL);
 }
 
+#define DISSOLVE_STEPS   8
+#define DISSOLVE_STEP_MS 15
+
+bool render_palette_matches(const uint16_t *palette)
+{
+    return palette != NULL && memcmp(current_palette, palette, sizeof(current_palette)) == 0;
+}
+
+void render_dissolve_out(void)
+{
+    fade_active = true;
+    memcpy(fade_saved, current_palette, sizeof(fade_saved));
+    for (unsigned s = 1; s <= DISSOLVE_STEPS; s++) {
+        fade_apply((uint8_t)(255U - (s * 255U) / DISSOLVE_STEPS));
+        msleep(DISSOLVE_STEP_MS);
+    }
+}
+
+void render_dissolve_in(void)
+{
+    for (unsigned s = 1; s <= DISSOLVE_STEPS; s++) {
+        fade_apply((uint8_t)((s * 255U) / DISSOLVE_STEPS));
+        msleep(DISSOLVE_STEP_MS);
+    }
+    memcpy(gfx_palette, fade_saved, sizeof(fade_saved));
+    memcpy(current_palette, fade_saved, sizeof(current_palette));
+    fade_active = false;
+}
+
+void render_dissolve_bayer(void)
+{
+    const uint8_t *vb = (const uint8_t *)gfx_vbuffer;
+    gfx_SetDrawScreen();
+    uint8_t *vs = (uint8_t *)gfx_vbuffer;
+    /* Keep bottom dialogue box crisp before stippling scene region. */
+    memcpy(vs + (size_t)SCENE_H * SCREEN_W, vb + (size_t)SCENE_H * SCREEN_W,
+           (size_t)(SCREEN_H - SCENE_H) * SCREEN_W);
+    for (uint8_t step = 0; step < 3; step++) {
+        fast_bayer_dissolve(vs, vb, step);
+        msleep(32);
+    }
+    gfx_SetDrawBuffer();
+}
+
+void render_wipe_curtain_out(void)
+{
+    gfx_SetDrawScreen();
+    uint8_t *vs = (uint8_t *)gfx_vbuffer;
+    const int strips = 6;
+    const int strip_w = (SCREEN_W + strips - 1) / strips;
+    for (int s = strips - 1; s >= 0; s--) {
+        int x = s * strip_w;
+        int w = (x + strip_w > SCREEN_W) ? (SCREEN_W - x) : strip_w;
+        for (int y = 0; y < SCENE_H; y++) {
+            memset(vs + (size_t)y * SCREEN_W + x, COL_BLACK, (size_t)w);
+        }
+        msleep(16);
+    }
+    gfx_SetDrawBuffer();
+}
+
+void render_wipe_left_reveal(void)
+{
+    const uint8_t *vb = (const uint8_t *)gfx_vbuffer;
+    gfx_SetDrawScreen();
+    uint8_t *vs = (uint8_t *)gfx_vbuffer;
+    const int strips = 8;
+    const int strip_w = SCREEN_W / strips; /* 40 px */
+    memcpy(vs + (size_t)SCENE_H * SCREEN_W, vb + (size_t)SCENE_H * SCREEN_W,
+           (size_t)(SCREEN_H - SCENE_H) * SCREEN_W);
+    for (int s = strips - 1; s >= 0; s--) {
+        int x = s * strip_w;
+        fast_rect_blit(vs + x, SCREEN_W, vb + x, SCREEN_W, (size_t)strip_w, SCENE_H);
+        msleep(16);
+    }
+    gfx_SetDrawBuffer();
+}
+
+void render_eyes_close_anim(void)
+{
+    gfx_SetDrawScreen();
+    uint8_t *vs = (uint8_t *)gfx_vbuffer;
+    for (int s = 1; s <= 6; s++) {
+        int band = (s * (SCENE_H / 2)) / 6;
+        memset(vs, COL_BLACK, (size_t)band * SCREEN_W);
+        memset(vs + (size_t)(SCENE_H - band) * SCREEN_W, COL_BLACK, (size_t)band * SCREEN_W);
+        msleep(22);
+    }
+    gfx_SetDrawBuffer();
+}
+
+void render_eyes_open_reveal(void)
+{
+    const uint8_t *vb = (const uint8_t *)gfx_vbuffer;
+    gfx_SetDrawScreen();
+    uint8_t *vs = (uint8_t *)gfx_vbuffer;
+    memset(vs, COL_BLACK, (size_t)SCENE_H * SCREEN_W);
+    memcpy(vs + (size_t)SCENE_H * SCREEN_W, vb + (size_t)SCENE_H * SCREEN_W,
+           (size_t)(SCREEN_H - SCENE_H) * SCREEN_W);
+    for (int s = 1; s <= 6; s++) {
+        int half_h = (s * (SCENE_H / 2)) / 6;
+        int y0 = (SCENE_H / 2) - half_h;
+        size_t rows = (size_t)(half_h * 2);
+        memcpy(vs + (size_t)y0 * SCREEN_W, vb + (size_t)y0 * SCREEN_W, rows * SCREEN_W);
+        msleep(22);
+    }
+    gfx_SetDrawBuffer();
+}
+

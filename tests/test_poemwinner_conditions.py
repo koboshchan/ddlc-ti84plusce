@@ -61,6 +61,7 @@ _FIXED_OPS = {
     vnasm.OP_EFFECT: 5,
     vnasm.OP_OVERLAY_FX: 2,
     vnasm.OP_LAYER_FX: 3,
+    vnasm.OP_TRANS: 1,
 }
 
 

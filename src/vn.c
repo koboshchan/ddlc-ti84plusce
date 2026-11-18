@@ -149,6 +149,13 @@ static void actor_hide(vn_scene_t *scene, uint8_t character)
     }
 }
 
+static void host_scene_update(vn_vm_t *vm, uint8_t trans)
+{
+    if (!vm->defer_update && vm->host->update) {
+        vm->host->update(vm->host->ctx, &vm->scene, trans);
+    }
+}
+
 static void actors_clear(vn_scene_t *scene)
 {
     for (int i = 0; i < VN_MAX_CHARS; i++) {
@@ -360,7 +367,7 @@ bool vn_step(vn_vm_t *vm)
                 vm->scene.overlay_y[slot] = y;
                 if (text == 0xFFFF) vm->scene.overlay_mask &= ~(1u << slot);
                 else vm->scene.overlay_mask |= 1u << slot;
-                vm->host->update(vm->host->ctx, &vm->scene, 0);
+                host_scene_update(vm, TRANS_CUT);
             }
             break;
         }
@@ -406,7 +413,7 @@ bool vn_step(vn_vm_t *vm)
             vm->scene.layer_fx = VN_LAYER_NONE;
             vm->scene.layer_fx_param = 0;
             actors_clear(&vm->scene);
-            vm->host->update(vm->host->ctx, &vm->scene, (uint8_t)(trans & 0x7FU));
+            host_scene_update(vm, (uint8_t)(trans & 0x7FU));
             break;
         }
 
@@ -421,7 +428,7 @@ bool vn_step(vn_vm_t *vm)
             }
             actor_show(&vm->scene, ch, sprite, overlay, pos, flags);
             if (!(flags & VN_FLAG_LHIDE)) {
-                vm->host->update(vm->host->ctx, &vm->scene, TRANS_CUT);
+                host_scene_update(vm, TRANS_CUT);
             }
             break;
         }
@@ -432,7 +439,7 @@ bool vn_step(vn_vm_t *vm)
                 break;
             }
             actor_hide(&vm->scene, ch);
-            vm->host->update(vm->host->ctx, &vm->scene, TRANS_CUT);
+            host_scene_update(vm, TRANS_CUT);
             break;
         }
 
@@ -822,9 +829,9 @@ bool vn_step(vn_vm_t *vm)
             } else {
                 vm->scene.overlay_fx_mask &= (uint8_t)~bit;
             }
-            if (vm->scene.overlay_fx_mask != prev && vm->host->update &&
+            if (vm->scene.overlay_fx_mask != prev &&
                 bit != VN_OVL_LIVE_TILE && bit != VN_OVL_ROOM_MASK) {
-                vm->host->update(vm->host->ctx, &vm->scene, TRANS_CUT);
+                host_scene_update(vm, TRANS_CUT);
             }
             break;
         }
@@ -846,8 +853,24 @@ bool vn_step(vn_vm_t *vm)
             vm->scene.layer_fx = fx;
             vm->scene.layer_fx_param = resolved;
             vm->scene.layer_fx_seq++;
-            if (changed && vm->host->update) {
-                vm->host->update(vm->host->ctx, &vm->scene, TRANS_CUT);
+            if (changed) {
+                host_scene_update(vm, TRANS_CUT);
+            }
+            break;
+        }
+
+        case OP_TRANS: {
+            uint8_t trans = read_u8(vm);
+            if (vm->status != VN_RUNNING) {
+                break;
+            }
+            if (trans == TRANS_HOLD) {
+                vm->defer_update = true;
+            } else {
+                vm->defer_update = false;
+                if (vm->host->update) {
+                    vm->host->update(vm->host->ctx, &vm->scene, trans);
+                }
             }
             break;
         }

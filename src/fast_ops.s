@@ -33,6 +33,9 @@
 	.global	_fast_stretch_row
 	.type	_fast_stretch_row, @function
 
+	.global	_fast_bayer_dissolve
+	.type	_fast_bayer_dissolve, @function
+
 ; ===========================================================================
 ; void fast_cg_upscale_2x(uint8_t *dest, const uint8_t *src)
 ; ===========================================================================
@@ -753,4 +756,105 @@ _fast_stretch_row:
 	add	hl, de
 	exx
 	djnz	.stretch_run
+	ret
+
+; ===========================================================================
+; void fast_bayer_dissolve(uint8_t *dst, const uint8_t *src, uint8_t step)
+; Copies pixels matching Bayer 4x4 threshold for step 0..3 across 320x180.
+; step 0: 25%, step 1: 50%, step 2: 75%, step 3: 100%.
+; ===========================================================================
+	.section	.text._fast_bayer_dissolve,"ax",@progbits
+_fast_bayer_dissolve:
+	push	ix
+	push	iy
+
+	ld	iy, 0
+	add	iy, sp
+
+	ld	a, (iy + 15)		; A = step
+	and	a, 3
+	ld	ixh, 0xAA
+	ld	ixl, 0x00
+	jr	z, .bayer_masks_ok
+	cp	a, 1
+	jr	nz, .bayer_chk2
+	ld	ixl, 0x55
+	jr	.bayer_masks_ok
+.bayer_chk2:
+	cp	a, 2
+	jr	nz, .bayer_step3
+	ld	ixh, 0xFF
+	ld	ixl, 0x55
+	jr	.bayer_masks_ok
+.bayer_step3:
+	ld	ixh, 0xFF
+	ld	ixl, 0xFF
+
+.bayer_masks_ok:
+	ld	de, (iy + 9)		; DE = dst
+	ld	hl, (iy + 12)		; HL = src
+	ld	iyl, 180		; 180 rows
+
+.bayer_row:
+	ld	c, ixh
+	ld	a, iyl
+	bit	0, a
+	jr	z, .bayer_has_mask
+	ld	c, ixl
+.bayer_has_mask:
+	ld	a, c
+	or	a, a
+	jr	nz, .bayer_not_zero
+	push	bc
+	ld	bc, 320
+	add	hl, bc
+	ex	de, hl
+	add	hl, bc
+	ex	de, hl
+	pop	bc
+	jr	.bayer_next_row
+
+.bayer_not_zero:
+	ld	b, 80			; 80 * 4 = 320 pixels
+.bayer_px4:
+	rlc	c
+	jr	nc, .bp0
+	ld	a, (hl)
+	ld	(de), a
+.bp0:
+	inc	hl
+	inc	de
+
+	rlc	c
+	jr	nc, .bp1
+	ld	a, (hl)
+	ld	(de), a
+.bp1:
+	inc	hl
+	inc	de
+
+	rlc	c
+	jr	nc, .bp2
+	ld	a, (hl)
+	ld	(de), a
+.bp2:
+	inc	hl
+	inc	de
+
+	rlc	c
+	jr	nc, .bp3
+	ld	a, (hl)
+	ld	(de), a
+.bp3:
+	inc	hl
+	inc	de
+
+	djnz	.bayer_px4
+
+.bayer_next_row:
+	dec	iyl
+	jr	nz, .bayer_row
+
+	pop	iy
+	pop	ix
 	ret

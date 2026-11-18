@@ -193,6 +193,7 @@ enum vn_op {
     OP_EFFECT       = 0x26, /* fx:u8 delay_ms:u16 length_ms:u16 -- timed screen palette effect */
     OP_OVERLAY_FX   = 0x27, /* bit:u8 enable:u8 -- toggle procedural overlay bits (RectCluster/Blood/Mask/LiveTile) */
     OP_LAYER_FX     = 0x28, /* fx:u8 param:u16 -- ShowLayer camera/layer transform effect */
+    OP_TRANS        = 0x29, /* trans:u8 -- 0xFF holds updates; other commits pending update with trans */
 };
 
 /** Layer camera/viewport effects carried by OP_LAYER_FX / vn_scene_t.layer_fx. */
@@ -249,7 +250,16 @@ enum vn_cmp {
 };
 
 /** Scene transitions and flags carried on OP_SCENE's trans byte. */
-enum vn_trans { TRANS_CUT = 0, TRANS_FADE = 1, TRANS_SILHOUETTE = 0x80 };
+enum vn_trans {
+    TRANS_CUT        = 0,
+    TRANS_FADE       = 1,
+    TRANS_DISSOLVE   = 2,
+    TRANS_WIPE_LEFT  = 3,
+    TRANS_EYES_CLOSE = 4,
+    TRANS_EYES_OPEN  = 5,
+    TRANS_HOLD       = 0xFF,
+    TRANS_SILHOUETTE = 0x80
+};
 
 /** Scene-scoped palette effect applied when presenting the background palette. */
 enum vn_pal_fx { VN_FX_NONE = 0, VN_FX_SILHOUETTE = 1 };
@@ -620,6 +630,7 @@ typedef struct {
     const vn_host_t *host;
     vn_status_t      status;
     bool            noise_enabled;
+    bool            defer_update;
 } vn_vm_t;
 
 /** Reset @p vm and point it at @p code. Does not draw anything. */

@@ -50,6 +50,7 @@ OP_MENU_SPECIAL = 0x25
 OP_EFFECT = 0x26
 OP_OVERLAY_FX = 0x27
 OP_LAYER_FX = 0x28
+OP_TRANS = 0x29
 
 VN_LAYER_NONE = 0
 VN_LAYER_DRIFT = 1
@@ -88,7 +89,8 @@ VN_MENU_RIGGED = 2
 VN_MENU_CONFIRM_OK = 3
 
 CMP_EQ, CMP_NE, CMP_LT, CMP_LE, CMP_GT, CMP_GE = range(6)
-TRANS_CUT, TRANS_FADE = 0, 1
+TRANS_CUT, TRANS_FADE, TRANS_DISSOLVE, TRANS_WIPE_LEFT, TRANS_EYES_CLOSE, TRANS_EYES_OPEN = range(6)
+TRANS_HOLD = 0xFF
 TRANS_SILHOUETTE = 0x80
 
 # OP_SHOW's pos:u8 is half the on-screen center X (decode: center_x = pos*2),
@@ -397,6 +399,11 @@ class Assembler:
         self._u8(OP_LAYER_FX)
         self._u8(fx)
         self._u16(param & 0xFFFF)
+
+    def trans(self, mode: int) -> None:
+        """Sets TRANS_HOLD or commits a batched transition. See OP_TRANS."""
+        self._u8(OP_TRANS)
+        self._u8(mode & 0xFF)
 
     def ret(self) -> None:
         self._u8(OP_RETURN)

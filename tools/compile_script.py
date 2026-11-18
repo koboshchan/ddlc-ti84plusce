@@ -585,6 +585,7 @@ class Compiler:
         self._pending_cg_layer_fx: int = 0
         self._pending_cg_ovl_dust: bool = False
         self._malpha_step: int = 0
+        self._with_batch_open: bool = False
         self._var_slot("ch1_choice")
 
     def compile_file(self, path: Path) -> None:
@@ -745,6 +746,51 @@ class Compiler:
         persisted_flags = self.last_flags.get(char, 0) & ~_ONESHOT_FLAGS
         return self.last_pos.get(char, vnasm.POS_CENTER), persisted_flags
 
+    @staticmethod
+    def _with_expr_to_trans(expr: str) -> int:
+        if not expr:
+            return vnasm.TRANS_CUT
+        if "_scene" in expr or expr == "trueblack":
+            return vnasm.TRANS_FADE
+        if "close_eyes" in expr:
+            return vnasm.TRANS_EYES_CLOSE
+        if "open_eyes" in expr:
+            return vnasm.TRANS_EYES_OPEN
+        if "wipeleft" in expr or "ImageDissolve" in expr:
+            return vnasm.TRANS_WIPE_LEFT
+        if "dissolve" in expr.lower():
+            return vnasm.TRANS_DISSOLVE
+        return vnasm.TRANS_CUT
+
+    def _peek_following_with_trans(self) -> int | None:
+        if not hasattr(self, "_block_nodes") or not hasattr(self, "_block_idx"):
+            return None
+        nodes = self._block_nodes
+        idx = self._block_idx
+        if not nodes or idx is None:
+            return None
+        for i in range(idx + 1, len(nodes)):
+            nk = kind(nodes[i])
+            if nk in ("Show", "Hide", "Scene", "ShowLayer"):
+                continue
+            if nk == "With":
+                ex = nodes[i].expr if isinstance(getattr(nodes[i], "expr", None), str) else ""
+                tr = self._with_expr_to_trans(ex)
+                return tr if tr != vnasm.TRANS_CUT else None
+            return None
+        return None
+
+    def _maybe_open_with_batch(self) -> None:
+        if not self._with_batch_open and self._peek_following_with_trans() is not None:
+            self.asm.trans(vnasm.TRANS_HOLD)
+            self._with_batch_open = True
+
+    def _close_with_batch(self, trans: int) -> None:
+        if self._with_batch_open:
+            self._flush_pending_scene(vnasm.TRANS_CUT)
+            self.asm.trans(trans)
+            self._with_batch_open = False
+
     def _next_node(self):
         if hasattr(self, "_block_nodes") and hasattr(self, "_block_idx"):
             if self._block_idx + 1 < len(self._block_nodes):
@@ -768,6 +814,8 @@ class Compiler:
         self._current_loc = (fname, getattr(node, "linenumber", None))
         try:
             k = kind(node)
+            if k not in ("Scene", "Show", "Hide", "ShowLayer", "With") and self._with_batch_open:
+                self._close_with_batch(vnasm.TRANS_CUT)
             method = getattr(self, f"_emit_{k}", None)
             if method is not None:
                 method(node, fname)
@@ -952,11 +1000,16 @@ class Compiler:
                                "or those who are easily disturbed.")
 
     def _emit_Show(self, node, fname: str) -> None:
-        self._flush_pending_scene(vnasm.TRANS_CUT)
         imgname = tuple(node.imspec[0]) if node.imspec and node.imspec[0] else None
         if not imgname:
+            self._flush_pending_scene(vnasm.TRANS_CUT)
             self._skip(node, fname, "Show with empty imspec")
             return
+        is_cg_layer = len(imgname) == 1 and any(imgname[0].startswith(p) for p in CG_PREFIXES)
+        nxt = self._next_node()
+        if not (is_cg_layer and nxt is not None and kind(nxt) == "With"):
+            self._maybe_open_with_batch()
+        self._flush_pending_scene(vnasm.TRANS_CUT)
 
         credits_cg = None
         if len(imgname) == 1:
@@ -1373,6 +1426,10 @@ class Compiler:
     def _emit_Hide(self, node, fname: str) -> None:
         imgname = node.imspec[0] if node.imspec else None
         tag = imgname[0] if imgname else None
+        is_cg_layer = tag is not None and any(tag.startswith(pfx) for pfx in CG_PREFIXES)
+        nxt = self._next_node()
+        if not (is_cg_layer and nxt is not None and kind(nxt) == "With"):
+            self._maybe_open_with_batch()
         if tag is not None and tag in self._effect_tags:
             self._flush_pending_scene(vnasm.TRANS_CUT)
             self._effect_tags.discard(tag)
@@ -1479,6 +1536,9 @@ class Compiler:
 
     def _emit_Scene(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)
+        nxt = self._next_node()
+        if nxt is None or kind(nxt) != "With":
+            self._maybe_open_with_batch()
         self._active_ovl_tags.clear()
         self._ch30_room_mask_pending = False
         self._effect_tags.clear()
@@ -1580,6 +1640,7 @@ class Compiler:
         return props, exprs, durs
 
     def _emit_ShowLayer(self, node, fname: str) -> None:
+        self._maybe_open_with_batch()
         self._flush_pending_scene(vnasm.TRANS_CUT)
         layer = getattr(node, "layer", "master") or "master"
         at_list = [str(a) for a in (getattr(node, "at_list", None) or [])]
@@ -1650,18 +1711,11 @@ class Compiler:
         self.asm.nop()
 
     def _emit_With(self, node, fname: str) -> None:
-        # DDLC's scene-level transitions (transforms.rpy) are all named
-        # `*_scene*` and are all built the same way: a MultipleTransition that
-        # dissolves/wipes out to Solid("#000"), pauses, then comes back in.
-        # That black hold is the thing worth reproducing, and TRANS_FADE does
-        # exactly it -- so match on the name rather than on "dissolve",
-        # which would catch `dissolve_scene_full` but miss `wipeleft_scene`.
-        #
-        # The non-scene variants (a bare `dissolve` or `wipeleft`) are short
-        # crossfades *between* images with no black, which needs alpha
-        # blending the 8bpp renderer can't do -- those stay cuts.
         expr = node.expr if isinstance(node.expr, str) else ""
-        trans = vnasm.TRANS_FADE if "_scene" in expr else vnasm.TRANS_CUT
+        trans = self._with_expr_to_trans(expr)
+        if self._with_batch_open:
+            self._close_with_batch(trans)
+            return
         self._flush_pending_scene(trans)
 
     def _dynamic_target_var(self, expr_src: str) -> str | None:

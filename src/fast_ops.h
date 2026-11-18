@@ -141,6 +141,15 @@ void fast_title_bg(uint8_t *dest, const uint8_t *strip, uint8_t px, uint8_t py);
  */
 void fast_stretch_row(uint8_t *dst, const uint8_t *src, size_t dst_w, size_t src_w);
 
+/**
+ * 4x4 Bayer ordered stipple copy across 320x180 scene area (step 0..3 -> 25/50/75/100%).
+ *
+ * @param dst  Destination buffer (320x180)
+ * @param src  Source buffer (320x180)
+ * @param step Dissolve pass index (0..3)
+ */
+void fast_bayer_dissolve(uint8_t *dst, const uint8_t *src, uint8_t step);
+
 #ifdef __cplusplus
 }
 #endif
