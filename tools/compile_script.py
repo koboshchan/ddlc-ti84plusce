@@ -659,13 +659,16 @@ class Compiler:
         return self._intern(value) if isinstance(value, str) else value
 
     def _const_operand_for_var(self, var_name: str | None, node) -> int | None:
-        """Like _const_operand(), but normalizes poemwinner[N] string tags
-        ("sayori"/"natsuki"/"yuri") to OP_MINIGAME's 0/1/2 enum IDs."""
+        """Like _const_operand(), normalizing poemwinner[N] and madechoice tags to 0/1/2 IDs."""
         value = _const_scalar(node)
         if var_name and var_name.startswith("poemwinner[") and isinstance(value, str):
             tag_id = TAG_TO_CHAR.get(value)
             if tag_id is not None:
                 return tag_id
+        if var_name == "madechoice" and isinstance(value, str):
+            rigged_id = {"natsuki": 0, "yuri": 1, "monika": 2}.get(value)
+            if rigged_id is not None:
+                return rigged_id
         return self._intern(value) if isinstance(value, str) else value
 
     # -- scene buffering (so `scene X \n with dissolve` gets the real trans) ---
@@ -1989,7 +1992,9 @@ class Compiler:
         degenerate 2-option menu whose options don't actually differ."""
         slot = self._var_slot("_return")
         if yes_value == no_value:
-            self.asm.set(slot, int(yes_value))
+            self.asm.menu_special(vnasm.VN_MENU_CONFIRM_OK, slot, ["OK"])
+            if not yes_value:
+                self.asm.set(slot, 0)
             return
         if message:
             self.asm.narrate(_strip_text_tags(message))
@@ -2163,6 +2168,16 @@ class Compiler:
             if fn == "renpy.full_restart":
                 self.asm.end()
                 return True
+            if fn == "renpy.display_menu":
+                parsed = _match_display_menu_call(stmt.value)
+                if parsed is not None:
+                    captions, interact, screen = parsed
+                    if not interact:
+                        self.asm.menu_special(vnasm.VN_MENU_FLASH, 0xFF, captions)
+                        return True
+                    mode = vnasm.VN_MENU_RIGGED if screen == "rigged_choice" else vnasm.VN_MENU_FLASH
+                    self.asm.menu_special(mode, 0xFF, captions)
+                    return True
         if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
             var = _ident_name(stmt.targets[0])
             if var in ("style.say_window", "style.say_dialogue"):
@@ -2184,6 +2199,15 @@ class Compiler:
                     and _ident_name(stmt.value.args[0]) == "persistent.monikatopics"):
                 self._emit_monikatopic_init()
                 return True
+            if (var is not None
+                    and isinstance(stmt.value, ast.Call)
+                    and _ident_name(stmt.value.func) == "renpy.display_menu"):
+                parsed = _match_display_menu_call(stmt.value)
+                if parsed is not None:
+                    captions, interact, screen = parsed
+                    mode = vnasm.VN_MENU_RIGGED if screen == "rigged_choice" else vnasm.VN_MENU_FLASH
+                    self.asm.menu_special(mode, self._var_slot(var), captions)
+                    return True
             if var is not None:
                 if (isinstance(stmt.value, ast.Call)
                         and _ident_name(stmt.value.func) == "datetime.datetime.now"
@@ -3391,6 +3415,37 @@ def _match_clearall_check(stmt) -> bool:
     return (isinstance(assign, ast.Assign) and len(assign.targets) == 1
             and _ident_name(assign.targets[0]) == "persistent.clearall"
             and _const_scalar(assign.value) == 1)
+
+
+def _match_display_menu_call(node: ast.Call) -> tuple[list[str], bool, str] | None:
+    """Parse `renpy.display_menu(items=[...], interact=..., screen=...)`."""
+    if _ident_name(node.func) != "renpy.display_menu":
+        return None
+    items_node = node.args[0] if node.args else None
+    interact = True
+    screen = "choice"
+    for kw in node.keywords:
+        if kw.arg == "items":
+            items_node = kw.value
+        elif kw.arg == "interact":
+            val = _const_scalar(kw.value)
+            if isinstance(val, (bool, int)):
+                interact = bool(val)
+        elif kw.arg == "screen":
+            val = _const_scalar(kw.value)
+            if isinstance(val, str):
+                screen = val
+    if not isinstance(items_node, (ast.List, ast.Tuple)):
+        return None
+    captions: list[str] = []
+    for elt in items_node.elts:
+        if not (isinstance(elt, (ast.List, ast.Tuple)) and elt.elts):
+            return None
+        cap = _const_scalar(elt.elts[0])
+        if not isinstance(cap, str):
+            return None
+        captions.append(_strip_text_tags(cap))
+    return captions, interact, screen
 
 
 def _match_glitchtext_call(node) -> tuple[int, int] | None:

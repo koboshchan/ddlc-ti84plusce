@@ -1953,6 +1953,33 @@ static uint8_t host_menu(void *ctx, const vn_scene_t *scene,
 {
     uint8_t selected = 0;
 
+    if (scene->menu_mode == VN_MENU_FLASH) {
+        render_scene(scene);
+        render_menu(choices, count, 0);
+        draw_dialogue_box(ctx, scene, SIZE_MAX);
+        render_present(TRANS_CUT);
+        host_pause(ctx, 220);
+        return 0;
+    }
+
+    if (scene->menu_mode == VN_MENU_CONFIRM_OK) {
+        for (;;) {
+            render_scene(scene);
+            render_pause_box(90, 68, 140, 46, COL_BOX_FILL, COL_BOX_EDGE);
+            render_menu(choices, count, 0);
+            draw_dialogue_box(ctx, scene, SIZE_MAX);
+            render_present(TRANS_CUT);
+            gfx_Wait();
+
+            input_t in;
+            input_poll(&in);
+            if (quit_requested || in.advance) {
+                return 0;
+            }
+        }
+    }
+
+    clock_t pull_started = clock();
     for (;;) {
         render_scene(scene);
         render_menu(choices, count, selected);
@@ -1976,12 +2003,19 @@ static uint8_t host_menu(void *ctx, const vn_scene_t *scene,
         }
         if (in.up) {
             selected = selected == 0 ? (uint8_t)(count - 1) : (uint8_t)(selected - 1);
+            pull_started = clock();
         }
         if (in.down) {
             selected = (uint8_t)((selected + 1) % count);
+            pull_started = clock();
         }
         if (in.advance) {
             return selected;
+        }
+        if (scene->menu_mode == VN_MENU_RIGGED && selected + 1 < count &&
+            main_ticks_to_ms(clock() - pull_started) >= 280) {
+            selected++;
+            pull_started = clock();
         }
     }
 }

@@ -56,6 +56,8 @@ _FIXED_OPS = {
     0x20: 0,  # OP_WINDOW_AUTO
     0x21: 5,  # OP_TEXT_OVERLAY
     vnasm.OP_MOTION: 2,
+    vnasm.OP_WINDOW_STYLE: 1,
+    vnasm.OP_MONIKA_TOPIC: 6,
 }
 
 
@@ -68,6 +70,9 @@ def _scan_bytecode(code: bytes) -> list[tuple[int, tuple[int, ...]]]:
         if op == vnasm.OP_MENU:
             count = code[pc]
             pc += 1 + count * 5
+        elif op == vnasm.OP_MENU_SPECIAL:
+            count = code[pc + 2]
+            pc += 3 + count * 2
         elif op == vnasm.OP_MENU_COND:
             count = code[pc]
             pc += 1

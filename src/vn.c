@@ -440,6 +440,45 @@ bool vn_step(vn_vm_t *vm)
             exec_menu(vm, true);
             break;
 
+        case OP_MENU_SPECIAL: {
+            uint8_t mode  = read_u8(vm);
+            uint8_t var   = read_u8(vm);
+            uint8_t count = read_u8(vm);
+            const char *choices[VN_MAX_CHOICES];
+            char choice_bufs[VN_MAX_CHOICES][64];
+            uint8_t shown = 0;
+
+            for (uint8_t i = 0; i < count; i++) {
+                uint16_t text = read_u16(vm);
+                if (vm->status != VN_RUNNING) {
+                    break;
+                }
+                if (shown < VN_MAX_CHOICES) {
+                    const char *s = vm->host->string(vm->host->ctx, text);
+                    strncpy(choice_bufs[shown], s ? s : "", sizeof(choice_bufs[shown]) - 1);
+                    choice_bufs[shown][sizeof(choice_bufs[shown]) - 1] = '\0';
+                    choices[shown] = choice_bufs[shown];
+                    shown++;
+                }
+            }
+            if (vm->status != VN_RUNNING) {
+                break;
+            }
+            uint8_t picked = 0;
+            if (shown > 0 && vm->host->menu) {
+                vm->scene.menu_mode = mode;
+                picked = vm->host->menu(vm->host->ctx, &vm->scene, choices, shown);
+                vm->scene.menu_mode = VN_MENU_NORMAL;
+                if (picked >= shown) {
+                    picked = 0;
+                }
+            }
+            if (var != 0xFF) {
+                vm->vars[var] = (mode == VN_MENU_CONFIRM_OK) ? 1 : (int16_t)picked;
+            }
+            break;
+        }
+
         case OP_POEM_VIEW: {
             uint8_t poem_id = read_u8(vm);
             if (vm->status != VN_RUNNING) {

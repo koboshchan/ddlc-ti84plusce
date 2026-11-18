@@ -208,10 +208,16 @@ static uint8_t host_menu(void *ctx, const vn_scene_t *scene,
                          const char *const *options, uint8_t count)
 {
     (void)ctx;
-    (void)scene;
+    if (scene && scene->menu_mode == VN_MENU_FLASH) {
+        return 0;
+    }
+    if (scene && scene->menu_mode == VN_MENU_CONFIRM_OK) {
+        return 0;
+    }
     menu_count++;
 
-    unsigned picked = 0;
+    unsigned picked = (scene && scene->menu_mode == VN_MENU_RIGGED && count > 0)
+        ? (unsigned)(count - 1) : 0U;
     if (choice_pos < choice_count) {
         picked = choices[choice_pos++];
         if (picked >= count) {

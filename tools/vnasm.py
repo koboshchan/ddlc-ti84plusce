@@ -46,6 +46,12 @@ OP_MENU_COND = 0x1D
 OP_POEM_VIEW = 0x1E
 OP_WINDOW_STYLE = 0x23
 OP_MONIKA_TOPIC = 0x24
+OP_MENU_SPECIAL = 0x25
+
+VN_MENU_NORMAL = 0
+VN_MENU_FLASH = 1
+VN_MENU_RIGGED = 2
+VN_MENU_CONFIRM_OK = 3
 
 CMP_EQ, CMP_NE, CMP_LT, CMP_LE, CMP_GT, CMP_GE = range(6)
 TRANS_CUT, TRANS_FADE = 0, 1
@@ -329,6 +335,15 @@ class Assembler:
         self._u8(OP_MONIKA_TOPIC)
         for v in (dest, seen_colors, m0, m1, m2, m3):
             self._u8(v)
+
+    def menu_special(self, mode: int, var: int, captions: list[str]) -> None:
+        """Compiles rigged, flash, or forced-OK menu overlays. See OP_MENU_SPECIAL."""
+        self._u8(OP_MENU_SPECIAL)
+        self._u8(mode)
+        self._u8(var)
+        self._u8(len(captions))
+        for cap in captions:
+            self._u16(self.string(cap))
 
     def ret(self) -> None:
         self._u8(OP_RETURN)

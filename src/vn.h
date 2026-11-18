@@ -189,6 +189,15 @@ enum vn_op {
     OP_POEM_VIEW  = 0x1E, /* poem_id:u8 -- renders character poem on notebook paper until dismissed */
     OP_WINDOW_STYLE = 0x23, /* style:u8 -- 0 = default pink box, 1 = Monika Act 3 plum/void box */
     OP_MONIKA_TOPIC = 0x24, /* dest:u8 seen_colors:u8 m0..m3:u8x4 -- non-repeating Act 3 topic draw */
+    OP_MENU_SPECIAL = 0x25, /* mode:u8 var:u8 count:u8 [text:u16]*count -- flash / rigged / confirm */
+};
+
+/** Menu behavior selectors carried by vn_scene_t.menu_mode. */
+enum vn_menu_mode {
+    VN_MENU_NORMAL     = 0,
+    VN_MENU_FLASH      = 1,
+    VN_MENU_RIGGED     = 2,
+    VN_MENU_CONFIRM_OK = 3,
 };
 
 /** Comparison selectors for OP_IF. */
@@ -365,6 +374,7 @@ typedef struct {
     uint8_t overlay_mask;
     uint8_t pal_fx;                     /* enum vn_pal_fx -- cleared on OP_SCENE */
     uint8_t box_style;                  /* 0 = normal box, 1 = Monika Act 3 box */
+    uint8_t menu_mode;                  /* enum vn_menu_mode during host->menu() */
     uint8_t     background;             /* bg id, or VN_NO_SPRITE            */
     vn_actor_t  actors[VN_MAX_CHARS];
     uint8_t     speaker;                /* VN_SPEAKER_NONE for narration     */
