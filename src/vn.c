@@ -899,6 +899,8 @@ bool vn_step(vn_vm_t *vm)
             if (vm->host->credits) {
                 vm->host->credits(vm->host->ctx, stage, clearall, clear_mask, scenes);
             }
+            vm->scene.speaker = VN_SPEAKER_NONE;
+            vm->scene.text    = "";
             break;
         }
 

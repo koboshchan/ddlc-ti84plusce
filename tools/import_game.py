@@ -241,6 +241,8 @@ def do_compile(raw_dir: Path, build_dir: Path,
     for asm in assemblers:
         for name, offset in asm._labels.items():
             global_labels[name] = (asm.chunk_id, offset)
+    if "script-ch30" in compiler.file_entry_points and "ch30_main" in global_labels:
+        compiler.file_entry_points["script-ch30"] = global_labels["ch30_main"]
     compiler.var_labels: dict[int, tuple[int, int]] = {}   # interned id -> (chunk_id, offset)
     for text, str_id in compiler.var_strings.items():
         if text in global_labels:

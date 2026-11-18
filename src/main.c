@@ -1199,6 +1199,8 @@ static __attribute__((noinline)) bool run_debug_chapter_menu(vn_vm_t *vm)
         if (in.advance) {
             vm->pc = assets_debug_chapter_pc(selected);
             vm->sp = 0;
+            vm->scene.speaker = VN_SPEAKER_NONE;
+            vm->scene.text    = "";
             return true;
         }
     }

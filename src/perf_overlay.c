@@ -139,7 +139,7 @@ void perf_overlay_draw(void) {
     text(fb,"VRAM RESERVED 150 KIB",X+3,Y+31);
     text(fb,owns_timer ? "FRAME MS NEW FIRST" : "TIMER BUSY",X+3,Y+38);
     for (uint8_t age=0; age<5; ++age) {
-        if (age<history.count) sprintf(line,"%u %lu MS",age+1,(unsigned long)perf_history_ms(&history,age));
+        if (age<history.count) sprintf(line,"%u %u MS",age+1,(unsigned)perf_history_ms(&history,age));
         else sprintf(line,"%u -",age+1);
         text(fb,line,X+3,Y+45+age*7u);
     }
