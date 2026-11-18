@@ -43,9 +43,67 @@ CODE_TO_TAG = {"s": "sayori", "n": "natsuki", "y": "yuri", "m": "monika"}
 # on cps/wait/color even if it were parsed out.
 _TAG_RE = re.compile(r"\{\{|\{[^{}]*\}")
 
+# Inline Say pacing control markers (UTF-8 single bytes < 0x20, avoiding \0, \n, \r).
+# Parameter bytes are biased by +0x20 so arguments are printable ASCII.
+VN_TAG_NW = "\x01"
+VN_TAG_WAIT = "\x02"
+VN_TAG_FAST = "\x03"
+VN_TAG_CPS = "\x04"
+_DEFAULT_CPS_STEP = 4  # matches src/main.c TYPE_SPEED
+
 
 def _strip_text_tags(text: str) -> str:
     return _TAG_RE.sub(lambda m: "{" if m.group(0) == "{{" else "", text)
+
+
+def _encode_dialogue_tags(text: str, quoted: bool = False) -> str:
+    """Strip visual markup while preserving {nw}, {w=N}, {fast}, and {cps=N}."""
+    no_wait = False
+    wait_ds = 0
+    cps_step = 0
+
+    def _replace(m: re.Match[str]) -> str:
+        nonlocal no_wait, wait_ds, cps_step
+        tok = m.group(0)
+        if tok == "{{":
+            return "{"
+        inner = tok[1:-1]
+        if inner == "nw":
+            no_wait = True
+            return ""
+        if inner == "fast":
+            return VN_TAG_FAST
+        if inner.startswith("w="):
+            try:
+                wait_ds = max(1, min(90, round(float(inner[2:]) * 10.0)))
+            except ValueError:
+                pass
+            return ""
+        if inner.startswith("cps="):
+            spec = inner[4:]
+            try:
+                if spec.startswith("*"):
+                    cps_step = max(1, min(32, round(_DEFAULT_CPS_STEP * float(spec[1:]))))
+                else:
+                    cps_step = max(1, min(32, round(float(spec) / 25.0)))
+            except ValueError:
+                pass
+            return ""
+        return ""
+
+    out = _TAG_RE.sub(_replace, text)
+    if quoted:
+        if out.endswith(VN_TAG_FAST):
+            out = f'"{out[:-1]}"{VN_TAG_FAST}'
+        else:
+            out = f'"{out}"'
+    if cps_step:
+        out += VN_TAG_CPS + chr(0x20 + cps_step)
+    if wait_ds:
+        out += VN_TAG_WAIT + chr(0x20 + wait_ds)
+    if no_wait:
+        out += VN_TAG_NW
+    return out
 
 
 # DDLC positions characters via named ATL transforms (transforms.rpy) rather
@@ -797,21 +855,9 @@ class Compiler:
         if not isinstance(text, str):
             self._skip(node, fname, "non-literal Say.what")
             return
-        text = _strip_text_tags(text)
-        if who is not None:
-            # DDLC's own Character() defs (definitions.rpy: mc/s/m/n/y/ny)
-            # all set what_prefix='"'/what_suffix='"' -- Ren'Py adds the
-            # quote marks at render time, they're never part of Say.what
-            # itself. Only the narrator (who=None) has no prefix/suffix.
-            # This engine has no equivalent prefix/suffix mechanism, so the
-            # simplest faithful match is baking the quotes into the text
-            # here, for every attributed line -- including one this engine
-            # doesn't otherwise recognize (e.g. "ny", Natsuki & Yuri's
-            # combined lines, which fall through to narration-style
-            # rendering below): the quotes are still real DDLC behavior for
-            # it, independent of whether this engine also gives it its own
-            # name plate.
-            text = f'"{text}"'
+        # DDLC's Character() defs wrap attributed speech in '"'...''; quotes must
+        # wrap visible text cleanly without breaking trailing pacing markers.
+        text = _encode_dialogue_tags(text, quoted=(who is not None))
         speaker = vnasm.SPEAKER_NONE
         tag = CODE_TO_TAG.get(who) if isinstance(who, str) else None
         char = TAG_TO_CHAR.get(tag) if tag else None

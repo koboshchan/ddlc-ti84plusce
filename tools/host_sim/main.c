@@ -144,10 +144,36 @@ static bool host_load_chunk(void *ctx, uint8_t chunk_id,
     return true;
 }
 
+static size_t strip_pacing_tags(const char *src, char *dst, size_t dst_cap)
+{
+    size_t out = 0;
+    if (!src || dst_cap == 0) {
+        if (dst_cap > 0) dst[0] = '\0';
+        return 0;
+    }
+    for (const char *p = src; *p != '\0'; ++p) {
+        uint8_t ch = (uint8_t)*p;
+        if (ch == 0x01 || ch == 0x03) {
+            continue;
+        }
+        if ((ch == 0x02 || ch == 0x04) && p[1] != '\0') {
+            ++p;
+            continue;
+        }
+        if (out + 1 < dst_cap) {
+            dst[out++] = (char)ch;
+        }
+    }
+    dst[out] = '\0';
+    return out;
+}
+
 static void host_say(void *ctx, const vn_scene_t *scene)
 {
+    char clean_text[256];
     (void)ctx;
     say_count++;
+    strip_pacing_tags(scene->text, clean_text, sizeof(clean_text));
 
     const char *name = speaker_name(scene->speaker);
     if (!opt_quiet) {
@@ -156,7 +182,7 @@ static void host_say(void *ctx, const vn_scene_t *scene)
 
     /* Run the real wrapper so its output is part of what we verify. */
     text_layout_t layout;
-    text_wrap(&layout, scene->text, WRAP_COLS, measure, NULL);
+    text_wrap(&layout, clean_text, WRAP_COLS, measure, NULL);
 
     if (!opt_quiet) {
         for (uint8_t i = 0; i < layout.count; i++) {
@@ -170,7 +196,7 @@ static void host_say(void *ctx, const vn_scene_t *scene)
     for (uint8_t i = 0; i < layout.count; i++) {
         consumed += layout.lines[i].len;
     }
-    if (consumed + layout.count < strlen(scene->text)) {
+    if (consumed + layout.count < strlen(clean_text)) {
         printf("  ! WARNING: line overflows %d display lines\n", TEXT_MAX_LINES);
     }
     if (!opt_quiet) {

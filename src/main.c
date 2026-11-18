@@ -1837,14 +1837,81 @@ static void host_update(void *ctx, const vn_scene_t *scene, uint8_t trans)
     }
 }
 
+static size_t parse_dialogue_pacing(const char *src, char *dst, size_t dst_cap,
+                                    bool *no_wait, uint16_t *wait_ms,
+                                    size_t *fast_len, uint8_t *cps_step)
+{
+    size_t out = 0;
+    *no_wait = false;
+    *wait_ms = 0;
+    *fast_len = 0;
+    *cps_step = TYPE_SPEED;
+
+    if (!src || dst_cap == 0) {
+        if (dst_cap > 0) dst[0] = '\0';
+        return 0;
+    }
+
+    for (const char *p = src; *p != '\0'; ++p) {
+        uint8_t ch = (uint8_t)*p;
+        if (ch == 0x01) {
+            *no_wait = true;
+        } else if (ch == 0x02 && p[1] != '\0') {
+            uint8_t ds = (uint8_t)p[1];
+            *wait_ms = (uint16_t)((ds > 0x20 ? ds - 0x20 : 1) * 100U);
+            ++p;
+        } else if (ch == 0x03) {
+            *fast_len = out;
+        } else if (ch == 0x04 && p[1] != '\0') {
+            uint8_t st = (uint8_t)p[1];
+            if (st > 0x20) *cps_step = st - 0x20;
+            ++p;
+        } else if (out + 1 < dst_cap) {
+            dst[out++] = (char)ch;
+        }
+    }
+    dst[out] = '\0';
+    return out;
+}
+
+static void host_pause(void *ctx, uint32_t ms);
+
+static void present_say_frame(vn_vm_t *vm, const vn_scene_t *scene, size_t visible)
+{
+    if (vm->noise_enabled) {
+        /* A new visible prefix must appear even before the idle deadline.
+         * Still compose/present only once, never a clean frame then noise. */
+        noise_next_frame = 0;
+        noise_tick(vm, scene, visible);
+    } else {
+        noise_tick(vm, scene, visible);
+        render_scene_lazy(scene);
+        draw_dialogue_box(vm, scene, visible);
+        render_present(TRANS_CUT);
+    }
+}
+
 static void host_say(void *ctx, const vn_scene_t *scene)
 {
+    static char clean_text[256];
     vn_vm_t *vm = ctx;
+    bool no_wait;
+    uint16_t wait_ms;
+    size_t fast_len;
+    uint8_t cps_step;
+
+    const size_t len = parse_dialogue_pacing(scene->text, clean_text,
+                                             sizeof(clean_text), &no_wait,
+                                             &wait_ms, &fast_len, &cps_step);
+    vm->scene.text = clean_text;
 
     /* Typewriter reveal, interruptible: the first press completes the line
-     * rather than advancing past it. */
-    const size_t len = strlen(scene->text);
-    size_t visible = 0;
+     * rather than advancing past it. {fast} starts with its prefix visible. */
+    size_t visible = fast_len <= len ? fast_len : len;
+    if (visible > 0 && visible == len && !quit_requested) {
+        present_say_frame(vm, scene, SIZE_MAX);
+        gfx_Wait();
+    }
 
     while (visible < len && !quit_requested) {
         input_t in;
@@ -1853,23 +1920,22 @@ static void host_say(void *ctx, const vn_scene_t *scene)
             break;
         }
 
-        visible += TYPE_SPEED;
+        visible += cps_step;
         if (visible > len) {
             visible = len;
         }
 
-        if (vm->noise_enabled) {
-            /* A new visible prefix must appear even before the idle deadline.
-             * Still compose/present only once, never a clean frame then noise. */
-            noise_next_frame = 0;
-            noise_tick(vm, scene, visible);
-        } else {
-            noise_tick(vm, scene, visible);
-            render_scene_lazy(scene);
-            draw_dialogue_box(vm, scene, visible);
-            render_present(TRANS_CUT);
-        }
+        present_say_frame(vm, scene, visible);
         gfx_Wait();
+    }
+
+    if (wait_ms > 0 && !quit_requested) {
+        present_say_frame(vm, scene, SIZE_MAX);
+        host_pause(vm, wait_ms);
+    }
+
+    if (no_wait) {
+        return;
     }
 
     wait_for_advance(vm, true);
