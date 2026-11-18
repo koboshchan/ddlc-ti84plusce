@@ -2010,6 +2010,14 @@ class Compiler:
             self.asm.label(skip_label)
             return True
 
+        if _match_clearall_check(stmt):
+            skip_label = self._gensym("clearall_skip")
+            for idx in range(10):
+                self.asm.if_(self._var_slot(f"persistent.clear[{idx}]"), vnasm.CMP_EQ, 0, skip_label)
+            self.asm.set(self._var_slot("persistent.clearall"), 1)
+            self.asm.label(skip_label)
+            return True
+
         if (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
                 and _ident_name(stmt.value.func) == "pause"):
             # DDLC's own pause(seconds) helper (a thin renpy.pause()
@@ -3267,6 +3275,28 @@ def _match_act4_monika_back_check(stmt) -> tuple[int, str, str] | None:
     if message is None:
         return None
     return (char_index, flag_var, message)
+
+
+def _match_clearall_check(stmt) -> bool:
+    """True for `if all(clear for clear in persistent.clear): persistent.clearall = True`."""
+    if not (isinstance(stmt, ast.If) and not stmt.orelse and len(stmt.body) == 1):
+        return False
+    test = stmt.test
+    if not (isinstance(test, ast.Call) and _ident_name(test.func) == "all"
+            and len(test.args) == 1 and not test.keywords):
+        return False
+    gen = test.args[0]
+    if not (isinstance(gen, ast.GeneratorExp) and len(gen.generators) == 1):
+        return False
+    comp = gen.generators[0]
+    if comp.ifs or not (isinstance(comp.target, ast.Name) and isinstance(gen.elt, ast.Name)
+                        and comp.target.id == gen.elt.id
+                        and _ident_name(comp.iter) == "persistent.clear"):
+        return False
+    assign = stmt.body[0]
+    return (isinstance(assign, ast.Assign) and len(assign.targets) == 1
+            and _ident_name(assign.targets[0]) == "persistent.clearall"
+            and _const_scalar(assign.value) == 1)
 
 
 def _match_glitchtext_call(node) -> tuple[int, int] | None:

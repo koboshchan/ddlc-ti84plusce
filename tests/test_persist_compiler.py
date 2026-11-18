@@ -127,9 +127,10 @@ class PersistCompilerTests(unittest.TestCase):
 
     def test_tail_reservation_and_overflow(self):
         compiler = Compiler(resolver=SimpleNamespace())
+        reserved = len(compiler.variables)
         compiler._var_slot("s_kill_early")
-        for n in range(255 - 15):
-            self.assertEqual(compiler._var_slot(f"v{n}"), n + 15)
+        for n in range(255 - reserved):
+            self.assertEqual(compiler._var_slot(f"v{n}"), n + reserved)
         self.assertEqual(len(compiler.variables), 256)
         with self.assertRaises(CompileError):
             compiler._var_slot("overflow")
@@ -137,11 +138,39 @@ class PersistCompilerTests(unittest.TestCase):
 
     def test_tail_is_reserved_even_before_flag_is_seen(self):
         compiler = Compiler(resolver=SimpleNamespace())
-        for n in range(255 - 15):
+        reserved = len(compiler.variables)
+        for n in range(255 - reserved):
             compiler._var_slot(f"v{n}")
         with self.assertRaises(CompileError):
             compiler._var_slot("overflow")
         self.assertEqual(compiler._var_slot("s_kill_early"), 255)
+
+    def test_clearall_check_requires_all_10_slots(self):
+        stmt = ast.parse("if all(clear for clear in persistent.clear): persistent.clearall = True").body[0]
+        for clear_mask in ((1 << 10) - 1, (1 << 10) - 2, 0):
+            compiler = Compiler(resolver=SimpleNamespace())
+            self.assertTrue(compiler._emit_python_stmt(stmt))
+            compiler.asm.resolve()
+            code = compiler.asm.code
+            slots = [0] * VN_MAX_VARS
+            for idx in range(10):
+                slots[compiler.variables[f"persistent.clear[{idx}]"]] = (clear_mask >> idx) & 1
+            pc = 0
+            while pc < len(code):
+                op = code[pc]
+                if op == vnasm.OP_IF:
+                    var, cmp_op = code[pc + 1:pc + 3]
+                    val = struct.unpack_from("<h", code, pc + 3)[0]
+                    tgt = int.from_bytes(code[pc + 5:pc + 8], "little")
+                    self.assertEqual(cmp_op, vnasm.CMP_EQ)
+                    pc = tgt if slots[var] == val else pc + 8
+                elif op == vnasm.OP_SET:
+                    slots[code[pc + 1]] = struct.unpack_from("<h", code, pc + 2)[0]
+                    pc += 4
+                else:
+                    self.fail(f"Unexpected op 0x{op:02x}")
+            expected = 1 if clear_mask == (1 << 10) - 1 else 0
+            self.assertEqual(slots[compiler.variables["persistent.clearall"]], expected)
 
 
 if __name__ == "__main__":
