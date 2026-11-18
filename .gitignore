@@ -10,8 +10,9 @@ obj/
 convimg.out
 convimg.yaml
 
-# --- Host simulator ---
+# --- Host simulator & reference work ---
 tools/host_sim/build/
+scene/work/
 
 # --- Extracted / converted game data ---
 # NOTHING derived from a copy of DDLC may ever be committed. The pipeline

@@ -1,83 +1,214 @@
-"""Strict TI entry audit. Format: https://merthsoft.com/linkguide/ti83+/fformat.html"""
-import argparse, hashlib, json, struct, zipfile, subprocess, tempfile, os
+#!/usr/bin/env python3
+"""Strict TI-84 Plus CE variable & bundle payload auditor.
+
+Format reference: https://merthsoft.com/linkguide/ti83+/fformat.html
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import struct
+import subprocess
+import sys
+import tempfile
+import zipfile
 from pathlib import Path
-LIMIT=65505
-def parse(b, source):
-    def u(p):
-        if p+2>len(b): raise ValueError("truncated length")
-        return struct.unpack_from("<H",b,p)[0]
-    if b[:11]!=b"**TI83F*\x1a\x0a\x00": raise ValueError("invalid TI signature")
-    end=55+u(53)
-    if end+2!=len(b): raise ValueError("file section length mismatch")
-    if sum(b[55:end])&65535!=u(end): raise ValueError("checksum mismatch")
-    rows=[]; p=55
-    while p<end:
-        h=u(p); n=u(p+2)
-        if h not in (11,13): raise ValueError("unsupported entry header")
-        q=p+2+h
-        if q+2+n>end or u(q)!=n: raise ValueError("entry bounds/duplicate length mismatch")
-        data=b[q+2:q+2+n]; typ=b[p+4]
-        if typ not in (5,6,21): raise ValueError("unexpected variable type")
-        if n<2 or int.from_bytes(data[:2],"little")!=n-2: raise ValueError("internal program/AppVar length mismatch")
-        rows.append(dict(source=source,name=b[p+5:p+13].rstrip(b"\0").decode("ascii"),type=typ,
-                         data_bytes=n,content_bytes=n-2,headroom=LIMIT-n,passes=n<=LIMIT))
-        p=q+2+n
-    if p!=end or not rows: raise ValueError("invalid entry count")
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _cedev import find_cedev_tool
+
+LIMIT = 65505
+
+
+def parse(blob: bytes, source: str) -> list[dict]:
+    """Validate and parse every variable entry in a raw `.8xp`/`.8xv` container."""
+    def u16(offset: int) -> int:
+        if offset + 2 > len(blob):
+            raise ValueError("truncated length")
+        return struct.unpack_from("<H", blob, offset)[0]
+
+    if blob[:11] != b"**TI83F*\x1a\x0a\x00":
+        raise ValueError("invalid TI signature")
+
+    end = 55 + u16(53)
+    if end + 2 != len(blob):
+        raise ValueError("file section length mismatch")
+    if (sum(blob[55:end]) & 0xFFFF) != u16(end):
+        raise ValueError("checksum mismatch")
+
+    rows: list[dict] = []
+    pos = 55
+    while pos < end:
+        hdr_len = u16(pos)
+        data_len = u16(pos + 2)
+        if hdr_len not in (11, 13):
+            raise ValueError("unsupported entry header")
+        data_pos = pos + 2 + hdr_len
+        if data_pos + 2 + data_len > end or u16(data_pos) != data_len:
+            raise ValueError("entry bounds/duplicate length mismatch")
+
+        data = blob[data_pos + 2 : data_pos + 2 + data_len]
+        var_type = blob[pos + 4]
+        if var_type not in (5, 6, 21):
+            raise ValueError("unexpected variable type")
+        if data_len < 2 or int.from_bytes(data[:2], "little") != data_len - 2:
+            raise ValueError("internal program/AppVar length mismatch")
+
+        name = blob[pos + 5 : pos + 13].rstrip(b"\0").decode("ascii")
+        rows.append({
+            "source": source,
+            "name": name,
+            "type": var_type,
+            "data_bytes": data_len,
+            "content_bytes": data_len - 2,
+            "headroom": LIMIT - data_len,
+            "passes": data_len <= LIMIT,
+        })
+        pos = data_pos + 2 + data_len
+
+    if pos != end or not rows:
+        raise ValueError("invalid entry count")
     return rows
-def main():
-    a=argparse.ArgumentParser();a.add_argument("bundle",type=Path);a.add_argument("--out",type=Path,required=True);a.add_argument("--engine",type=Path);v=a.parse_args()
-    rows=[]; errors=[]; dependency_checks=[]
-    with zipfile.ZipFile(v.bundle) as z:
-        for name in z.namelist():
-            if name.endswith("/") or name in ("METADATA","_CHECKSUM"): continue
-            try: rows.extend(parse(z.read(name),name))
-            except Exception as e: errors.append(dict(source=name,error=str(e)))
-    if v.engine:
-        parts=sorted(v.engine.parent.glob(v.engine.name+".*.8xv"))
-        loader=v.engine.read_bytes()
-        entry_start=55+2+int.from_bytes(loader[55:57],"little")+2
-        data=loader[entry_start:-2]
-        required=[]
-        pos=len(data)-10
-        while pos>=0 and data[pos]==21:
-            name=data[pos+1:pos+9].rstrip(b"\0").decode("ascii")
-            required.insert(0,name);pos-=9
-        actual=[parse(p.read_bytes(),str(p))[0]["name"] for p in parts]
+
+
+def audit_bundle(bundle_path: Path, engine_path: Path | None = None) -> dict:
+    """Audit a `.b84` bundle ZIP and optionally cross-check its split engine parts."""
+    rows: list[dict] = []
+    errors: list[dict] = []
+    dependency_checks: list[dict] = []
+
+    with zipfile.ZipFile(bundle_path) as zf:
+        for name in zf.namelist():
+            if name.endswith("/") or name in ("METADATA", "_CHECKSUM"):
+                continue
+            try:
+                rows.extend(parse(zf.read(name), name))
+            except Exception as exc:
+                errors.append({"source": name, "error": str(exc)})
+
+    if engine_path is not None:
+        parts = sorted(engine_path.parent.glob(f"{engine_path.name}.*.8xv"))
+        loader = engine_path.read_bytes()
+        entry_start = 55 + 2 + int.from_bytes(loader[55:57], "little") + 2
+        loader_data = loader[entry_start:-2]
+
+        convbin = find_cedev_tool("convbin", env_var="CONVBIN_REAL")
         with tempfile.TemporaryDirectory() as tmp:
-            raw_path=Path(tmp)/"engine.bin"
-            converter=os.environ.get("CONVBIN",str(Path.home()/"CEdev/bin/convbin"))
-            subprocess.run([converter,"-j","elf","-i",str(v.engine.with_suffix(".obj")),"-k","bin","-o",str(raw_path)],check=True,capture_output=True)
-            raw=raw_path.read_bytes()
-            chunks=[]
-            for part in parts:
-                b=part.read_bytes();start=55+2+int.from_bytes(b[55:57],"little")+4
-                chunks.append(b[start:-2])
-            if raw[:2]!=b"\xef\x7b" or b"".join(chunks)!=raw[2:]:
-                errors.append(dict(source=str(v.engine),error="code parts differ from contiguous current ELF engine after ASM tokens"))
+            raw_path = Path(tmp) / "engine.bin"
+            subprocess.run(
+                [
+                    str(convbin),
+                    "-j", "elf",
+                    "-i", str(engine_path.with_suffix(".obj")),
+                    "-k", "bin",
+                    "-o", str(raw_path),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            raw = raw_path.read_bytes()
 
-        if len(required)!=2 or actual!=required:
-            errors.append(dict(source=str(v.engine),error="exactly two loader code dependencies required; loader="+repr(required)+" built="+repr(actual)))
+        if parts:
+            required: list[str] = []
+            pos = len(loader_data) - 10
+            while pos >= 0 and loader_data[pos] == 21:
+                req_name = loader_data[pos + 1 : pos + 9].rstrip(b"\0").decode("ascii")
+                required.insert(0, req_name)
+                pos -= 9
 
-        with zipfile.ZipFile(v.bundle) as z:
-            names=set(z.namelist())
-            if v.engine.name not in names or z.read(v.engine.name)!=v.engine.read_bytes():
-                errors.append(dict(source=str(v.engine),error="packaged engine does not match actual binary"))
+            actual = [parse(p.read_bytes(), str(p))[0]["name"] for p in parts]
+
+            chunks: list[bytes] = []
             for part in parts:
-                entries=parse(part.read_bytes(),str(part))
+                part_bytes = part.read_bytes()
+                start = 55 + 2 + int.from_bytes(part_bytes[55:57], "little") + 4
+                chunks.append(part_bytes[start:-2])
+
+            if raw[:2] != b"\xef\x7b" or b"".join(chunks) != raw[2:]:
+                errors.append({
+                    "source": str(engine_path),
+                    "error": "code parts differ from contiguous current ELF engine after ASM tokens",
+                })
+            if len(required) != 2 or actual != required:
+                errors.append({
+                    "source": str(engine_path),
+                    "error": f"exactly two loader code dependencies required; loader={required!r} built={actual!r}",
+                })
+        else:
+            if raw[:2] != b"\xef\x7b" or loader_data[2:] != raw:
+                errors.append({
+                    "source": str(engine_path),
+                    "error": "unsplit engine binary differs from current ELF output",
+                })
+
+        with zipfile.ZipFile(bundle_path) as zf:
+            names = set(zf.namelist())
+            if engine_path.name not in names or zf.read(engine_path.name) != loader:
+                errors.append({
+                    "source": str(engine_path),
+                    "error": "packaged engine does not match actual binary",
+                })
+            for part in parts:
+                entries = parse(part.read_bytes(), str(part))
                 dependency_checks.extend(entries)
                 if part.name not in names:
-                    errors.append(dict(source=str(part),error="missing loader-required engine AppVar"))
-                elif z.read(part.name)!=part.read_bytes():
-                    errors.append(dict(source=str(part),error="engine AppVar differs from built code"))
+                    errors.append({
+                        "source": str(part),
+                        "error": "missing loader-required engine AppVar",
+                    })
+                elif zf.read(part.name) != part.read_bytes():
+                    errors.append({
+                        "source": str(part),
+                        "error": "engine AppVar differs from built code",
+                    })
                 if any(not entry["passes"] for entry in entries):
-                    errors.append(dict(source=str(part),error="engine AppVar DATA exceeds cap"))
-    mains=[r for r in rows if r["name"]=="DDLC" and r["type"] in (5,6)]
-    apps=[r for r in rows if r["type"]==21]
-    ok=not errors and len(mains)==1 and bool(apps) and all(r["passes"] for r in rows)
-    result=dict(bundle=str(v.bundle),sha256=hashlib.sha256(v.bundle.read_bytes()).hexdigest(),compressed_bytes=v.bundle.stat().st_size,
-        limit=LIMIT,measurement="variable data including internal 2-byte length, excluding file/entry wrappers",
-        engine_dependencies=dependency_checks,engine_unsplit=not dependency_checks,all_pass=ok,variable_count=len(rows),main=mains,largest_appvar=max(apps,key=lambda r:r["data_bytes"]) if apps else None,variables=rows,errors=errors)
-    v.out.parent.mkdir(parents=True,exist_ok=True);v.out.write_text(json.dumps(result,indent=2)+"\n")
-    print(json.dumps({k:result[k] for k in ("all_pass","variable_count","main","largest_appvar","errors")}))
-    if not ok: raise SystemExit(1)
-if __name__=="__main__": main()
+                    errors.append({
+                        "source": str(part),
+                        "error": "engine AppVar DATA exceeds cap",
+                    })
+
+    mains = [r for r in rows if r["name"] == "DDLC" and r["type"] in (5, 6)]
+    apps = [r for r in rows if r["type"] == 21]
+    all_pass = not errors and len(mains) == 1 and bool(apps) and all(r["passes"] for r in rows)
+
+    return {
+        "bundle": str(bundle_path),
+        "sha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
+        "compressed_bytes": bundle_path.stat().st_size,
+        "limit": LIMIT,
+        "measurement": "variable data including internal 2-byte length, excluding file/entry wrappers",
+        "engine_dependencies": dependency_checks,
+        "engine_unsplit": not dependency_checks,
+        "all_pass": all_pass,
+        "variable_count": len(rows),
+        "main": mains,
+        "largest_appvar": max(apps, key=lambda r: r["data_bytes"]) if apps else None,
+        "variables": rows,
+        "errors": errors,
+    }
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("bundle", type=Path, help="path to .b84 bundle")
+    ap.add_argument("--out", type=Path, required=True, help="JSON audit output path")
+    ap.add_argument("--engine", type=Path, help="path to built DDLC.8xp to verify code split")
+    args = ap.parse_args()
+
+    result = audit_bundle(args.bundle, args.engine)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(json.dumps(result, indent=2) + "\n")
+
+    summary = {
+        k: result[k]
+        for k in ("all_pass", "variable_count", "main", "largest_appvar", "errors")
+    }
+    print(json.dumps(summary))
+    return 0 if result["all_pass"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

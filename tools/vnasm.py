@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import struct
 from dataclasses import dataclass, field
+from typing import Callable
 
 # --- opcodes (must stay in sync with src/vn.h) ------------------------------
 
@@ -87,6 +88,9 @@ class Assembler:
     _pool: dict[str, int] = field(default_factory=dict)
     _labels: dict[str, int] = field(default_factory=dict)
     _patches: list[tuple[int, str]] = field(default_factory=list)
+    _scene_hook: Callable[[int, int, int, str], None] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     # --- primitives --------------------------------------------------------
 
@@ -210,11 +214,15 @@ class Assembler:
         self.say(SPEAKER_NONE, text)
 
     def scene(self, bg: int, trans: int = TRANS_CUT) -> None:
+        if self._scene_hook is not None:
+            self._scene_hook(self.chunk_id, len(self.code), bg, "SCENE")
         self._u8(OP_SCENE)
         self._u8(bg)
         self._u8(trans)
 
     def motion(self, scene_id: int) -> None:
+        if self._scene_hook is not None:
+            self._scene_hook(self.chunk_id, len(self.code), scene_id, "MOTION")
         self._u8(OP_MOTION)
         self._u8(scene_id)
         self._u8(TRANS_CUT)

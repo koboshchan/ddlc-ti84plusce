@@ -36,15 +36,22 @@ import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+
+import yaml
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import audit_ti_payloads
 import convert_fonts
 import convert_images
 import export_cgpack
 import extract
 import vnasm
+from _cedev import find_cedev_tool
+from ch5_motion_assets import generate as motion_generate
 from compile_script import (VN_STR_BASE, CompileError, Compiler, link_chunks,
                             load_label_params, load_transform_animations,
                             load_variable_defaults)
@@ -197,33 +204,13 @@ def do_compile(raw_dir: Path, build_dir: Path,
     # list (do_package()'s DCHJMP) -- see assets.h's assets_debug_chapter_*.
     compiler.file_entry_points: dict[str, tuple[int, int]] = {}
 
-    import inspect
-    scene_edges = []
-    original_scene_emit = vnasm.Assembler.scene
-    original_motion_emit = vnasm.Assembler.motion
-    def traced_scene_emit(asm, bg, trans=vnasm.TRANS_CUT):
-        frames=inspect.stack()
-        ctx=next((f.frame.f_locals for f in frames if "node" in f.frame.f_locals and "fname" in f.frame.f_locals), {})
-        node=ctx.get("node")
-        scene_edges.append(dict(chunk=asm.chunk_id,offset=len(asm.code),scene=bg,
-                                file=ctx.get("fname"),line=getattr(node,"linenumber",None)))
-        return original_scene_emit(asm,bg,trans)
-    def traced_motion_emit(asm, bg):
-        frames=inspect.stack()
-        ctx=next((f.frame.f_locals for f in frames if "node" in f.frame.f_locals and "fname" in f.frame.f_locals), {})
-        node=ctx.get("node")
-        scene_edges.append(dict(op="MOTION",chunk=asm.chunk_id,offset=len(asm.code),scene=bg,
-                                file=ctx.get("fname"),line=getattr(node,"linenumber",None)))
-        return original_motion_emit(asm,bg)
-    vnasm.Assembler.motion=traced_motion_emit
-    vnasm.Assembler.scene=traced_scene_emit
     assemblers: list[vnasm.Assembler] = []
     for name in files:
         path = raw_dir / f"{name}.rpyc"
         if not path.is_file():
             print(f"  ! {name}.rpyc not found in {raw_dir}, skipping")
             continue
-        compiler.asm = vnasm.Assembler(chunk_id=compiler.new_chunk_id())
+        compiler.asm = compiler.new_assembler()
         compiler.file_entry_points[name] = (compiler.asm.chunk_id, 0)
         assemblers.extend(compiler.compile_file_chunked(path, compiler.asm.chunk_id))
 
@@ -238,9 +225,9 @@ def do_compile(raw_dir: Path, build_dir: Path,
 
     missing = link_chunks(assemblers)
     resolver.write_manifest()
-    vnasm.Assembler.scene = original_scene_emit
-    vnasm.Assembler.motion = original_motion_emit
-    (build_dir/"scene-source-dependency-graph.json").write_text(json.dumps(scene_edges,indent=2))
+    (build_dir / "scene-source-dependency-graph.json").write_text(
+        json.dumps(compiler.scene_edges, indent=2) + "\n"
+    )
 
     # Which interned strings (compiler.var_strings) also happen to name a
     # real compiled label -- the table OP_JUMP_VAR/OP_CALL_VAR resolve
@@ -401,7 +388,7 @@ def do_convert_images(build_dir: Path, quality: int, skip: bool,
     gfx_dir.mkdir(parents=True, exist_ok=True)
     doc = convert_images.build_yaml(manifest, img_dir, gfx_dir, quality=quality)
     yaml_path = build_dir / "convimg.yaml"
-    yaml_path.write_text(__import__("yaml").safe_dump(doc, sort_keys=False))
+    yaml_path.write_text(yaml.safe_dump(doc, sort_keys=False))
     convert_images.run_convimg(yaml_path, img_dir, metal=metal, convimg_bin=convimg_bin)
 
     if cache_dir is not None:
@@ -413,9 +400,11 @@ def do_convert_images(build_dir: Path, quality: int, skip: bool,
         tmp.replace(cache_dir / key)
 
 
-def require(tool: str, hint: str) -> None:
-    if shutil.which(tool) is None:
-        sys.exit(f"{tool} not found on PATH. {hint}")
+def _resolve_convbin() -> Path:
+    try:
+        return find_cedev_tool("convbin", env_var="CONVBIN_REAL")
+    except FileNotFoundError as exc:
+        sys.exit(str(exc))
 
 
 def ti_name(prefix: str, index: int | None = None) -> str:
@@ -431,12 +420,13 @@ def ti_name(prefix: str, index: int | None = None) -> str:
 def write_appvar(data: bytes, name: str, appvar_dir: Path) -> Path:
     """Package one blob as one TI AppVar. Data must already fit in one
     AppVar (<=MAXVARSIZE) -- see pack_group, which guarantees that."""
+    convbin = _resolve_convbin()
     appvar_dir.mkdir(parents=True, exist_ok=True)
     src = appvar_dir / f"{name.lower()}.bin"
     src.write_bytes(data)
     out = appvar_dir / f"{name.lower()}.8xv"
     subprocess.run([
-        "convbin", "-i", str(src), "-j", "bin", "-k", "8xv",
+        str(convbin), "-i", str(src), "-j", "bin", "-k", "8xv",
         "-n", name, "-o", str(out), "-r", "-b", "TI-84 Plus CE",
     ], check=True)
     return out
@@ -481,29 +471,32 @@ def zx0_compress(data: bytes, appvar_dir: Path) -> bytes:
     """
     if len(data) > 0xFFFF:
         sys.exit(f"zx0_compress: {len(data)} bytes exceeds the u16 uncompressed-size header")
-    appvar_dir.mkdir(parents=True, exist_ok=True)
-    tmp_in = appvar_dir / "_zx0_in.bin"
-    tmp_out = appvar_dir / "_zx0_out.bin"
+    convbin = _resolve_convbin()
 
-    pad_to = max(len(data), _ZX0_MIN_INPUT)
-    last_stderr = ""
-    for _attempt in range(_ZX0_MAX_ATTEMPTS):
-        padded = data + b"\x00" * (pad_to - len(data))
-        tmp_in.write_bytes(padded)
-        result = subprocess.run(["convbin", "-i", str(tmp_in), "-j", "bin", "-c", "zx0",
-                                 "-k", "bin", "-o", str(tmp_out)], capture_output=True, text=True)
-        if result.returncode == 0:
-            data = padded
-            break
-        last_stderr = result.stderr
-        pad_to *= 2
-    else:
-        sys.exit(f"zx0_compress: convbin never succeeded even padded to {pad_to} bytes "
-                 f"(original {len(data)} bytes): {last_stderr}")
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_in = Path(tmp_dir) / "zx0_in.bin"
+        tmp_out = Path(tmp_dir) / "zx0_out.bin"
 
-    compressed = tmp_out.read_bytes()
-    tmp_in.unlink()
-    tmp_out.unlink()
+        pad_to = max(len(data), _ZX0_MIN_INPUT)
+        last_stderr = ""
+        for _attempt in range(_ZX0_MAX_ATTEMPTS):
+            padded = data + b"\x00" * (pad_to - len(data))
+            tmp_in.write_bytes(padded)
+            result = subprocess.run(
+                [str(convbin), "-i", str(tmp_in), "-j", "bin", "-c", "zx0", "-k", "bin", "-o", str(tmp_out)],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                data = padded
+                break
+            last_stderr = result.stderr
+            pad_to *= 2
+        else:
+            sys.exit(f"zx0_compress: convbin never succeeded even padded to {pad_to} bytes "
+                     f"(original {len(data)} bytes): {last_stderr}")
+
+        compressed = tmp_out.read_bytes()
     return struct.pack("<H", len(data)) + compressed
 
 
@@ -635,27 +628,23 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
                chunk_paths: list[Path], entry_chunk: int, entry_offset: int,
                compiler: Compiler, splash_pc: tuple[int, int] | None = None) -> list[Path]:
     step("package AppVars (convbin)")
-    require("convbin", 'export PATH="$HOME/CEdev/bin:$PATH"')
+    _resolve_convbin()
     gfx_dir = build_dir / "gfx"
 
     def bin_for(png_name: str) -> Path:
         return gfx_dir / (Path(png_name).stem + ".bin")
 
     appvars: list[Path] = []
-    # Deterministic packed noise fixture, incompressible by design. Split
-    # below TI's 65535-byte AppVar limit. Whole texture is 640*720/8 bytes.
-    from PIL import Image
     # These flags indicate mask availability only; noise_beat selects source beats.
     flags = bytearray(256)
-    for entry in manifest["scenes"]:
+    for sid, entry in enumerate(manifest["scenes"]):
         comp = entry.get("composition", {})
         if comp.get("vignette_top"):
-            flags[manifest["scenes"].index(entry)] = 1
+            flags[sid] = 1
     with Image.open(raw_dir / "images/bg/vignette.png") as im:
         alpha = im.convert("RGBA").getchannel("A").resize((16, 9))
         mask = bytes(round(v * 15 / 255) for v in alpha.getdata()) + bytes(48)
-    for name, data in (("DNFX", bytes(flags) + mask),):
-        appvars.append(write_appvar(data, name, appvar_dir))
+    appvars.append(write_appvar(bytes(flags) + mask, "DNFX", appvar_dir))
     for chunk_path in chunk_paths:
         chunk_id = int(chunk_path.stem.removeprefix("chunk"))
         compressed = zx0_compress(chunk_path.read_bytes(), appvar_dir)
@@ -865,7 +854,6 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
     # by chars_init() directly on-calc (and guarded by the FIRSTRUN marker), so they
     # do not need to be transferred via TI Connect CE.
 
-    from ch5_motion_assets import generate as motion_generate
     appvars.extend(motion_generate(raw_dir, build_dir, appvar_dir, write_appvar))
     total = sum(p.stat().st_size for p in appvars)
     print(f"{len(appvars)} AppVars, {total} bytes total "
@@ -894,7 +882,8 @@ def optimize_flash_order(prog_8xp: Path, appvars: list[Path]) -> list[Path]:
         "dfonts.8xv", "dpalgame.8xv", "dpalttl.8xv", "dentry.8xv", "dvstr.8xv",
         "dvlbl.8xv", "dvdef.8xv", "dsprlut.8xv", "dscnlut.8xv", "dtillut.8xv",
         "dtxtbox.8xv", "dnamebox.8xv", "dstkrs.8xv", "dcgplut.8xv", "dcgidx.8xv",
-        "dcgver.8xv", "dchjmp.8xv", "dpslot.8xv", "dpoem.8xv", "dproff.8xv"
+        "dcgver.8xv", "dchjmp.8xv", "dpslot.8xv", "dpoem.8xv", "dpoemt.8xv",
+        "dsproff.8xv", "dnfx.8xv",
     }
 
     SECTOR_USABLE = 65400
@@ -955,7 +944,7 @@ def optimize_flash_order(prog_8xp: Path, appvars: list[Path]) -> list[Path]:
 def do_bundle(prog_8xp: Path, appvars: list[Path], out_path: Path,
               limit: int = ARCHIVE_LIMIT) -> None:
     step("bundle .b84")
-    require("convbin", 'export PATH="$HOME/CEdev/bin:$PATH"')
+    convbin = _resolve_convbin()
     if not prog_8xp.is_file():
         sys.exit(f"{prog_8xp} not found -- build the engine first (`make`, or "
                  f"`make bundle GAME_DIR=...` to do both in one step)")
@@ -964,21 +953,18 @@ def do_bundle(prog_8xp: Path, appvars: list[Path], out_path: Path,
     engine_parts = sorted(prog_8xp.parent.glob(prog_8xp.name + ".*.8xv"))
     inputs = optimize_flash_order(prog_8xp, appvars + engine_parts)
 
-    args = ["convbin"]
+    args = [str(convbin)]
     for f in inputs:
         args += ["-i", str(f)]
     args += ["-k", "b84", "-o", str(out_path)]
     subprocess.run(args, check=True)
 
     # Audit every actual packaged variable, including loader/code AppVars.
-    from audit_ti_payloads import parse, LIMIT
-    import zipfile, hashlib, json
-    import audit_ti_payloads
-    subprocess.run([sys.executable, str(Path(__file__).with_name("audit_ti_payloads.py")),
-                    str(out_path), "--engine", str(prog_8xp), "--out", str(out_path.parent / "variable-size-audit.json")], check=True)
-    digest = hashlib.sha256(out_path.read_bytes()).hexdigest()
-    audit = out_path.parent / "variable-size-audit.json"
-    (out_path.parent / ("variable-size-audit-" + digest + ".json")).write_bytes(audit.read_bytes())
+    audit_result = audit_ti_payloads.audit_bundle(out_path, prog_8xp)
+    audit_path = out_path.parent / "variable-size-audit.json"
+    audit_path.write_text(json.dumps(audit_result, indent=2) + "\n")
+    if not audit_result["all_pass"]:
+        sys.exit(f"bundle payload audit failed: {audit_result['errors']}")
 
     # The real constraint: what actually has to sit in the calculator's
     # archive, uncompressed -- NOT out_path's size. .b84 is a ZIP container
@@ -1010,7 +996,9 @@ def do_bundle(prog_8xp: Path, appvars: list[Path], out_path: Path,
     # if TI Connect CE's .b84 parser errors out on large bundles.
     transfer_dir = out_path.parent / "transfer_files"
     transfer_dir.mkdir(parents=True, exist_ok=True)
-    import shutil
+    for stale in transfer_dir.iterdir():
+        if stale.is_file():
+            stale.unlink()
     for f in inputs:
         shutil.copy(f, transfer_dir / f.name)
 

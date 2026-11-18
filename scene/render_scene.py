@@ -1,28 +1,28 @@
 #!/usr/bin/env python3
 """Offline code-rendered censored reference of DDLC script-ch5.rpy L210-310.
 No game execution / screen recording. Composites real DDLC assets (extracted to
-~/ddlc-opt/assets/raw) using timings + ATL read from compiled .rpyc via the
+assets/raw) using timings + ATL read from compiled .rpyc via the
 allowlist AST reader. The hanging CG images (s_kill*.png) are NEVER opened:
 both background CG layers show a safe classroom + standing Sayori 1a substitute, foreground
 CG layers are omitted (Null) so nothing opaque covers menus/popup.
-Usage: python3 render_scene.py [outdir]
+Usage: python3 scene/render_scene.py [outdir] [--raw-dir assets/raw] [--work-dir scene/work]
 """
-import sys, math, random, subprocess, os, re
+import argparse, math, random, re, subprocess, sys
 from pathlib import Path
-import numpy as np
-from PIL import Image, ImageDraw, ImageFont, ImageChops
-sys.path.insert(0, '/home/kat/ddlc-opt/tools')
+from PIL import Image, ImageDraw, ImageFont
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / 'tools'))
 from rpyc_ast import load_rpyc, flatten, kind
 
-RAW = Path('/home/kat/ddlc-opt/assets/raw')
+RAW = ROOT / 'assets' / 'raw'
 IMG = RAW / 'images'
-WORK = Path('/home/kat/ddlc-opt/scene/work')
-OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path('/home/kat/ti/ddlc-scene')
+WORK = ROOT / 'scene' / 'work'
+OUT = ROOT / 'build' / 'scene_ref'
 W, H, FPS = 1280, 720, 30
 ORDINARY = 2.5          # hold for ordinary dialogue (original waits for input)
 DISSOLVE_CG = 0.75
 PLAYER = 'kobosh'
-LABEL = 'CG (hidden)'
 FORBIDDEN = re.compile(r's_kill')   # asset names we refuse to open
 
 def open_img(p, mode=None):
@@ -31,25 +31,45 @@ def open_img(p, mode=None):
     im.load()
     return im.convert(mode) if mode else im
 
-# ----------------------------------------------------------------- assets
+def _load_system_font(size: int):
+    for candidate in (
+        Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'),
+        Path('/System/Library/Fonts/Supplemental/Arial.ttf'),
+        Path('/Library/Fonts/Arial.ttf'),
+        RAW / 'gui/font/Aller_Rg.ttf',
+    ):
+        if candidate.is_file():
+            return ImageFont.truetype(str(candidate), size)
+    return ImageFont.load_default(size=size)
+
+# ----------------------------------------------------------------- assets (loaded on demand)
 A = {}
-A['bg'] = open_img(IMG / 'bg/residential.png', 'RGB')
-A['noise'] = [open_img(IMG / f'bg/noise{i}.jpg', 'RGB') for i in range(1, 5)]
-A['vignette'] = open_img(IMG / 'bg/vignette.png', 'RGBA')
-A['splash'] = open_img(IMG / 'bg/splash-glitch.png', 'RGBA')
-A['menu_bg'] = open_img(RAW / 'gui/menu_bg.png', 'RGB')
-def half(p):
-    im = open_img(p, 'RGBA'); return im.resize((im.width // 2, im.height // 2), Image.LANCZOS)
-A['art_m'] = half(RAW / 'gui/menu_art_m.png')
-A['art_n'] = half(RAW / 'gui/menu_art_n.png')
-A['art_y'] = half(RAW / 'gui/menu_art_y.png')
-A['textbox'] = open_img(RAW / 'gui/textbox.png', 'RGBA').resize((W, 182), Image.BILINEAR)
-A['namebox'] = open_img(RAW / 'gui/namebox.png', 'RGBA')
-F_TEXT = ImageFont.truetype(str(RAW / 'gui/font/Aller_Rg.ttf'), 24)
-F_NAME = ImageFont.truetype(str(RAW / 'gui/font/RifficFree-Bold.ttf'), 24)
-DEJAVU = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'   # Ren'Py _default style font
-F_EX1 = ImageFont.truetype(DEJAVU, 40)
-F_EX2 = ImageFont.truetype(DEJAVU, 20)
+F_TEXT = F_NAME = F_EX1 = F_EX2 = None
+SLOT = None
+_slot_cache = {}
+
+def _init_assets():
+    global F_TEXT, F_NAME, F_EX1, F_EX2, SLOT
+    if A:
+        return
+    A['bg'] = open_img(IMG / 'bg/residential.png', 'RGB')
+    A['noise'] = [open_img(IMG / f'bg/noise{i}.jpg', 'RGB') for i in range(1, 5)]
+    A['vignette'] = open_img(IMG / 'bg/vignette.png', 'RGBA')
+    A['splash'] = open_img(IMG / 'bg/splash-glitch.png', 'RGBA')
+    A['menu_bg'] = open_img(RAW / 'gui/menu_bg.png', 'RGB')
+    def half(p):
+        im = open_img(p, 'RGBA')
+        return im.resize((im.width // 2, im.height // 2), Image.LANCZOS)
+    A['art_m'] = half(RAW / 'gui/menu_art_m.png')
+    A['art_n'] = half(RAW / 'gui/menu_art_n.png')
+    A['art_y'] = half(RAW / 'gui/menu_art_y.png')
+    A['textbox'] = open_img(RAW / 'gui/textbox.png', 'RGBA').resize((W, 182), Image.BILINEAR)
+    A['namebox'] = open_img(RAW / 'gui/namebox.png', 'RGBA')
+    F_TEXT = ImageFont.truetype(str(RAW / 'gui/font/Aller_Rg.ttf'), 24)
+    F_NAME = ImageFont.truetype(str(RAW / 'gui/font/RifficFree-Bold.ttf'), 24)
+    F_EX1 = _load_system_font(40)
+    F_EX2 = _load_system_font(20)
+    SLOT = _build_slot()
 
 # ----------------------------------------------------------------- easing
 def ease(x): return 0.5 - math.cos(math.pi * x) / 2
@@ -92,17 +112,6 @@ def blit(canvas, im, pos, alpha=1.0):
         mask = Image.new('L', im.size, int(round(255 * alpha))) if alpha < 1 else None
     canvas.paste(im.convert('RGB') if im.mode == 'RGBA' else im, pos, mask)
 
-_label_cache = {}
-def label_img(size):
-    size = max(4, int(round(size)))
-    if size not in _label_cache:
-        f = ImageFont.truetype(DEJAVU, size)
-        bb = f.getbbox(LABEL)
-        im = Image.new('RGBA', (bb[2] + 4, bb[3] + 4), (0, 0, 0, 0))
-        ImageDraw.Draw(im).text((2, 2), LABEL, font=f, fill=(128, 128, 128, 255))
-        _label_cache[size] = im
-    return _label_cache[size]
-
 def _build_slot():
     bg = open_img(IMG / 'bg/class.png', 'RGB')
     l = open_img(IMG / 'sayori/1l.png', 'RGBA'); r = open_img(IMG / 'sayori/1r.png', 'RGBA'); a = open_img(IMG / 'sayori/a.png', 'RGBA')
@@ -111,8 +120,7 @@ def _build_slot():
     spr = spr.resize((768, 768), Image.LANCZOS)                      # t11 / tcommon(640): zoom .80, xcenter 640, ypos 1.03 yanchor 1.0
     bg.paste(spr.convert('RGB'), (640 - 384, int(1.03 * H) - 768), spr.getchannel('A'))
     return bg
-SLOT = _build_slot()
-_slot_cache = {}
+
 def placeholder(canvas, zoom, x, y, alpha=1.0):
     """SAFE SUBSTITUTE for the hidden CG slot: classroom bg + standing Sayori 1a, same zoom/position/alpha ATL."""
     key = round(zoom, 3)
@@ -120,13 +128,6 @@ def placeholder(canvas, zoom, x, y, alpha=1.0):
         if len(_slot_cache) > 40: _slot_cache.clear()
         _slot_cache[key] = SLOT if key == 1.0 else SLOT.resize((int(W * zoom), int(H * zoom)), Image.BILINEAR)
     blit(canvas, _slot_cache[key], (x, y), alpha)
-
-def placeholder_old(canvas, zoom, x, y, alpha=1.0):
-    """black CG (hidden) frame; (x, y) is the top-left of the zoomed 1280x720 frame."""
-    w, h = W * zoom, H * zoom
-    solid_rgb(canvas, (x, y, x + w, y + h), (0, 0, 0), alpha)
-    lb = label_img(32 * zoom)
-    blit(canvas, lb, (x + (w - lb.width) / 2, y + (h - lb.height) / 2), alpha)
 
 # ----------------------------------------------------------------- displayables
 def d_bg(c, tl): blit(c, A['bg'], (0, 0))
@@ -441,7 +442,21 @@ def write_timeline(sc, path, dur):
     Path(path).write_text('\n'.join(L))
 
 def main():
+    global RAW, IMG, WORK, OUT
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument('outdir', nargs='?', type=Path, default=OUT, help='output directory (default: build/scene_ref)')
+    ap.add_argument('--raw-dir', type=Path, default=RAW, help='extracted DDLC raw assets directory (default: assets/raw)')
+    ap.add_argument('--work-dir', type=Path, default=WORK, help='working directory for audio/contact sheet (default: scene/work)')
+    args = ap.parse_args()
+
+    RAW = args.raw_dir
+    IMG = RAW / 'images'
+    WORK = args.work_dir
+    OUT = args.outdir
+
     OUT.mkdir(parents=True, exist_ok=True)
+    WORK.mkdir(parents=True, exist_ok=True)
+    _init_assets()
     sc = Scene()
     dur = sc.total
     n = int(round(dur * FPS))

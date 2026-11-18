@@ -22,13 +22,14 @@ convert_images.py/convimg's `type: bin` output.
 from __future__ import annotations
 
 import argparse
-import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 import ttf_to_convfont
+from _cedev import find_cedev_tool
 
 # (source path under raw_dir, pixel height passed to ttf_to_convfont, name
 # recorded in each glyph's own comment field). Order fixes the pack index
@@ -44,14 +45,15 @@ FONTS = [
 
 
 def build_fontpack(raw_dir: Path, build_dir: Path) -> Path:
-    if shutil.which("convfont") is None:
-        sys.exit('convfont not found on PATH. Export CEdev/bin, e.g.:\n'
-                  '  export PATH="$HOME/CEdev/bin:$PATH"')
+    try:
+        convfont = find_cedev_tool("convfont")
+    except FileNotFoundError as exc:
+        sys.exit(str(exc))
 
     font_dir = build_dir / "fonts"
     font_dir.mkdir(parents=True, exist_ok=True)
 
-    convfont_args = ["convfont", "-o", "fontpack",
+    convfont_args = [str(convfont), "-o", "fontpack",
                       "-N", "DDLCFonts", "-A", "ddlc-ti84plusce",
                       "-C", "See LICENSE -- extracted from the user's own copy",
                       "-D", "Aller_Rg (index 0) + RifficFree-Bold (index 1)",

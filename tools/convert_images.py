@@ -29,6 +29,10 @@ from pathlib import Path
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _cedev import find_cedev_tool
+
 # Matches docs/FORMAT.md's reserved-index table. Exact-pixel reconciliation
 # with src/render.c's placeholder gfx_palette constants (raw RGB565, a
 # different color space than convimg's 24-bit hex) is Milestone 3 work; this
@@ -366,9 +370,15 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
 
 def run_convimg(yaml_path: Path, img_dir: Path, threads: int | None = None,
                 metal: bool = False, convimg_bin: str | Path | None = None) -> None:
-    convimg_exe = str(convimg_bin) if convimg_bin else os.environ.get("CONVIMG", "convimg")
-    if shutil.which(convimg_exe) is None and not os.path.isfile(convimg_exe):
-        sys.exit(f"convimg not found ({convimg_exe}). Export CEdev/bin or set CONVIMG.")
+    if convimg_bin:
+        convimg_exe = str(convimg_bin)
+        if shutil.which(convimg_exe) is None and not os.path.isfile(convimg_exe):
+            sys.exit(f"convimg not found ({convimg_exe}). Export CEdev/bin or set CONVIMG.")
+    else:
+        try:
+            convimg_exe = str(find_cedev_tool("convimg", env_var="CONVIMG"))
+        except FileNotFoundError as exc:
+            sys.exit(str(exc))
     # convimg's own default is a fixed 4 threads regardless of the host --
     # a huge waste on a many-core machine for the palette quantization pass,
     # which is CPU-bound and embarrassingly parallel across images. Use

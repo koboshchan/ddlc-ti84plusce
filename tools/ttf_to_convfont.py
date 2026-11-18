@@ -8,7 +8,7 @@ convfont (part of the CE C toolchain, same suite as convimg) turns a
 `.convfont` file into the packed binary fontlib_font_t data
 tools/import_game.py bundles as an AppVar and src/render.c loads via
 fontlibc at runtime -- this script is only the TTF -> `.convfont` bridge;
-it doesn't invoke convfont itself (see import_game.py's do_fonts()).
+it doesn't invoke convfont itself (see convert_fonts.build_fontpack()).
 
 Usage: python3 tools/ttf_to_convfont.py <font.ttf> <height_px> <out.convfont> [--name NAME]
 """

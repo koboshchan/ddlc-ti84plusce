@@ -382,6 +382,10 @@ class Compiler:
     # _split_label_block()'s comment for why label bodies need their own
     # split point separate from the file-level one.
     _extra_chunks: list = field(default_factory=list, init=False)
+    scene_edges: list[dict] = field(default_factory=list, init=False)
+    _current_loc: tuple[str | None, int | None] = field(
+        default=(None, None), init=False, repr=False
+    )
 
     def new_chunk_id(self) -> int:
         """The next globally-unique chunk_id, shared by every place a new
@@ -394,6 +398,24 @@ class Compiler:
         cid = self._next_chunk_id
         self._next_chunk_id += 1
         return cid
+
+    def new_assembler(self, chunk_id: int | None = None) -> vnasm.Assembler:
+        """Create a chunk Assembler wired up with this compiler's scene trace hook."""
+        cid = self.new_chunk_id() if chunk_id is None else chunk_id
+        return vnasm.Assembler(chunk_id=cid, _scene_hook=self._record_scene_edge)
+
+    def _record_scene_edge(self, chunk_id: int, offset: int, scene_id: int, op: str) -> None:
+        fname, lineno = self._current_loc
+        entry: dict = {
+            "chunk": chunk_id,
+            "offset": offset,
+            "scene": scene_id,
+            "file": fname,
+            "line": lineno,
+        }
+        if op != "SCENE":
+            entry = {"op": op, **entry}
+        self.scene_edges.append(entry)
 
     # -- driver ---------------------------------------------------------------
 
@@ -451,6 +473,7 @@ class Compiler:
     PLAYTHROUGH_VAR = "persistent.playthrough"
 
     def __post_init__(self) -> None:
+        self.asm._scene_hook = self._record_scene_edge
         for name in self.NAME_VARS:
             self._var_slot(name)
         self._var_slot(self.RAND_SCRATCH)
@@ -497,7 +520,7 @@ class Compiler:
             if is_label and size > budget:
                 self._flush_pending_scene(vnasm.TRANS_CUT)
                 self.asm.jump(node.name)
-                self.asm = vnasm.Assembler(chunk_id=self.new_chunk_id())
+                self.asm = self.new_assembler()
                 assemblers.append(self.asm)
             self.emit_node(node, path.name)
             if self._extra_chunks:
@@ -621,19 +644,24 @@ class Compiler:
         self._block_idx = prev_idx
 
     def emit_node(self, node, fname: str) -> None:
-        k = kind(node)
-        method = getattr(self, f"_emit_{k}", None)
-        if method is not None:
-            method(node, fname)
-            self._count(k)
-            return
+        prev_loc = self._current_loc
+        self._current_loc = (fname, getattr(node, "linenumber", None))
+        try:
+            k = kind(node)
+            method = getattr(self, f"_emit_{k}", None)
+            if method is not None:
+                method(node, fname)
+                self._count(k)
+                return
 
-        if k in _DECLARATION_KINDS or k == "Pass":
-            return  # not part of the runtime instruction stream; nothing to emit
+            if k in _DECLARATION_KINDS or k == "Pass":
+                return  # not part of the runtime instruction stream; nothing to emit
 
-        self._skip(node, fname, f"unhandled node kind {k}")
-        self._flush_pending_scene(vnasm.TRANS_CUT)
-        self.asm.nop()
+            self._skip(node, fname, f"unhandled node kind {k}")
+            self._flush_pending_scene(vnasm.TRANS_CUT)
+            self.asm.nop()
+        finally:
+            self._current_loc = prev_loc
 
     # -- per-kind emitters --------------------------------------------------------
 
@@ -744,7 +772,7 @@ class Compiler:
                 self._flush_pending_scene(vnasm.TRANS_CUT)
                 split_label = self._gensym("chunksplit")
                 self.asm.jump(split_label)
-                self.asm = vnasm.Assembler(chunk_id=self.new_chunk_id())
+                self.asm = self.new_assembler()
                 self.asm.label(split_label)
                 self._extra_chunks.append(self.asm)
             self.emit_node(node, fname)

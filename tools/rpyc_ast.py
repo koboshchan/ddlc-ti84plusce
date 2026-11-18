@@ -190,3 +190,142 @@ def flatten(nodes: Iterable[Any]) -> list[Any]:
             stack.extend(reversed(block))
 
     return out
+
+
+# --- CLI inspection helpers ---------------------------------------------------
+
+def format_atl(block: Any, indent: str = "") -> list[str]:
+    """Render stubbed RawBlock ATL statements as human-readable lines."""
+    lines: list[str] = []
+    for stmt in getattr(block, "statements", ()):
+        stmt_kind = kind(stmt)
+        if stmt_kind == "RawMultipurpose":
+            parts: list[str] = []
+            if getattr(stmt, "warper", None):
+                parts += [str(stmt.warper), str(stmt.duration)]
+            elif getattr(stmt, "warp_function", None):
+                parts += ["warp", str(stmt.warp_function), str(stmt.duration)]
+            parts += [
+                f"{expr[0]} with {expr[1]}" if expr[1] else str(expr[0])
+                for expr in getattr(stmt, "expressions", ())
+            ]
+            for kv in getattr(stmt, "properties", ()):
+                parts += [str(kv[0]), str(kv[1])]
+            for sp in getattr(stmt, "splines", ()):
+                parts += ["spline", str(sp)]
+            lines.append(indent + " ".join(parts))
+        elif stmt_kind == "RawParallel":
+            for i, sub in enumerate(stmt.blocks):
+                lines.append(f"{indent}parallel#{i}:")
+                lines.extend(format_atl(sub, indent + "    "))
+        elif stmt_kind == "RawChoice":
+            for weight, sub in stmt.choices:
+                lines.append(f"{indent}choice w={weight}:")
+                lines.extend(format_atl(sub, indent + "    "))
+        elif stmt_kind == "RawRepeat":
+            lines.append(f"{indent}repeat {stmt.repeats}")
+        elif stmt_kind == "RawTime":
+            lines.append(f"{indent}time {stmt.time}")
+        elif stmt_kind == "RawOn":
+            lines.append(f"{indent}on {list(stmt.handlers.keys())}")
+        elif stmt_kind == "RawEvent":
+            lines.append(f"{indent}event {stmt.name}")
+        elif stmt_kind == "RawBlock":
+            lines.append(f"{indent}block:")
+            lines.extend(format_atl(stmt, indent + "    "))
+        else:
+            lines.append(f"{indent}?{stmt_kind} {getattr(stmt, '__dict__', '')}")
+    return lines
+
+
+def _dump_tree(obj: Any, depth: int = 0) -> None:
+    prefix = "  " * depth
+    if depth > 9:
+        return
+    if hasattr(obj, "__dict__") and not isinstance(obj, type):
+        state = obj.__dict__
+        scalars = {
+            k: v
+            for k, v in state.items()
+            if isinstance(v, (str, int, float, tuple, type(None))) and k != "filename"
+        }
+        print(f"{prefix}{kind(obj)} {scalars if depth > 0 else ''}".rstrip())
+        for k, v in state.items():
+            if k in ("location", "parameters"):
+                continue
+            if isinstance(v, (list, tuple)) or hasattr(v, "__dict__"):
+                print(f"{prefix} .{k}")
+                _dump_tree(v, depth + 1)
+    elif isinstance(obj, (list, tuple)):
+        for item in obj:
+            if isinstance(item, (str, int, float, type(None))):
+                print(f"{prefix}  {item!r}")
+            else:
+                _dump_tree(item, depth + 1)
+
+
+def _walk_summary(nodes: Iterable[Any], lo: int, hi: int, max_width: int, indent: str = "") -> None:
+    for node in nodes:
+        node_kind = kind(node)
+        lineno = getattr(node, "linenumber", 0)
+        if node_kind == "Init":
+            _walk_summary(node.block, lo, hi, max_width, indent)
+            continue
+        if lo <= lineno <= hi:
+            label = (
+                getattr(node, "imgname", None)
+                or getattr(node, "varname", None)
+                or getattr(node, "imspec", None)
+                or getattr(node, "name", None)
+            )
+            src = (pycode_source(getattr(node, "code", None)) or "").replace("\n", " | ")
+            if max_width > 0:
+                src = src[:max_width]
+            print(f"{indent}L{lineno} {node_kind} {label} {src}".rstrip())
+            atl_block = getattr(node, "atl", None)
+            if atl_block is not None and hasattr(atl_block, "statements"):
+                for line in format_atl(atl_block, indent + "    "):
+                    print(line)
+
+
+def main() -> int:
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        description="Inspect the Ren'Py AST inside a compiled .rpyc file."
+    )
+    ap.add_argument("rpyc", type=Path, help="path to .rpyc file")
+    ap.add_argument(
+        "--lines",
+        nargs=2,
+        type=int,
+        metavar=("LO", "HI"),
+        default=(0, 10**9),
+        help="filter output to statements within inclusive source line range [LO, HI]",
+    )
+    ap.add_argument(
+        "--tree",
+        action="store_true",
+        help="dump full nested node attributes instead of compact statement/ATL summary",
+    )
+    ap.add_argument(
+        "--width",
+        type=int,
+        default=300,
+        help="maximum inline Python snippet characters in summary mode (default 300)",
+    )
+    args = ap.parse_args()
+
+    _meta, top_nodes = load_rpyc(args.rpyc)
+    lo, hi = args.lines
+    if args.tree:
+        for node in top_nodes:
+            if lo <= getattr(node, "linenumber", 0) <= hi:
+                _dump_tree(node, 1)
+    else:
+        _walk_summary(top_nodes, lo, hi, args.width)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

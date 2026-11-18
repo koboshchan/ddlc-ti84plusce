@@ -9,7 +9,7 @@ An unofficial Doki Doki Literature Club fan port for the TI-84 Plus CE. The C/eZ
 
 **Build a playable bundle**
 
-Install the [CE C/C++ toolchain](https://github.com/CE-Programming/toolchain) and Python 3 with venv support. The pipeline uses `convimg` and `convbin` from CEdev, plus the dependencies in [tools/requirements.txt](tools/requirements.txt). The current split-program wrapper expects CEdev at `$HOME/CEdev`.
+Install the [CE C/C++ toolchain](https://github.com/CE-Programming/toolchain) and Python 3 with venv support. The pipeline uses `convimg`, `convfont` and `convbin` from CEdev, plus the dependencies in [tools/requirements.txt](tools/requirements.txt).
 
 ```sh
 git clone https://github.com/koboshchan/ddlc-ti84plusce.git
@@ -31,7 +31,7 @@ The output is `build/DDLC.b84`, with individual transfer files in `build/transfe
 
 Transfer `build/DDLC.b84` to the calculator or CEmu, then transfer the CE C libraries (`clibs.8xg`) and the arTIfiCE jailbreak launcher. Run program `A`, then choose `DDLC`.
 
-Keep the bundle together. `DDLC0` and `DDLC1` are required executable code AppVars, not optional assets. If your transfer tool cannot read the bundle, transfer every file from `build/transfer_files/` instead.
+Keep the bundle together. When the engine is built with `DEBUG_MENU=1` or `PERF_OVERLAY=1` (exceeding 64 KB), `DDLC0` and `DDLC1` are required executable code AppVars, not optional assets. If your transfer tool cannot read the bundle, transfer every file from `build/transfer_files/` instead.
 
 > [!TIP]
 > For a clean emulator test, reset RAM and reload your own ROM before sending the bundle, libraries and launcher. Missing assets or a code-part mismatch should be fixed by resending the complete matching build, not just `DDLC.8xp`.
@@ -50,7 +50,7 @@ Physical USB attachment and hotplug have not been verified in the documented emu
 
 **Development and tests**
 
-Enter `up up down down left left right right` at the title screen or during play to open the debug menu. It includes rendering tests, animation previews, assembly diagnostics and in-game chapter jumps. Save-erasure and character-state controls change game data; use a separate test save.
+When compiled with `DEBUG_MENU=1` (or `PERF_OVERLAY=1`), enter `up up down down left left right right` at the title screen or during play to open the debug menu. It includes rendering tests, animation previews, assembly diagnostics and in-game chapter jumps. Save-erasure and character-state controls change game data; use a separate test save.
 
 The performance overlay is not part of `main` at present. Experimental performance builds on the development branch add a debug-menu toggle when compiled with `DDLC_PERF_OVERLAY`.
 
