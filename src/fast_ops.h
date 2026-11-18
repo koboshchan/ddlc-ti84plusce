@@ -131,6 +131,16 @@ const uint8_t *fast_rlet_decode_row(uint8_t *dst_row, const uint8_t *rlet, uint8
  */
 void fast_title_bg(uint8_t *dest, const uint8_t *strip, uint8_t px, uint8_t py);
 
+/**
+ * Opaque nearest-neighbor horizontal row stretch (dst_w <= 511, src_w >= 1).
+ *
+ * @param dst   Destination row buffer (dst_w bytes)
+ * @param src   Source row buffer (src_w bytes)
+ * @param dst_w Output width in pixels
+ * @param src_w Input width in pixels
+ */
+void fast_stretch_row(uint8_t *dst, const uint8_t *src, size_t dst_w, size_t src_w);
+
 #ifdef __cplusplus
 }
 #endif

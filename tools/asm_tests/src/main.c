@@ -58,6 +58,21 @@ int main(void) {
   }
   if(dst[0]!=255)ok=false;fail+=!ok;n++;
  }
+ for(unsigned wi=0;wi<5;wi++){
+  unsigned dw=widths[wi],sw=dw>20?(dw*3)/4:(dw?1:0),sx=0,acc=0;
+  for(unsigned j=0;j<320;j++)src[j]=(uint8_t)((j*37+1)&0xFF);
+  memset(dst,255,sizeof dst);
+  fast_stretch_row(dst+1,src,dw,sw);
+  ok=true;
+  if(sw>0&&dw>0){
+   for(unsigned x=0;x<dw;x++){
+    if(dst[x+1]!=src[sx])ok=false;
+    acc+=sw;while(acc>=dw){acc-=dw;sx++;}
+   }
+  }
+  if(dst[0]!=255||dst[dw+1]!=255)ok=false;
+  fail+=!ok;n++;
+ }
  gfx_FillScreen(0);gfx_SetTextFGColor(1);char msg[60];
  sprintf(msg,"%u checks, %u failures",n,fail);gfx_PrintStringXY(msg,10,20);
 

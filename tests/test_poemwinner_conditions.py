@@ -60,6 +60,7 @@ _FIXED_OPS = {
     vnasm.OP_MONIKA_TOPIC: 6,
     vnasm.OP_EFFECT: 5,
     vnasm.OP_OVERLAY_FX: 2,
+    vnasm.OP_LAYER_FX: 3,
 }
 
 

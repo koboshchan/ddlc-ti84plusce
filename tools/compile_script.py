@@ -1449,6 +1449,107 @@ class Compiler:
         self.last_flags.clear()
         self.visible_chars.clear()
 
+    @staticmethod
+    def _flatten_atl_props(atl) -> tuple[list[tuple[str, str]], list[str], list[str]]:
+        """Collects (prop, val), warper/expr strings, and durations recursively from an ATL RawBlock."""
+        props: list[tuple[str, str]] = []
+        exprs: list[str] = []
+        durs: list[str] = []
+        if atl is None:
+            return props, exprs, durs
+        for st in getattr(atl, "statements", []) or []:
+            sk = kind(st)
+            if sk == "RawMultipurpose":
+                dur = getattr(st, "duration", None)
+                if dur not in (None, "0"):
+                    durs.append(str(dur))
+                for ex, _ in getattr(st, "expressions", []) or []:
+                    exprs.append(str(ex))
+                for pk, pv in getattr(st, "properties", []) or []:
+                    props.append((str(pk), str(pv)))
+            elif sk in ("RawParallel",):
+                for sub in getattr(st, "blocks", []) or []:
+                    sp, se, sd = Compiler._flatten_atl_props(sub)
+                    props.extend(sp)
+                    exprs.extend(se)
+                    durs.extend(sd)
+            elif hasattr(st, "statements"):
+                sp, se, sd = Compiler._flatten_atl_props(st)
+                props.extend(sp)
+                exprs.extend(se)
+                durs.extend(sd)
+        return props, exprs, durs
+
+    def _emit_ShowLayer(self, node, fname: str) -> None:
+        self._flush_pending_scene(vnasm.TRANS_CUT)
+        layer = getattr(node, "layer", "master") or "master"
+        at_list = [str(a) for a in (getattr(node, "at_list", None) or [])]
+        atl = getattr(node, "atl", None)
+
+        prev_node = (
+            self._block_nodes[self._block_idx - 1]
+            if hasattr(self, "_block_nodes") and hasattr(self, "_block_idx")
+            and self._block_nodes and self._block_idx > 0
+            else None
+        )
+        if layer == "screens":
+            if prev_node is not None and kind(prev_node) == "ShowLayer":
+                return
+            if not at_list and atl is None:
+                return
+
+        if not at_list and atl is None:
+            self.asm.layer_fx(vnasm.VN_LAYER_NONE, 0)
+            return
+
+        if at_list:
+            tname = at_list[0].split("(", 1)[0].strip()
+            if tname == "dizzy":
+                self.asm.layer_fx(vnasm.VN_LAYER_DIZZY, 0)
+                return
+            if tname == "layerflicker":
+                self.asm.layer_fx(vnasm.VN_LAYER_FLICKER, 0)
+                return
+            if tname == "rewind":
+                self.asm.layer_fx(vnasm.VN_LAYER_REWIND, 0)
+                return
+            if tname in ("heartbeat", "heartbeat2"):
+                self.asm.layer_fx(vnasm.VN_LAYER_HEARTBEAT, 0)
+                return
+            self._skip(node, fname, f"ShowLayer unsupported transform {at_list!r}")
+            self.asm.nop()
+            return
+
+        props, exprs, durs = self._flatten_atl_props(atl)
+        prop_keys = [k for k, _ in props]
+        prop_vals = " ".join(f"{k}={v}" for k, v in props)
+        expr_str = " ".join(exprs)
+
+        if "menu_clicked" in prop_vals:
+            self.asm.layer_fx(vnasm.VN_LAYER_MENU_ZOOM, self._var_slot("menu_clicked"))
+            return
+        if props == [("zoom", "1.00")] or props == [("zoom", "1.0")]:
+            if layer != "screens":
+                self.asm.layer_fx(vnasm.VN_LAYER_NONE, 0)
+            return
+        if "rotate" in prop_keys and "240" in durs:
+            self.asm.layer_fx(vnasm.VN_LAYER_DRIFT, 0)
+            return
+        if "dizzy" in expr_str:
+            self.asm.layer_fx(vnasm.VN_LAYER_CH30_SHAKE1, 0)
+            return
+        if "xpos" in prop_keys:
+            xpos_count = prop_keys.count("xpos")
+            fx = vnasm.VN_LAYER_CH30_SHAKE3 if xpos_count >= 4 else vnasm.VN_LAYER_CH30_SHAKE1S
+            self.asm.layer_fx(fx, 0)
+            return
+        if "zoom" in prop_keys and "8" in durs:
+            self.asm.layer_fx(vnasm.VN_LAYER_CH30_ZOOM, 0)
+            return
+
+        self._skip(node, fname, "ShowLayer unsupported ATL block")
+        self.asm.nop()
+
     def _emit_With(self, node, fname: str) -> None:
         # DDLC's scene-level transitions (transforms.rpy) are all named
         # `*_scene*` and are all built the same way: a MultipleTransition that

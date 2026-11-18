@@ -2043,7 +2043,16 @@ static void host_pause(void *ctx, uint32_t ms)
         input_poll(&in);
         if (quit_requested || in.advance) break;
         if (ms && main_ticks_to_ms(clock() - start) >= ms) break;
-        noise_tick(vm, &vm->scene, SIZE_MAX);
+        if (vm->noise_enabled) {
+            noise_tick(vm, &vm->scene, SIZE_MAX);
+        } else if (!render_scene_is_settled(vm->scene.background)) {
+            render_scene_lazy(&vm->scene);
+            draw_dialogue_box(vm, &vm->scene, SIZE_MAX);
+            render_present(TRANS_CUT);
+            render_timed_fx_tick(&vm->scene);
+        } else {
+            noise_tick(vm, &vm->scene, SIZE_MAX);
+        }
         gfx_Wait();
     }
     noise_end();

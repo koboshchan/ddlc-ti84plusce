@@ -192,6 +192,22 @@ enum vn_op {
     OP_MENU_SPECIAL = 0x25, /* mode:u8 var:u8 count:u8 [text:u16]*count -- flash / rigged / confirm */
     OP_EFFECT       = 0x26, /* fx:u8 delay_ms:u16 length_ms:u16 -- timed screen palette effect */
     OP_OVERLAY_FX   = 0x27, /* bit:u8 enable:u8 -- toggle procedural overlay bits (RectCluster/Blood/Mask/LiveTile) */
+    OP_LAYER_FX     = 0x28, /* fx:u8 param:u16 -- ShowLayer camera/layer transform effect */
+};
+
+/** Layer camera/viewport effects carried by OP_LAYER_FX / vn_scene_t.layer_fx. */
+enum vn_layer_fx {
+    VN_LAYER_NONE         = 0,
+    VN_LAYER_DRIFT        = 1,
+    VN_LAYER_FLICKER      = 2,
+    VN_LAYER_MENU_ZOOM    = 3,
+    VN_LAYER_DIZZY        = 4,
+    VN_LAYER_REWIND       = 5,
+    VN_LAYER_HEARTBEAT    = 6,
+    VN_LAYER_CH30_ZOOM    = 7,
+    VN_LAYER_CH30_SHAKE1  = 8,
+    VN_LAYER_CH30_SHAKE3  = 9,
+    VN_LAYER_CH30_SHAKE1S = 10,
 };
 
 /** Procedural runtime overlay bits carried by vn_scene_t.overlay_fx_mask. */
@@ -396,8 +412,11 @@ typedef struct {
     uint8_t timed_fx;                   /* enum vn_timed_fx -- cleared on OP_SCENE */
     uint8_t timed_fx_seq;               /* bumped on every OP_EFFECT trigger */
     uint8_t overlay_fx_mask;            /* enum vn_overlay_fx bitmask -- cleared on OP_SCENE */
+    uint8_t layer_fx;                   /* enum vn_layer_fx -- cleared on OP_SCENE */
+    uint8_t layer_fx_seq;               /* bumped on every OP_LAYER_FX change */
     uint16_t timed_fx_delay_ms;
     uint16_t timed_fx_len_ms;
+    uint16_t layer_fx_param;            /* resolved var value or static param */
     uint8_t     background;             /* bg id, or VN_NO_SPRITE            */
     vn_actor_t  actors[VN_MAX_CHARS];
     uint8_t     speaker;                /* VN_SPEAKER_NONE for narration     */

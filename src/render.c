@@ -701,6 +701,9 @@ static bool ovl_pixel_active;
 
 static void render_live_tile_bg(void);
 static void render_overlay_fx(const vn_scene_t *scene);
+static bool layer_fx_active_pending(void);
+static bool layer_fx_scene_pending(const vn_scene_t *scene, unsigned now_ms);
+static void apply_layer_fx(const vn_scene_t *scene, unsigned t);
 
 /* Captures the plate for actor @p a, sizing (or resizing) the buffer to fit.
  * Call with the background and every rearward actor already drawn. */
@@ -990,13 +993,13 @@ void render_scene(const vn_scene_t *scene)
         render_overlay_fx(scene);
     }
     apply_tear(scene, t);
-    if (scene->tear_on) {
-        /* Never settles while shown -- every band keeps re-rolling, so a
-         * frame is never "the same as last time" the way idle actors are.
-         * Also disqualifies the plate: apply_tear() touches rows across
-         * the whole scene area, not one actor's rectangle, so the plate's
-         * single-rectangle repair can't reconstruct it. */
-        anim_moving = true;
+    apply_layer_fx(scene, t);
+    if (scene->tear_on || scene->layer_fx != VN_LAYER_NONE) {
+        /* tear touches the whole scene area; layer_fx transforms the whole
+         * composed viewport. Neither can use a single-actor plate repair. */
+        if (scene->tear_on) {
+            anim_moving = true;
+        }
         plate_valid = false;
     }
 
@@ -1114,7 +1117,8 @@ void render_invalidate_scene(void)
 
 bool render_scene_is_settled(uint8_t bg_id)
 {
-    return have_drawn_once && scene_settled && !ch5_motion_active(bg_id) && !ovl_pixel_active;
+    return have_drawn_once && scene_settled && !ch5_motion_active(bg_id) &&
+           !ovl_pixel_active && !layer_fx_active_pending();
 }
 
 void render_scene_lazy(const vn_scene_t *scene)
@@ -1129,6 +1133,11 @@ void render_scene_lazy(const vn_scene_t *scene)
     if ((scene->overlay_fx_mask & VN_OVL_PIXEL_MASK) && (!have_drawn_once || clock() >= ovl_next)) {
         render_scene(scene);
         ovl_next = clock() + CLOCKS_PER_SEC / 8;
+        return;
+    }
+    if (scene->layer_fx != VN_LAYER_NONE &&
+        (!have_drawn_once || layer_fx_scene_pending(scene, ticks_to_ms(clock())))) {
+        render_scene(scene);
         return;
     }
     if (!have_drawn_once || !scene_settled) {
@@ -1979,6 +1988,343 @@ void render_timed_fx_tick(const vn_scene_t *scene)
     } else if (room_mask_applied) {
         memcpy(gfx_palette, current_palette, sizeof(current_palette));
         room_mask_applied = false;
+    }
+}
+
+static uint8_t  layer_s_fx;
+static uint8_t  layer_s_seq;
+static uint16_t layer_s_param;
+static unsigned layer_s_started_ms;
+static uint16_t layer_s_drawn_key;
+static uint8_t  layer_row_scratch[SCREEN_W];
+
+static void copy_row_shifted(uint8_t *dst, const uint8_t *src, int dx)
+{
+    if (dx == 0) {
+        if (dst != src) {
+            memcpy(dst, src, SCREEN_W);
+        }
+    } else if (dx > 0) {
+        int copy_w = SCREEN_W - dx;
+        if (copy_w > 0) {
+            memmove(dst + dx, src, (size_t)copy_w);
+            memset(dst, COL_BLACK, (size_t)dx);
+        } else {
+            memset(dst, COL_BLACK, SCREEN_W);
+        }
+    } else {
+        int sh = -dx;
+        int copy_w = SCREEN_W - sh;
+        if (copy_w > 0) {
+            memmove(dst, src + sh, (size_t)copy_w);
+            memset(dst + copy_w, COL_BLACK, (size_t)sh);
+        } else {
+            memset(dst, COL_BLACK, SCREEN_W);
+        }
+    }
+}
+
+static void layer_viewport_shift(int dx, int dy)
+{
+    if (dx == 0 && dy == 0) {
+        return;
+    }
+    if (dx <= -SCREEN_W || dx >= SCREEN_W || dy <= -SCENE_H || dy >= SCENE_H) {
+        memset(gfx_vbuffer, COL_BLACK, (size_t)(SCREEN_W * SCENE_H));
+        return;
+    }
+    uint8_t *fb = (uint8_t *)gfx_vbuffer;
+    if (dy >= 0) {
+        for (int y = SCENE_H - 1; y >= dy; y--) {
+            copy_row_shifted(fb + (size_t)y * SCREEN_W,
+                             fb + (size_t)(y - dy) * SCREEN_W, dx);
+        }
+        if (dy > 0) {
+            memset(fb, COL_BLACK, (size_t)(dy * SCREEN_W));
+        }
+    } else {
+        int sy_off = -dy;
+        int lim = SCENE_H + dy;
+        for (int y = 0; y < lim; y++) {
+            copy_row_shifted(fb + (size_t)y * SCREEN_W,
+                             fb + (size_t)(y + sy_off) * SCREEN_W, dx);
+        }
+        memset(fb + (size_t)lim * SCREEN_W, COL_BLACK, (size_t)(sy_off * SCREEN_W));
+    }
+}
+
+static void layer_stretch_one(uint8_t *fb, int dy, int sy, int x0, int cw)
+{
+    uint8_t *dst = fb + (size_t)dy * SCREEN_W;
+    const uint8_t *src = fb + (size_t)sy * SCREEN_W + x0;
+    if (sy == dy) {
+        memcpy(layer_row_scratch, src, (size_t)cw);
+        src = layer_row_scratch;
+    }
+    if (cw == SCREEN_W) {
+        if (dst != src) {
+            memcpy(dst, src, SCREEN_W);
+        }
+    } else {
+        fast_stretch_row(dst, src, SCREEN_W, (size_t)cw);
+    }
+}
+
+/* In-place crop-and-stretch on gfx_vbuffer (320x180) using one 320-byte row
+ * scratch buffer. Rows above the crossing point copy from strictly lower rows,
+ * rows below copy from strictly upper rows, and fixed-point rows use scratch. */
+static void layer_crop_stretch(int x0, int y0, int cw, int ch)
+{
+    if (cw >= SCREEN_W && ch >= SCENE_H) {
+        return;
+    }
+    if (cw < 1) cw = 1;
+    if (cw > SCREEN_W) cw = SCREEN_W;
+    if (ch < 1) ch = 1;
+    if (ch > SCENE_H) ch = SCENE_H;
+    if (x0 < 0) x0 = 0;
+    if (x0 > SCREEN_W - cw) x0 = SCREEN_W - cw;
+    if (y0 < 0) y0 = 0;
+    if (y0 > SCENE_H - ch) y0 = SCENE_H - ch;
+
+    uint8_t *fb = (uint8_t *)gfx_vbuffer;
+    int y = 0;
+    while (y < SCENE_H) {
+        int sy = y0 + (y * ch) / SCENE_H;
+        if (sy <= y) {
+            break;
+        }
+        layer_stretch_one(fb, y, sy, x0, cw);
+        y++;
+    }
+    int y2 = SCENE_H - 1;
+    while (y2 >= y) {
+        int sy = y0 + (y2 * ch) / SCENE_H;
+        if (sy >= y2) {
+            break;
+        }
+        layer_stretch_one(fb, y2, sy, x0, cw);
+        y2--;
+    }
+    for (int ym = y; ym <= y2; ym++) {
+        int sy = y0 + (ym * ch) / SCENE_H;
+        layer_stretch_one(fb, ym, sy, x0, cw);
+    }
+}
+
+static uint16_t layer_fx_compute_state(uint8_t fx, uint8_t seq, uint16_t param,
+                                       unsigned elapsed_ms,
+                                       int *out_cw, int *out_ch,
+                                       int *out_xa, int *out_ya,
+                                       int *out_dx, int *out_dy,
+                                       bool *out_shear)
+{
+    int cw = SCREEN_W, ch = SCENE_H, xa = 50, ya = 50, dx = 0, dy = 0;
+    bool shear = false;
+    uint16_t key = 0;
+
+    switch (fx) {
+    case VN_LAYER_DRIFT: {
+        unsigned step = elapsed_ms / 8000U;
+        if (step > 15U) step = 15U;
+        unsigned pct = 100U + step * 2U; /* 1.00 .. 1.30 in 16 steps */
+        cw = (int)((SCREEN_W * 100U) / pct);
+        ch = (int)((SCENE_H * 100U) / pct);
+        dx = (int)(step / 3U);
+        dy = -(int)(step / 4U);
+        key = (uint16_t)(1U + step);
+        break;
+    }
+    case VN_LAYER_FLICKER: {
+        unsigned phase = elapsed_ms % 1500U;
+        if (phase < 1200U) {
+            key = 1U;
+        } else if (phase < 1300U) {
+            cw = 304; ch = 171; dx = 4;
+            key = 2U;
+        } else if (phase < 1400U) {
+            cw = 310; ch = 174; dx = -4;
+            key = 3U;
+        } else {
+            cw = 304; ch = 171; dx = 2;
+            key = 4U;
+        }
+        break;
+    }
+    case VN_LAYER_MENU_ZOOM: {
+        unsigned n = param;
+        if (n > 12U) n = 12U;
+        unsigned pct = 100U + n * n * 6U;
+        if (pct > 250U) pct = 250U;
+        cw = (int)((SCREEN_W * 100U) / pct);
+        ch = (int)((SCENE_H * 100U) / pct);
+        ya = 25;
+        key = (uint16_t)(1U + n);
+        break;
+    }
+    case VN_LAYER_DIZZY: {
+        static const int8_t dx_lut[12] = { 6,  5,  3,  0, -3, -5, -6, -5, -3,  0,  3,  5};
+        static const int8_t dy_lut[12] = { 0,  2,  3,  4,  3,  2,  0, -2, -3, -4, -3, -2};
+        unsigned step = (elapsed_ms / 80U) % 12U;
+        dx = dx_lut[step];
+        dy = dy_lut[step];
+        key = (uint16_t)(1U + step);
+        break;
+    }
+    case VN_LAYER_REWIND: {
+        static const int8_t jx[8] = {-5, 4, -3, 6, -4, 3, -6, 2};
+        static const int8_t jy[8] = { 2,-3,  1,-2,  3,-1,  2,-3};
+        unsigned step = (elapsed_ms / 90U) & 7U;
+        cw = 266; ch = 150;
+        dx = jx[step];
+        dy = jy[step];
+        shear = (step == 2U || step == 6U);
+        key = (uint16_t)(1U + step);
+        break;
+    }
+    case VN_LAYER_HEARTBEAT: {
+        unsigned phase = elapsed_ms % 2140U;
+        if (phase < 144U || phase >= 720U) {
+            key = 1U;
+        } else if (phase < 394U) {
+            cw = 298; ch = 168; dx = 3;
+            key = 2U;
+        } else if (phase < 544U) {
+            cw = 308; ch = 173; dx = -2;
+            key = 3U;
+        } else {
+            cw = 298; ch = 168; dx = 2;
+            key = 4U;
+        }
+        break;
+    }
+    case VN_LAYER_CH30_ZOOM: {
+        unsigned step = elapsed_ms / 500U;
+        if (step > 16U) step = 16U;
+        unsigned pct = 100U + (step * 100U) / 16U; /* 100..200% */
+        cw = (int)((SCREEN_W * 100U) / pct);
+        ch = (int)((SCENE_H * 100U) / pct);
+        ya = 15;
+        key = (uint16_t)(1U + step);
+        break;
+    }
+    case VN_LAYER_CH30_SHAKE1: {
+        if (elapsed_ms < 1000U) {
+            key = 1U;
+        } else if (elapsed_ms < 1650U) {
+            static const uint16_t w_tab[8] = {180, 180, 180, 190, 220, 250, 280, 304};
+            static const int8_t   x_tab[8] = {-10,  10,  -8,   8,  -5,   5,  -3,   2};
+            unsigned step = (elapsed_ms - 1000U) / 82U;
+            if (step > 7U) step = 7U;
+            cw = (int)w_tab[step];
+            ch = (cw * SCENE_H) / SCREEN_W;
+            ya = 10;
+            dx = x_tab[step];
+            key = (uint16_t)(2U + step);
+        } else {
+            key = 20U;
+        }
+        break;
+    }
+    case VN_LAYER_CH30_SHAKE3:
+    case VN_LAYER_CH30_SHAKE1S: {
+        unsigned total_ms = (fx == VN_LAYER_CH30_SHAKE3) ? 1050U : 350U;
+        if (elapsed_ms < total_ms) {
+            static const uint16_t bw[4] = {214, 246, 284, 308};
+            static const int8_t   bx[4] = {-20,  14,  -6,   0};
+            unsigned beat = elapsed_ms / 350U;
+            unsigned sub  = (elapsed_ms % 350U) / 88U;
+            if (sub > 3U) sub = 3U;
+            int sign = (beat & 1U) ? -1 : 1;
+            cw = (int)bw[sub];
+            ch = (cw * SCENE_H) / SCREEN_W;
+            dx = bx[sub] * sign;
+            key = (uint16_t)(1U + beat * 4U + sub);
+        } else {
+            key = 99U;
+        }
+        break;
+    }
+    default:
+        break;
+    }
+
+    if (out_cw) *out_cw = cw;
+    if (out_ch) *out_ch = ch;
+    if (out_xa) *out_xa = xa;
+    if (out_ya) *out_ya = ya;
+    if (out_dx) *out_dx = dx;
+    if (out_dy) *out_dy = dy;
+    if (out_shear) *out_shear = shear;
+    return (uint16_t)(((uint16_t)seq << 8) ^ (uint16_t)(fx << 5) ^ key);
+}
+
+static bool layer_fx_active_pending(void)
+{
+    if (layer_s_fx == VN_LAYER_NONE) {
+        return false;
+    }
+    unsigned now = ticks_to_ms(clock());
+    uint16_t key = layer_fx_compute_state(layer_s_fx, layer_s_seq, layer_s_param,
+                                          now - layer_s_started_ms,
+                                          NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+    return key != layer_s_drawn_key;
+}
+
+static bool layer_fx_scene_pending(const vn_scene_t *scene, unsigned now_ms)
+{
+    if (!scene || scene->layer_fx == VN_LAYER_NONE) {
+        return false;
+    }
+    if (scene->layer_fx != layer_s_fx ||
+        scene->layer_fx_seq != layer_s_seq ||
+        scene->layer_fx_param != layer_s_param) {
+        return true;
+    }
+    uint16_t key = layer_fx_compute_state(layer_s_fx, layer_s_seq, layer_s_param,
+                                          now_ms - layer_s_started_ms,
+                                          NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+    return key != layer_s_drawn_key;
+}
+
+static void apply_layer_fx(const vn_scene_t *scene, unsigned t)
+{
+    if (!scene || scene->layer_fx == VN_LAYER_NONE) {
+        layer_s_fx = VN_LAYER_NONE;
+        layer_s_drawn_key = 0;
+        return;
+    }
+    if (scene->layer_fx != layer_s_fx ||
+        scene->layer_fx_seq != layer_s_seq ||
+        scene->layer_fx_param != layer_s_param) {
+        layer_s_fx = scene->layer_fx;
+        layer_s_seq = scene->layer_fx_seq;
+        layer_s_param = scene->layer_fx_param;
+        layer_s_started_ms = t;
+    }
+    int cw, ch, xa, ya, dx, dy;
+    bool shear;
+    uint16_t key = layer_fx_compute_state(layer_s_fx, layer_s_seq, layer_s_param,
+                                          t - layer_s_started_ms,
+                                          &cw, &ch, &xa, &ya, &dx, &dy, &shear);
+    layer_s_drawn_key = key;
+
+    if (cw < SCREEN_W || ch < SCENE_H) {
+        int x0 = ((SCREEN_W - cw) * xa) / 100;
+        int y0 = ((SCENE_H - ch) * ya) / 100;
+        layer_crop_stretch(x0, y0, cw, ch);
+    }
+    if (dx != 0 || dy != 0) {
+        layer_viewport_shift(dx, dy);
+    }
+    if (shear) {
+        uint8_t *fb = (uint8_t *)gfx_vbuffer;
+        for (int y = 40; y < 70; y++) {
+            fast_row_shift(fb + (size_t)y * SCREEN_W, layer_row_scratch, 10);
+        }
+        for (int y = 115; y < 135; y++) {
+            fast_row_shift(fb + (size_t)y * SCREEN_W, layer_row_scratch, SCREEN_W - 8);
+        }
     }
 }
 

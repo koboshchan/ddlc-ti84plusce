@@ -403,6 +403,8 @@ bool vn_step(vn_vm_t *vm)
             vm->scene.pal_fx = (trans & TRANS_SILHOUETTE) ? VN_FX_SILHOUETTE : VN_FX_NONE;
             vm->scene.timed_fx = VN_EFFECT_NONE;
             vm->scene.overlay_fx_mask = 0;
+            vm->scene.layer_fx = VN_LAYER_NONE;
+            vm->scene.layer_fx_param = 0;
             actors_clear(&vm->scene);
             vm->host->update(vm->host->ctx, &vm->scene, (uint8_t)(trans & 0x7FU));
             break;
@@ -822,6 +824,29 @@ bool vn_step(vn_vm_t *vm)
             }
             if (vm->scene.overlay_fx_mask != prev && vm->host->update &&
                 bit != VN_OVL_LIVE_TILE && bit != VN_OVL_ROOM_MASK) {
+                vm->host->update(vm->host->ctx, &vm->scene, TRANS_CUT);
+            }
+            break;
+        }
+
+        case OP_LAYER_FX: {
+            uint8_t  fx    = read_u8(vm);
+            uint16_t param = read_u16(vm);
+            if (vm->status != VN_RUNNING) {
+                break;
+            }
+            uint16_t resolved = param;
+            if (fx == VN_LAYER_MENU_ZOOM) {
+                resolved = (param < VN_MAX_VARS && vm->vars[param] > 0)
+                           ? (uint16_t)vm->vars[param] : 0;
+            }
+            bool changed = (vm->scene.layer_fx != fx) ||
+                           (vm->scene.layer_fx_param != resolved) ||
+                           (fx >= VN_LAYER_CH30_ZOOM);
+            vm->scene.layer_fx = fx;
+            vm->scene.layer_fx_param = resolved;
+            vm->scene.layer_fx_seq++;
+            if (changed && vm->host->update) {
                 vm->host->update(vm->host->ctx, &vm->scene, TRANS_CUT);
             }
             break;

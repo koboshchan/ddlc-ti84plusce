@@ -49,6 +49,19 @@ OP_MONIKA_TOPIC = 0x24
 OP_MENU_SPECIAL = 0x25
 OP_EFFECT = 0x26
 OP_OVERLAY_FX = 0x27
+OP_LAYER_FX = 0x28
+
+VN_LAYER_NONE = 0
+VN_LAYER_DRIFT = 1
+VN_LAYER_FLICKER = 2
+VN_LAYER_MENU_ZOOM = 3
+VN_LAYER_DIZZY = 4
+VN_LAYER_REWIND = 5
+VN_LAYER_HEARTBEAT = 6
+VN_LAYER_CH30_ZOOM = 7
+VN_LAYER_CH30_SHAKE1 = 8
+VN_LAYER_CH30_SHAKE3 = 9
+VN_LAYER_CH30_SHAKE1S = 10
 
 VN_EFFECT_NONE = 0
 VN_EFFECT_INVERT = 1
@@ -369,6 +382,12 @@ class Assembler:
         self._u8(OP_OVERLAY_FX)
         self._u8(bit)
         self._u8(1 if enable else 0)
+
+    def layer_fx(self, fx: int, param: int = 0) -> None:
+        """Sets or clears ShowLayer camera/viewport effects. See OP_LAYER_FX."""
+        self._u8(OP_LAYER_FX)
+        self._u8(fx)
+        self._u16(param & 0xFFFF)
 
     def ret(self) -> None:
         self._u8(OP_RETURN)

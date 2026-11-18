@@ -30,6 +30,9 @@
 	.global	_fast_remap_bytes
 	.type	_fast_remap_bytes, @function
 
+	.global	_fast_stretch_row
+	.type	_fast_stretch_row, @function
+
 ; ===========================================================================
 ; void fast_cg_upscale_2x(uint8_t *dest, const uint8_t *src)
 ; ===========================================================================
@@ -675,4 +678,79 @@ _fast_remap_bytes:
 .remap_done:
 	pop	iy
 	pop	ix
+	ret
+
+; ===========================================================================
+; void fast_stretch_row(uint8_t *dst, const uint8_t *src,
+;                       size_t dst_w, size_t src_w)
+; Opaque nearest-neighbor horizontal stretch (dst_w <= 511, src_w >= 1).
+; ===========================================================================
+	.section	.text._fast_stretch_row,"ax",@progbits
+_fast_stretch_row:
+	push	ix
+	push	iy
+
+	ld	iy, 0
+	add	iy, sp
+
+	ld	bc, (iy + 15)		; BC = dst_w
+	ld	hl, 0
+	or	a, a
+	sbc	hl, bc
+	jr	z, .stretch_done
+
+	ld	hl, (iy + 18)		; HL = src_w
+	ld	a, h
+	or	a, l
+	jr	z, .stretch_done
+
+	ld	de, (iy + 9)		; DE = dst
+	ld	hl, (iy + 12)		; HL = src
+
+	exx
+	ld	hl, 0			; HL' = acc = 0
+	ld	de, (iy + 15)		; DE' = dst_w
+	ld	bc, (iy + 18)		; BC' = src_w
+	exx
+
+	ld	a, b
+	or	a, a
+	jr	z, .stretch_rem
+
+	ld	b, 0
+	call	.stretch_run
+
+.stretch_rem:
+	ld	a, c
+	or	a, a
+	jr	z, .stretch_done
+
+	ld	b, a
+	call	.stretch_run
+
+.stretch_done:
+	pop	iy
+	pop	ix
+	ret
+
+.stretch_run:
+	ld	a, (hl)
+	ld	(de), a
+	inc	de
+	exx
+	add	hl, bc
+	or	a, a
+	sbc	hl, de
+	jr	c, .stretch_restore
+.stretch_step:
+	exx
+	inc	hl
+	exx
+	or	a, a
+	sbc	hl, de
+	jr	nc, .stretch_step
+.stretch_restore:
+	add	hl, de
+	exx
+	djnz	.stretch_run
 	ret
