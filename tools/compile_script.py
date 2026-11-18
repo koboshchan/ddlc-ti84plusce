@@ -581,6 +581,10 @@ class Compiler:
         self._var_slot("unfairto")
         self._active_ovl_tags: dict[int, set[str]] = {}
         self._ch30_room_mask_pending: bool = False
+        self._effect_tags: set[str] = set()
+        self._pending_cg_layer_fx: int = 0
+        self._pending_cg_ovl_dust: bool = False
+        self._malpha_step: int = 0
         self._var_slot("ch1_choice")
 
     def compile_file(self, path: Path) -> None:
@@ -708,6 +712,12 @@ class Compiler:
             if self._pending_scene != self._current_bg:
                 self.asm.scene(self._pending_scene, trans)
                 self._current_bg = self._pending_scene
+            if self._pending_cg_ovl_dust:
+                self.asm.overlay_fx(vnasm.VN_OVL_DUST, 1)
+                self._pending_cg_ovl_dust = False
+            if self._pending_cg_layer_fx:
+                self.asm.layer_fx(self._pending_cg_layer_fx, 0)
+                self._pending_cg_layer_fx = 0
             self._pending_scene = None
 
     # -- position/animation tracking -----------------------------------------
@@ -1044,6 +1054,24 @@ class Compiler:
                     return
 
         if len(imgname) == 1:
+            tag = imgname[0]
+            alias_opt = node.imspec[2] if (node.imspec and len(node.imspec) > 2 and node.imspec[2]) else None
+            if tag == "n_eye" and any(e.img_tag == "n_blackeyes" for e in self._flash_stack):
+                self._effect_tags.add(alias_opt or tag)
+                return
+            if tag == "n_moving_mouth" and getattr(node, "atl", None) is not None:
+                self._effect_tags.add(alias_opt or tag)
+                return
+            fx_spec = self._parse_show_atl_fx(tag, alias_opt, getattr(node, "atl", None))
+            if fx_spec is not None:
+                self._flush_pending_scene(vnasm.TRANS_CUT)
+                self._effect_tags.add(alias_opt or tag)
+                fx, dly, length = fx_spec
+                if fx != 0:
+                    self.asm.effect(fx, dly, length)
+                return
+
+        if len(imgname) == 1:
             defn = self.resolver.table.get(imgname)
             if defn is not None and defn.kind == "text":
                 # The named-image form of the same idiom just above --
@@ -1083,6 +1111,15 @@ class Compiler:
                     self._current_cg_layers.append(tag)
                 scene_id = self.resolver.cg_composite_scene_id(tuple(self._current_cg_layers))
                 self._pending_scene = scene_id
+                if tag.startswith("y_cg2_dust"):
+                    self._pending_cg_ovl_dust = True
+                cg_at = [str(a) for a in ((node.imspec[3] if len(node.imspec) > 3 else None) or [])]
+                if "n_cg2_wiggle" in cg_at:
+                    self._pending_cg_layer_fx = vnasm.VN_LAYER_CG_WIGGLE
+                elif "n_cg2_wiggle_loop" in cg_at:
+                    self._pending_cg_layer_fx = vnasm.VN_LAYER_CG_WIGGLE_LOOP
+                elif "n_cg2_zoom" in cg_at:
+                    self._pending_cg_layer_fx = vnasm.VN_LAYER_CG_ZOOM
                 self.last_sprite.clear()
                 self.last_pos.clear()
                 self.last_flags.clear()
@@ -1276,6 +1313,10 @@ class Compiler:
         # _resolve_anim and render.c's zoom/hop/sink handling.
         at_list = node.imspec[3] if len(node.imspec) > 3 else None
         at_names = [str(a) for a in (at_list or [])]
+        if any(a.startswith("malpha(") for a in at_names):
+            self._malpha_step += 1
+            if self._malpha_step <= 16:
+                return
         if "thide" in at_names:
             # Leave sprite unchanged until the paired OP_HIDE removes it.
             return
@@ -1284,10 +1325,62 @@ class Compiler:
             flags = (flags & ~_ONESHOT_FLAGS) | vnasm.VN_FLAG_LHIDE
         self.asm.show(char, base, overlay, pos, flags=flags)
         self.visible_chars.add(char)
+        if imgname == ("yuri", "stab_6") and getattr(node, "atl", None) is not None:
+            self.asm.layer_fx(vnasm.VN_LAYER_YURI_SLUMP, 0)
+
+    @staticmethod
+    def _safe_atl_float(s: str) -> float | None:
+        try:
+            return float(str(s).strip())
+        except (TypeError, ValueError):
+            return None
+
+    def _parse_show_atl_fx(self, tag: str, alias: str | None, atl) -> tuple[int, int, int] | None:
+        if tag.startswith("Solid("):
+            low = tag.lower()
+            if "ff0000" in low or "440000" in low:
+                return (vnasm.VN_EFFECT_TINT_RED, 0, 0)
+            return None
+        if atl is None:
+            return None
+        props, exprs, durs = self._flatten_atl_props(atl)
+        alphas = [self._safe_atl_float(v) for k, v in props if k == "alpha"]
+        alphas = [a for a in alphas if a is not None]
+        dur_vals = [self._safe_atl_float(d) for d in durs]
+        total_dur_s = sum(d for d in dur_vals if d is not None and d > 0)
+        delay_s = sum(v for e in exprs if (v := self._safe_atl_float(e)) is not None and v > 0)
+
+        if tag == "white" and alias != "w2":
+            if total_dur_s > 0 and alphas and alphas[-1] <= 0.1:
+                return (vnasm.VN_EFFECT_FLASH_WHITE, 0, max(100, min(65000, round(total_dur_s * 1000))))
+            return None
+        if tag == "black":
+            if alphas and max(alphas) >= 0.99:
+                return (
+                    vnasm.VN_EFFECT_FADE_BLACK,
+                    min(65000, round(delay_s * 1000)),
+                    max(100, min(65000, round(total_dur_s * 1000))),
+                )
+            if alias == "b2" or (alphas and 0.35 <= alphas[0] <= 0.65):
+                return (vnasm.VN_EFFECT_DIM_HALF, 0, 0)
+            return None
+        if tag == "darkred":
+            return (vnasm.VN_EFFECT_TINT_RED, 0, min(65000, round(total_dur_s * 1000)))
+        if tag == "veins" and self._effect_tags:
+            return (0, 0, 0)
+        return None
 
     def _emit_Hide(self, node, fname: str) -> None:
         imgname = node.imspec[0] if node.imspec else None
         tag = imgname[0] if imgname else None
+        if tag is not None and tag in self._effect_tags:
+            self._flush_pending_scene(vnasm.TRANS_CUT)
+            self._effect_tags.discard(tag)
+            if not self._effect_tags:
+                self.asm.effect(vnasm.VN_EFFECT_NONE, 0, 0)
+            elif tag == "black" and any(t in self._effect_tags for t in ("i1", "i2", "darkred")):
+                self.asm.effect(vnasm.VN_EFFECT_TINT_RED, 0, 0)
+            return
         ovl_bit = _OVERLAY_FX_BY_TAG.get(tag or "")
         if ovl_bit is not None:
             self._flush_pending_scene(vnasm.TRANS_CUT)
@@ -1324,6 +1417,8 @@ class Compiler:
         if char is None and imgname:
             char = self.char_aliases.get(imgname[0])
         if char is not None:
+            if char == 3:
+                self._malpha_step = 0
             self.asm.hide(char)
             self.visible_chars.discard(char)
             return
@@ -1386,6 +1481,10 @@ class Compiler:
         self._flush_pending_scene(vnasm.TRANS_CUT)
         self._active_ovl_tags.clear()
         self._ch30_room_mask_pending = False
+        self._effect_tags.clear()
+        self._pending_cg_layer_fx = 0
+        self._pending_cg_ovl_dust = False
+        self._malpha_step = 0
         if (fname.endswith("script-ch5.rpyc") or fname == "script-ch5") and getattr(node, "linenumber", 0) == 309:
             self.asm.code.extend(bytes((0x1F, 0)))
         imgname = tuple(node.imspec[0]) if node.imspec and node.imspec[0] else None

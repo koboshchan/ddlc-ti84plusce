@@ -208,6 +208,10 @@ enum vn_layer_fx {
     VN_LAYER_CH30_SHAKE1  = 8,
     VN_LAYER_CH30_SHAKE3  = 9,
     VN_LAYER_CH30_SHAKE1S = 10,
+    VN_LAYER_CG_WIGGLE    = 11,
+    VN_LAYER_CG_WIGGLE_LOOP = 12,
+    VN_LAYER_CG_ZOOM      = 13,
+    VN_LAYER_YURI_SLUMP   = 14,
 };
 
 /** Procedural runtime overlay bits carried by vn_scene_t.overlay_fx_mask. */
@@ -218,12 +222,17 @@ enum vn_overlay_fx {
     VN_OVL_BLOOD_EYE = 0x08,
     VN_OVL_ROOM_MASK = 0x10,
     VN_OVL_LIVE_TILE = 0x20,
+    VN_OVL_DUST      = 0x40,
 };
 
 /** Timed effect ids carried by OP_EFFECT / vn_scene_t.timed_fx. */
 enum vn_timed_fx {
-    VN_EFFECT_NONE   = 0,
-    VN_EFFECT_INVERT = 1,
+    VN_EFFECT_NONE        = 0,
+    VN_EFFECT_INVERT      = 1,
+    VN_EFFECT_FLASH_WHITE = 2,
+    VN_EFFECT_FADE_BLACK  = 3,
+    VN_EFFECT_TINT_RED    = 4,
+    VN_EFFECT_DIM_HALF    = 5,
 };
 
 /** Menu behavior selectors carried by vn_scene_t.menu_mode. */

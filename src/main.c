@@ -2049,10 +2049,10 @@ static void host_pause(void *ctx, uint32_t ms)
             render_scene_lazy(&vm->scene);
             draw_dialogue_box(vm, &vm->scene, SIZE_MAX);
             render_present(TRANS_CUT);
-            render_timed_fx_tick(&vm->scene);
         } else {
             noise_tick(vm, &vm->scene, SIZE_MAX);
         }
+        render_timed_fx_tick(&vm->scene);
         gfx_Wait();
     }
     noise_end();

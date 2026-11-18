@@ -696,7 +696,8 @@ static unsigned exit_started_at;
 static int16_t  exit_from_x;
 
 #define VN_OVL_PIXEL_MASK (VN_OVL_RECTS_N | VN_OVL_RECTS_M | \
-                           VN_OVL_BLOOD | VN_OVL_BLOOD_EYE | VN_OVL_LIVE_TILE)
+                           VN_OVL_BLOOD | VN_OVL_BLOOD_EYE | VN_OVL_LIVE_TILE | \
+                           VN_OVL_DUST)
 static bool ovl_pixel_active;
 
 static void render_live_tile_bg(void);
@@ -1925,28 +1926,57 @@ static void render_overlay_fx(const vn_scene_t *scene)
             }
         }
     }
+
+    if (mask & VN_OVL_DUST) {
+        static int16_t dust_x[10], dust_y[10];
+        static bool dust_init;
+        if (!dust_init) {
+            dust_init = true;
+            for (int i = 0; i < 10; i++) {
+                uint32_t r = tear_rand_next();
+                dust_x[i] = (int16_t)(r % (SCREEN_W - 2));
+                dust_y[i] = (int16_t)((r >> 9) % (SCENE_H - 2));
+            }
+        }
+        gfx_SetColor(2); /* COL_WHITE */
+        for (int i = 0; i < 10; i++) {
+            dust_x[i] = (int16_t)((dust_x[i] + ((i & 1) ? 1 : 0)) % (SCREEN_W - 1));
+            dust_y[i] = (int16_t)((dust_y[i] + 1) % (SCENE_H - 1));
+            gfx_FillRectangle_NoClip(dust_x[i], dust_y[i], 1, 1);
+        }
+    }
 }
 
 void render_timed_fx_tick(const vn_scene_t *scene)
 {
     static uint8_t  last_seq;
+    static uint8_t  last_mode;
     static unsigned started_ms;
     static unsigned mask_last_ms;
+    static uint16_t last_step;
+    static uint16_t guard_c16;
+    static bool     fx_pal_active;
 
     if (!scene) {
         return;
     }
 
     unsigned now = ticks_to_ms(clock());
-    if (scene->timed_fx == VN_EFFECT_INVERT) {
-        if (scene->timed_fx_seq != last_seq) {
-            last_seq = scene->timed_fx_seq;
-            started_ms = now;
-            if (timed_fx_inverted) {
-                memcpy(gfx_palette, current_palette, sizeof(current_palette));
-                timed_fx_inverted = false;
-            }
+    uint8_t mode = scene->timed_fx;
+
+    if (mode != last_mode || scene->timed_fx_seq != last_seq) {
+        last_mode = mode;
+        last_seq = scene->timed_fx_seq;
+        started_ms = now;
+        last_step = 0xFFFFU;
+        if (timed_fx_inverted || fx_pal_active) {
+            memcpy(gfx_palette, current_palette, sizeof(current_palette));
+            timed_fx_inverted = false;
+            fx_pal_active = false;
         }
+    }
+
+    if (mode == VN_EFFECT_INVERT) {
         unsigned elapsed = now - started_ms;
         bool want = (elapsed >= scene->timed_fx_delay_ms) &&
                     (elapsed < (unsigned)scene->timed_fx_delay_ms + scene->timed_fx_len_ms);
@@ -1963,9 +1993,67 @@ void render_timed_fx_tick(const vn_scene_t *scene)
         if (timed_fx_inverted) {
             return;
         }
-    } else if (timed_fx_inverted) {
-        memcpy(gfx_palette, current_palette, sizeof(current_palette));
-        timed_fx_inverted = false;
+    } else if (mode >= VN_EFFECT_FLASH_WHITE && mode <= VN_EFFECT_DIM_HALF) {
+        unsigned elapsed = now - started_ms;
+        unsigned dly = scene->timed_fx_delay_ms;
+        unsigned len = scene->timed_fx_len_ms;
+        unsigned strength = 0;
+
+        if (mode == VN_EFFECT_DIM_HALF) {
+            strength = 128U;
+        } else if (mode == VN_EFFECT_FLASH_WHITE) {
+            if (len > 0 && elapsed < len) {
+                strength = ((len - elapsed) * 192U) / len;
+            }
+        } else { /* FADE_BLACK or TINT_RED */
+            if (elapsed >= dly) {
+                unsigned after = elapsed - dly;
+                if (len == 0 || after >= len) {
+                    strength = 255U;
+                } else {
+                    strength = (after * 255U) / len;
+                }
+            }
+        }
+
+        uint16_t step = (uint16_t)((strength >> 3) + 1U);
+        if (mode == VN_EFFECT_FLASH_WHITE && strength == 0) {
+            if (fx_pal_active) {
+                memcpy(gfx_palette, current_palette, sizeof(current_palette));
+                fx_pal_active = false;
+            }
+        } else if (step != last_step || !fx_pal_active || gfx_palette[16] != guard_c16) {
+            last_step = step;
+            fx_pal_active = true;
+            for (unsigned i = 16; i < 256; i++) {
+                uint16_t c = current_palette[i];
+                unsigned r = (c >> 10) & 31U;
+                unsigned g = (c >> 5) & 31U;
+                unsigned b = c & 31U;
+                if (mode == VN_EFFECT_FLASH_WHITE) {
+                    r += ((31U - r) * strength) >> 8;
+                    g += ((31U - g) * strength) >> 8;
+                    b += ((31U - b) * strength) >> 8;
+                } else if (mode == VN_EFFECT_FADE_BLACK || mode == VN_EFFECT_DIM_HALF) {
+                    unsigned keep = (mode == VN_EFFECT_DIM_HALF) ? 128U : (256U - strength);
+                    r = (r * keep) >> 8;
+                    g = (g * keep) >> 8;
+                    b = (b * keep) >> 8;
+                } else if (mode == VN_EFFECT_TINT_RED) {
+                    unsigned keep = 256U - ((strength * 200U) >> 8);
+                    r += ((31U - r) * strength) >> 9;
+                    if (r > 31U) r = 31U;
+                    g = (g * keep) >> 8;
+                    b = (b * keep) >> 8;
+                }
+                gfx_palette[i] = (uint16_t)((c & 0x8000U) | (r << 10) | (g << 5) | b);
+            }
+            guard_c16 = gfx_palette[16];
+            return;
+        }
+        if (fx_pal_active) {
+            return;
+        }
     }
 
     if (scene->overlay_fx_mask & VN_OVL_ROOM_MASK) {
@@ -2242,6 +2330,49 @@ static uint16_t layer_fx_compute_state(uint8_t fx, uint8_t seq, uint16_t param,
             key = (uint16_t)(1U + beat * 4U + sub);
         } else {
             key = 99U;
+        }
+        break;
+    }
+    case VN_LAYER_CG_WIGGLE: {
+        if (elapsed_ms < 500U) {
+            static const int8_t wx[5] = {-3, 3, -2, 2, -1};
+            unsigned step = elapsed_ms / 100U;
+            if (step > 4U) step = 4U;
+            dx = wx[step];
+            key = (uint16_t)(1U + step);
+        } else {
+            key = 10U;
+        }
+        break;
+    }
+    case VN_LAYER_CG_WIGGLE_LOOP: {
+        static const int8_t ldx[4] = {-2, 0, 2, 0};
+        static const int8_t ldy[4] = {0, -1, 0, 1};
+        unsigned step = (elapsed_ms / 120U) & 3U;
+        dx = ldx[step];
+        dy = ldy[step];
+        key = (uint16_t)(1U + step);
+        break;
+    }
+    case VN_LAYER_CG_ZOOM: {
+        unsigned step = elapsed_ms / 80U;
+        if (step > 4U) step = 4U;
+        cw = 320 - (int)step * 15;
+        ch = (cw * SCENE_H) / SCREEN_W;
+        dx = (step & 1U) ? -2 : 2;
+        if (step == 4U) dx = 0;
+        key = (uint16_t)(1U + step);
+        break;
+    }
+    case VN_LAYER_YURI_SLUMP: {
+        if (elapsed_ms < 2550U) {
+            key = 1U;
+        } else {
+            unsigned dt = elapsed_ms - 2550U;
+            unsigned step = dt / 60U;
+            if (step > 8U) step = 8U;
+            dy = (int)step * 5;
+            key = (uint16_t)(2U + step);
         }
         break;
     }
