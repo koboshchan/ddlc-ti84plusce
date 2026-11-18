@@ -221,6 +221,11 @@ static void draw_stickers(int16_t playthrough, int16_t chapter,
         return;
     }
 
+    if (playthrough == 3) {
+        assets_draw_sticker_centered(STICKER_M_IDLE, SCREEN_W / 2, POEM_STICKER_Y_IDLE);
+        return;
+    }
+
     if (playthrough == 0) {
         uint8_t s_id = s_hop ? STICKER_S_HOP : STICKER_S_IDLE;
         int s_y = s_hop ? POEM_STICKER_Y_HOP : POEM_STICKER_Y_IDLE;
@@ -341,8 +346,27 @@ uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal,
             shown[i] = pool_take();
         }
 
-        /* 1/401 chance per word slot on Act 2 (chapter >= 1) to become a glitched word */
-        if (playthrough >= 2 && !poemgame_glitched && chapter >= 1 && round < POEM_ROUNDS - 1) {
+        if (playthrough == 3) {
+            /* Act 3: every displayed word is a corrupted "Monika" variant
+             * (script-poemgame.rpyc); no Yuri/Natsuki words or hop animation. */
+            static const char monika_glitch[] = "!@#$%^&*?/~+=-";
+            for (uint8_t i = 0; i < POEM_PER_ROUND; i++) {
+                poem_word_t *mw = &poem_words[shown[i]];
+                memcpy(mw->word, "Monika", 7);
+                for (uint8_t k = 0; k < 6; k++) {
+                    if ((rand() % 5) == 0) {
+                        mw->word[k] = ' ';
+                    } else if ((rand() % 5) == 0) {
+                        mw->word[k] = monika_glitch[rand() % (sizeof(monika_glitch) - 1)];
+                    }
+                }
+                mw->sPoint = 0;
+                mw->nPoint = 0;
+                mw->yPoint = 0;
+                mw->glitch = false;
+            }
+        } else if (playthrough == 2 && !poemgame_glitched && chapter >= 1 && round < POEM_ROUNDS - 1) {
+            /* 1/401 chance per word slot on Act 2 (chapter >= 1) to become a glitched word */
             for (uint8_t i = 0; i < POEM_PER_ROUND; i++) {
                 if ((rand() % 401) == 0) {
                     poem_word_t *gw = &poem_words[shown[i]];
@@ -401,7 +425,7 @@ uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal,
             render_present(TRANS_CUT);
             gfx_Wait();
             msleep(400);
-        } else {
+        } else if (playthrough != 3) {
             bool s_hop = false, n_hop = false, y_hop = false;
             bool m_hop = false, y_glitch = false, y_cut = false;
 
