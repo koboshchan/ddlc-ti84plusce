@@ -1682,6 +1682,15 @@ void render_fade_retarget(const uint16_t *palette)
     fade_apply(0); /* re-hold at full black under the new palette's values */
 }
 
+void render_pause_box(int x, int y, int w, int h, uint8_t fill_color, uint8_t edge_color)
+{
+    scene_obscured();
+    gfx_SetColor(fill_color);
+    gfx_FillRectangle_NoClip(x, y, w, h);
+    gfx_SetColor(edge_color);
+    gfx_Rectangle_NoClip(x, y, w, h);
+}
+
 const uint16_t *render_filter_palette(const vn_scene_t *scene, const uint16_t *palette)
 {
     static uint16_t fx_palette[256];
@@ -1757,15 +1766,6 @@ static void monika_box_remap(uint8_t *dst, size_t count)
         }
     }
     fast_remap_bytes(dst, lut, (uint16_t)count);
-}
-
-void render_pause_box(int x, int y, int w, int h, uint8_t fill_color, uint8_t edge_color)
-{
-    scene_obscured();
-    gfx_SetColor(fill_color);
-    gfx_FillRectangle_NoClip(x, y, w, h);
-    gfx_SetColor(edge_color);
-    gfx_Rectangle_NoClip(x, y, w, h);
 }
 
 void render_splash_warning(const char *msg)
