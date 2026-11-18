@@ -1798,50 +1798,24 @@ class Compiler:
             self.asm.label(nxt)
         self.asm.label(end_label)
 
-    # Act 3's day-topic loop (script-ch30.rpyc). Real DDLC picks
-    # persistent.current_monikatopic without replacement from a shrinking
-    # bag (persistent.monikatopics, refilled from range(1,57) minus
-    # {14,25,26} -- no ch30_14/25/26 label exists at all -- and minus 27
-    # while persistent.seen_colors_poem is unset) via a real Python list.
-    # This VM has no list/array structure and OP_IF can't compare two
-    # variables, so an exact reproduction (a used-bitmask plus bitwise ops)
-    # would need real new opcodes for what's ultimately a "no immediate
-    # repeat" polish detail. Simplified to a uniform pick *with*
-    # replacement every visit instead (_emit_monikatopic_init, the same
-    # reject-and-retry bytecode loop as _emit_special_poem_init) --
-    # excludes 27 unconditionally rather than tracking
-    # persistent.seen_colors_poem's own trigger, one topic out of 56 traded
-    # away for not needing a second gate. Every other real day-topic body
-    # is still reachable, just not guaranteed non-repeating.
-    MONIKATOPIC_VALUES = tuple(n for n in range(1, 57) if n not in (14, 25, 26, 27))
+    # Act 3's day-topic loop (script-ch30.rpyc): topics 1..56 minus {14,25,26}
+    # (no ch30_14/25/26 labels exist), with topic 27 gated on
+    # persistent.seen_colors_poem at runtime via OP_MONIKA_TOPIC.
+    MONIKATOPIC_VALUES = tuple(n for n in range(1, 57) if n not in (14, 25, 26))
     MONIKA_RELOAD_VALUES = (0, 1, 2, 3, 4)
 
     def _emit_monikatopic_init(self) -> None:
-        slot = self._var_slot("persistent.current_monikatopic")
-        rand = self._var_slot(self.RAND_SCRATCH)
-        retry = self._gensym("monikatopic_retry")
-        done = self._gensym("monikatopic_done")
-        self.asm.label(retry)
-        self.asm.random(rand, 1, 56)
-        for k in self.MONIKATOPIC_VALUES:
-            match = self._gensym("monikatopic_match")
-            nxt = self._gensym("monikatopic_next")
-            self.asm.if_(rand, vnasm.CMP_EQ, k, match)
-            self.asm.jump(nxt)
-            self.asm.label(match)
-            self.asm.set(slot, k)
-            self.asm.jump(done)
-            self.asm.label(nxt)
-        self.asm.jump(retry)  # landed on an excluded value (14/25/26/27) -- draw again
-        self.asm.label(done)
+        self.asm.monika_topic(
+            self._var_slot("persistent.current_monikatopic"),
+            self._var_slot("persistent.seen_colors_poem"),
+            self._var_slot("persistent.ch30_m0"),
+            self._var_slot("persistent.ch30_m1"),
+            self._var_slot("persistent.ch30_m2"),
+            self._var_slot("persistent.ch30_m3"),
+        )
 
     def _emit_monikatopic_dispatch(self, varname: str) -> None:
-        """The real bytecode for `Call("ch30_" +
-        str(persistent.current_monikatopic))` -- draws a fresh topic (see
-        _emit_monikatopic_init) and dispatches straight to the real
-        ch30_<N> label, same enumerable-dispatch shape as
-        _emit_special_poem_dispatch."""
-        self._emit_monikatopic_init()
+        """The real bytecode for `Call("ch30_" + str(persistent.current_monikatopic))`."""
         slot = self._var_slot(varname)
         end_label = self._gensym("monikatopic_end")
         for k in self.MONIKATOPIC_VALUES:
@@ -2097,6 +2071,20 @@ class Compiler:
                 and _ident_name(stmt.value.func) == "renpy.save_persistent"):
             return True
 
+        if (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+                and _ident_name(stmt.value.func) == "persistent.monikatopics.remove"):
+            return True
+
+        if (isinstance(stmt, ast.If)
+                and isinstance(stmt.test, ast.Compare)
+                and len(stmt.test.ops) == 1
+                and isinstance(stmt.test.ops[0], ast.Eq)
+                and isinstance(stmt.test.left, ast.Call)
+                and _ident_name(stmt.test.left.func) == "len"
+                and len(stmt.test.left.args) == 1
+                and _ident_name(stmt.test.left.args[0]) == "persistent.monikatopics"):
+            return True
+
         if _match_clearall_check(stmt):
             skip_label = self._gensym("clearall_skip")
             for idx in range(10):
@@ -2177,6 +2165,25 @@ class Compiler:
                 return True
         if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
             var = _ident_name(stmt.targets[0])
+            if var in ("style.say_window", "style.say_dialogue"):
+                rhs = _ident_name(stmt.value)
+                if rhs in ("style.window_monika", "style.default_monika"):
+                    self.asm.window_style(1)
+                    return True
+                if rhs in ("style.window", "style.default"):
+                    self.asm.window_style(0)
+                    return True
+            if var == "persistent.monikatopics" and isinstance(stmt.value, ast.List) and not stmt.value.elts:
+                for w in range(4):
+                    self.asm.set(self._var_slot(f"persistent.ch30_m{w}"), 0)
+                return True
+            if (var == "persistent.current_monikatopic"
+                    and isinstance(stmt.value, ast.Call)
+                    and _ident_name(stmt.value.func) == "random.choice"
+                    and len(stmt.value.args) == 1
+                    and _ident_name(stmt.value.args[0]) == "persistent.monikatopics"):
+                self._emit_monikatopic_init()
+                return True
             if var is not None:
                 if (isinstance(stmt.value, ast.Call)
                         and _ident_name(stmt.value.func) == "datetime.datetime.now"

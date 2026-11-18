@@ -177,6 +177,9 @@ void render_fade_in(void);
  * fade in progress). */
 void render_apply_palette(const uint16_t *palette);
 
+/** Remaps @p count bytes in-place through a 256-byte aligned lookup table. */
+void fast_remap_bytes(uint8_t *buf, const uint8_t *lut_aligned256, uint16_t count);
+
 /**
  * Changes what render_fade_in() ramps up *to*, without touching what's
  * currently on screen. Call between render_fade_out() and render_fade_in()

@@ -1142,6 +1142,8 @@ void render_scene_lazy(const vn_scene_t *scene)
      * on the next frame in that case. */
 }
 
+static void monika_box_remap(uint8_t *dst, size_t count);
+
 void render_box(const vn_scene_t *scene, const char *speaker,
                 const char *text, size_t visible)
 {
@@ -1193,6 +1195,10 @@ void render_box(const vn_scene_t *scene, const char *speaker,
         gfx_FillRectangle_NoClip(0, BOX_Y, SCREEN_W, BOX_H);
         gfx_SetColor(COL_BOX_EDGE);
         gfx_HorizLine_NoClip(0, BOX_Y, SCREEN_W);
+    }
+    if (scene->box_style == 1) {
+        monika_box_remap((uint8_t *)gfx_vbuffer + BOX_Y * SCREEN_W,
+                       (size_t)TEXTBOX_W * TEXTBOX_H);
     }
 
     int y = BOX_Y + 4;
@@ -1699,6 +1705,58 @@ const uint16_t *render_filter_palette(const vn_scene_t *scene, const uint16_t *p
         return fx_palette;
     }
     return palette;
+}
+
+static void monika_box_remap(uint8_t *dst, size_t count)
+{
+    static uint8_t lut_raw[512];
+    static bool lut_ready = false;
+    static uint16_t lut_key = 0;
+
+    uint8_t *lut = (uint8_t *)(((uintptr_t)lut_raw + 255U) & ~(uintptr_t)255U);
+    uint16_t key = (uint16_t)(current_palette[COL_BOX_FILL] ^ current_palette[8]);
+    if (!lut_ready || lut_key != key) {
+        lut_key = key;
+        lut_ready = true;
+        for (unsigned i = 0; i < 256; i++) {
+            if (i == COL_TRANSPARENT || i == COL_BLACK || i == COL_WHITE ||
+                i == COL_NAME || i == COL_HIGHLIGHT || i == COL_SHADOW) {
+                lut[i] = (uint8_t)i;
+                continue;
+            }
+            uint16_t c = current_palette[i];
+            unsigned r = (c >> 10) & 31U;
+            unsigned g = (c >> 5) & 31U;
+            unsigned b = c & 31U;
+            unsigned tr = (r * 2U) / 3U;
+            unsigned tg = g / 2U;
+            unsigned tb = ((b * 3U) / 4U) + 2U;
+            if (tb > 31U) {
+                tb = 31U;
+            }
+            uint8_t best = (uint8_t)i;
+            unsigned best_err = 0xFFFFU;
+            for (unsigned j = 1; j < 256; j++) {
+                if (j == COL_WHITE || j == COL_NAME || j == COL_HIGHLIGHT) {
+                    continue;
+                }
+                uint16_t pj = current_palette[j];
+                unsigned jr = (pj >> 10) & 31U;
+                unsigned jg = (pj >> 5) & 31U;
+                unsigned jb = pj & 31U;
+                int dr = (int)tr - (int)jr;
+                int dg = (int)tg - (int)jg;
+                int db = (int)tb - (int)jb;
+                unsigned err = (unsigned)(dr * dr + dg * dg + db * db);
+                if (err < best_err) {
+                    best_err = err;
+                    best = (uint8_t)j;
+                }
+            }
+            lut[i] = best;
+        }
+    }
+    fast_remap_bytes(dst, lut, (uint16_t)count);
 }
 
 void render_pause_box(int x, int y, int w, int h, uint8_t fill_color, uint8_t edge_color)

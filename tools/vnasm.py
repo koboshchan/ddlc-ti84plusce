@@ -44,6 +44,8 @@ OP_QUIT = 0x1B
 OP_PAUSE_LONG = 0x1C
 OP_MENU_COND = 0x1D
 OP_POEM_VIEW = 0x1E
+OP_WINDOW_STYLE = 0x23
+OP_MONIKA_TOPIC = 0x24
 
 CMP_EQ, CMP_NE, CMP_LT, CMP_LE, CMP_GT, CMP_GE = range(6)
 TRANS_CUT, TRANS_FADE = 0, 1
@@ -316,6 +318,17 @@ class Assembler:
     def window_show(self) -> None:
         """Compiles `window show(...)`/`window auto`. See OP_WINDOW_SHOW."""
         self._u8(OP_WINDOW_SHOW)
+
+    def window_style(self, style: int) -> None:
+        """Compiles Act 3 Monika textbox switch. See OP_WINDOW_STYLE."""
+        self._u8(OP_WINDOW_STYLE)
+        self._u8(style)
+
+    def monika_topic(self, dest: int, seen_colors: int, m0: int, m1: int, m2: int, m3: int) -> None:
+        """Compiles non-repeating Act 3 topic selection. See OP_MONIKA_TOPIC."""
+        self._u8(OP_MONIKA_TOPIC)
+        for v in (dest, seen_colors, m0, m1, m2, m3):
+            self._u8(v)
 
     def ret(self) -> None:
         self._u8(OP_RETURN)

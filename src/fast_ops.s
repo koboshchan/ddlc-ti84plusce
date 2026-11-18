@@ -27,6 +27,9 @@
 	.global	_fast_title_bg
 	.type	_fast_title_bg, @function
 
+	.global	_fast_remap_bytes
+	.type	_fast_remap_bytes, @function
+
 ; ===========================================================================
 ; void fast_cg_upscale_2x(uint8_t *dest, const uint8_t *src)
 ; ===========================================================================
@@ -635,6 +638,41 @@ _fast_title_bg:
 	jr	nz, .tbg_row_loop
 
 	pop	hl
+	pop	iy
+	pop	ix
+	ret
+
+; ===========================================================================
+; void fast_remap_bytes(uint8_t *buf, const uint8_t *lut_aligned256, uint16_t count)
+; @pre lut_aligned256 is 256-byte aligned (L == 0).
+; ===========================================================================
+	.section	.text._fast_remap_bytes,"ax",@progbits
+_fast_remap_bytes:
+	push	ix
+	push	iy
+
+	ld	iy, 0
+	add	iy, sp
+
+	ld	de, (iy + 9)		; DE = buf
+	ld	hl, (iy + 12)		; HL = lut (L == 0)
+	ld	bc, (iy + 15)		; BC = count (0..65535)
+	ld	a, b
+	or	a, c
+	jr	z, .remap_done
+
+.remap_loop:
+	ld	a, (de)
+	ld	l, a
+	ld	a, (hl)
+	ld	(de), a
+	inc	de
+	dec	bc
+	ld	a, b
+	or	a, c
+	jr	nz, .remap_loop
+
+.remap_done:
 	pop	iy
 	pop	ix
 	ret

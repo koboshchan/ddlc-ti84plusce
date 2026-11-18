@@ -133,6 +133,8 @@ bool save_load(uint8_t slot, vn_vm_t *vm)
     vm->sp = blob.sp;
     memcpy(vm->vars, blob.vars, sizeof(vm->vars));
     vm->scene.background = blob.background;
+    vm->scene.pal_fx     = VN_FX_NONE;
+    vm->scene.box_style  = 0;
     memcpy(vm->scene.actors, blob.actors, sizeof(vm->scene.actors));
     vm->scene.speaker    = blob.speaker;
     vm->scene.text_index = blob.text_index;

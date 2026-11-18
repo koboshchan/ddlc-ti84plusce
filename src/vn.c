@@ -706,6 +706,53 @@ bool vn_step(vn_vm_t *vm)
             break;
         }
 
+        case OP_WINDOW_STYLE: {
+            uint8_t style = read_u8(vm);
+            if (vm->status == VN_RUNNING) {
+                vm->scene.box_style = style;
+            }
+            break;
+        }
+
+        case OP_MONIKA_TOPIC: {
+            uint8_t dest = read_u8(vm);
+            uint8_t seen_colors = read_u8(vm);
+            uint8_t m[4];
+            for (uint8_t w = 0; w < 4; w++) {
+                m[w] = read_u8(vm);
+            }
+            if (vm->status != VN_RUNNING) {
+                break;
+            }
+            uint8_t cands[54];
+            uint8_t count = 0;
+            for (uint8_t pass = 0; pass < 2 && count == 0; pass++) {
+                if (pass == 1) {
+                    for (uint8_t w = 0; w < 4; w++) {
+                        vm->vars[m[w]] = 0;
+                    }
+                }
+                for (uint8_t t = 1; t <= 56; t++) {
+                    if (t == 14 || t == 25 || t == 26) {
+                        continue;
+                    }
+                    if (t == 27 && vm->vars[seen_colors] == 0) {
+                        continue;
+                    }
+                    uint8_t idx = (uint8_t)(t - 1);
+                    uint16_t mask = (uint16_t)vm->vars[m[idx / 14]];
+                    if (!(mask & (uint16_t)(1U << (idx % 14)))) {
+                        cands[count++] = t;
+                    }
+                }
+            }
+            uint8_t picked = count ? cands[(uint8_t)(vn_rand_next(vm) % count)] : 1;
+            uint8_t pidx = (uint8_t)(picked - 1);
+            vm->vars[m[pidx / 14]] |= (int16_t)(1U << (pidx % 14));
+            vm->vars[dest] = (int16_t)picked;
+            break;
+        }
+
         case OP_END:
             vm->status = VN_FINISHED;
             break;
