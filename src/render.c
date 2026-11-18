@@ -357,67 +357,43 @@ static unsigned zoom_scale_permille(uint8_t character, bool zoomed, unsigned t)
                                                  t, changed_at[character], SPEAK_POP_MS));
 }
 
-/* The real one-shot hop: DDLC's `hop`/`hopfocus` ATL eases yoffset to -20
- * over .1s then back to 0 over .1s -- a bounce that plays once per Show,
- * not a sustained state (unlike the zoom above, which holds for as long as
- * the character keeps being shown under a focus-flagged transform). Two
- * back-to-back applications of the same ease() primitive above cover the
- * down-then-up shape; no new curve is needed. HOP_PX is DDLC's real 20
- * Ren'Py px scaled by this engine's existing 0.25 canvas-to-screen ratio,
- * matching SPEAK_POP_PX's own convention. */
-#define HOP_PX  6
-#define HOP_MS 200
+/* The real one-shot pulses (hop / dip) share one easing curve helper. */
+#define HOP_PX     6
+#define HOP_MS   200
+#define DIP_PX     6
+#define DIP_MS   500
+#define LEFTIN_PX -75
+#define LEFTIN_MS 250
+#define POS_LERP_MS 150
 
-static int hop_offset(uint8_t character, uint8_t show_seq, unsigned t)
+static int pulse_y_offset(uint8_t character, uint8_t show_seq, uint8_t flags, unsigned t)
 {
     static uint8_t  last_seq[VN_MAX_CHARS];
-    static unsigned hop_started_at[VN_MAX_CHARS];
+    static unsigned started_at[VN_MAX_CHARS];
 
-    /* actor->show_seq bumps on every real OP_SHOW targeting this character,
-     * whether or not the sprite/pos actually changed -- e.g. `hop` used
-     * purely for emphasis on an otherwise-unchanged pose -- so diffing it
-     * here (rather than diffing the drawn sprite id) catches that case too.
-     * Only called by draw_actor() while the current Show is hop-flagged, so
-     * an unflagged Show correctly abandons any bounce still in flight
-     * instead of finishing it -- matching the source ATL, where the bounce
-     * belongs to that specific transform being the active one. */
     if (show_seq != last_seq[character]) {
         last_seq[character] = show_seq;
-        hop_started_at[character] = t;
+        started_at[character] = t;
     }
 
-    unsigned elapsed = t - hop_started_at[character];
-    if (elapsed >= HOP_MS) {
+    unsigned dur = (flags & VN_FLAG_DIP) ? DIP_MS : HOP_MS;
+    unsigned half = dur / 2;
+    unsigned elapsed = t - started_at[character];
+    if (elapsed >= dur) {
         return 0;
     }
+    int peak = (flags & VN_FLAG_DIP) ? DIP_PX : -HOP_PX;
     anim_moving = true;
-    if (elapsed < HOP_MS / 2) {
-        return -HOP_PX + ease(ease_remain, HOP_PX, t, hop_started_at[character], HOP_MS / 2);
+    if (elapsed < half) {
+        return peak - ease(ease_remain, peak, t, started_at[character], half);
     }
-    return ease(ease_remain, -HOP_PX, t, hop_started_at[character] + HOP_MS / 2, HOP_MS / 2);
+    return ease(ease_remain, peak, t, started_at[character] + half, half);
 }
 
-/* DDLC's real sink: `at s..` eases ypos from 1.03 to 1.06 (a 0.03 fraction
- * of the 720-tall canvas, ~21.6 canvas px) over .5s and *holds* there --
- * unlike hop, this isn't a bounce-back, it's a persistent drift that only
- * reverses when a later Show lands the character back on t/f. That recovery
- * is authored on the *landing* transform, not on sink itself: both
- * tcommon's and focus's own "replace" handler eases ypos back to 1.03 over
- * .15s in parallel with whatever zoom change is also happening, confirmed
- * by decompiling transforms.rpy. SINK_PX is that 21.6 canvas px scaled by
- * this engine's existing 0.25 canvas-to-screen ratio, same convention as
- * HOP_PX/SPEAK_POP_PX.
- *
- * Structurally this is zoom_fallback_offset()'s pattern (a persistent
- * on/off state with an eased transition, not hop's one-shot bounce) --
- * except the two directions run at different real durations, so the target
- * value and duration are both picked from `sinking` rather than being
- * fixed. Called unconditionally every frame, same reasoning as
- * zoom_fallback_offset(): the eased transition has to keep tracking
- * correctly even across frames where the value goes unused. */
+/* Persistent sink drift: 500ms down (transforms.rpyc sink), 150ms up (tcommon/focus). */
 #define SINK_PX      6
-#define SINK_DOWN_MS 350
-#define SINK_UP_MS   220
+#define SINK_DOWN_MS 500
+#define SINK_UP_MS   150
 
 static int sink_offset(uint8_t character, bool sinking, unsigned t)
 {
@@ -440,6 +416,73 @@ static int sink_offset(uint8_t character, bool sinking, unsigned t)
 
     return to_off[character] + ease(ease_remain, from_off[character] - to_off[character],
                                     t, changed_at[character], dur_ms[character]);
+}
+
+/* Horizontal ease tracking for LEFTIN (-75 -> target over 250ms), pos changes
+ * (150ms lerp unless VN_FLAG_INSTANT), and LHIDE exit snapshot in render_scene(). */
+static bool     x_was_visible[VN_MAX_CHARS];
+static int16_t  x_last_target[VN_MAX_CHARS];
+static int16_t  x_delta[VN_MAX_CHARS];
+static unsigned x_started_at[VN_MAX_CHARS];
+static unsigned x_dur_ms[VN_MAX_CHARS];
+static uint8_t  x_last_seq[VN_MAX_CHARS];
+
+static int slide_x_pos(uint8_t character, uint8_t show_seq, int target_x,
+                       uint8_t flags, unsigned t)
+{
+    int cur_x = target_x;
+    if (x_dur_ms[character] > 0) {
+        unsigned elapsed = t - x_started_at[character];
+        if (elapsed < x_dur_ms[character]) {
+            cur_x = (int)x_last_target[character] +
+                    ease(ease_remain, x_delta[character], t,
+                         x_started_at[character], x_dur_ms[character]);
+        } else {
+            x_dur_ms[character] = 0;
+        }
+    }
+
+    if (!x_was_visible[character]) {
+        x_was_visible[character] = true;
+        x_last_target[character] = (int16_t)target_x;
+        x_last_seq[character] = show_seq;
+        if (flags & VN_FLAG_LEFTIN) {
+            x_delta[character] = (int16_t)(LEFTIN_PX - target_x);
+            x_started_at[character] = t;
+            x_dur_ms[character] = LEFTIN_MS;
+        } else {
+            x_dur_ms[character] = 0;
+        }
+    } else if ((flags & VN_FLAG_LEFTIN) && x_last_seq[character] != show_seq) {
+        x_last_target[character] = (int16_t)target_x;
+        x_last_seq[character] = show_seq;
+        x_delta[character] = (int16_t)(LEFTIN_PX - target_x);
+        x_started_at[character] = t;
+        x_dur_ms[character] = LEFTIN_MS;
+    } else if (x_last_target[character] != target_x) {
+        x_last_target[character] = (int16_t)target_x;
+        x_last_seq[character] = show_seq;
+        if (flags & VN_FLAG_INSTANT) {
+            x_dur_ms[character] = 0;
+        } else {
+            x_delta[character] = (int16_t)(cur_x - target_x);
+            x_started_at[character] = t;
+            x_dur_ms[character] = POS_LERP_MS;
+        }
+    } else {
+        x_last_seq[character] = show_seq;
+    }
+
+    if (x_dur_ms[character] > 0) {
+        unsigned elapsed = t - x_started_at[character];
+        if (elapsed < x_dur_ms[character]) {
+            anim_moving = true;
+            return target_x + ease(ease_remain, x_delta[character], t,
+                                   x_started_at[character], x_dur_ms[character]);
+        }
+        x_dur_ms[character] = 0;
+    }
+    return target_x;
 }
 
 static void draw_background(uint8_t bg)
@@ -478,22 +521,18 @@ static int pos_center(uint8_t pos)
     return (int)pos * 2;
 }
 
-static void draw_actor(const vn_actor_t *actor, unsigned t)
+static void draw_actor_at(const vn_actor_t *actor, int center_x, unsigned t)
 {
-    int center_x = pos_center(actor->pos);
     bool zoom_wanted = (actor->flags & VN_FLAG_ZOOM) != 0;
 
     /* Continuous scale (1000..1050 permille) eased over SPEAK_POP_MS */
     unsigned scale_permille = zoom_scale_permille(actor->character, zoom_wanted, t);
     int fallback_off = zoom_fallback_offset(actor->character, zoom_wanted, t);
 
-    /* The resting baseline, plus the one-shot hop if this Show authored one
-     * and the persistent sink drift if it's currently sunk -- both the real
-     * zoom and its fallback anchor from this same feet_y, so both apply
-     * identically either way. */
+    /* The resting baseline, plus any one-shot hop/dip bounce and persistent sink drift. */
     int feet_y = ACTOR_BASELINE;
-    if (actor->flags & VN_FLAG_HOP) {
-        feet_y += hop_offset(actor->character, actor->show_seq, t);
+    if (actor->flags & (VN_FLAG_HOP | VN_FLAG_DIP)) {
+        feet_y += pulse_y_offset(actor->character, actor->show_seq, actor->flags, t);
     }
     feet_y += sink_offset(actor->character, (actor->flags & VN_FLAG_SINK) != 0, t);
 
@@ -524,6 +563,13 @@ static void draw_actor(const vn_actor_t *actor, unsigned t)
             assets_draw_sprite(actor->overlay, ov_x, feet_y + y_off);
         }
     }
+}
+
+static void draw_actor(const vn_actor_t *actor, unsigned t)
+{
+    int center_x = slide_x_pos(actor->character, actor->show_seq,
+                               pos_center(actor->pos), actor->flags, t);
+    draw_actor_at(actor, center_x, t);
 }
 
 /* ---------------------------------------------------------------------------
@@ -644,10 +690,18 @@ static void plate_blit(bool save)
     }
 }
 
+static bool     exit_active;
+static vn_actor_t exit_actor;
+static unsigned exit_started_at;
+static int16_t  exit_from_x;
+
 /* Captures the plate for actor @p a, sizing (or resizing) the buffer to fit.
  * Call with the background and every rearward actor already drawn. */
 static bool plate_capture(const vn_actor_t *a, int slot)
 {
+    if (exit_active || a->character >= VN_MAX_CHARS || x_dur_ms[a->character] > 0) {
+        return false;
+    }
     int rx, ry, rw, rh;
     if (!actor_rect(a, &rx, &ry, &rw, &rh)) {
         return false;
@@ -853,6 +907,33 @@ void render_scene(const vn_scene_t *scene)
      * that moved last time. That the target comes from the *previous* full
      * redraw is why an animation's first frame or two are still full ones:
      * nothing knows who is moving until someone has moved. */
+    static uint8_t prev_bg = VN_NO_SPRITE;
+    static uint8_t slot_char[VN_MAX_CHARS] = { VN_NO_SPRITE, VN_NO_SPRITE, VN_NO_SPRITE, VN_NO_SPRITE };
+    bool bg_changed = (scene->background != prev_bg);
+    prev_bg = scene->background;
+    if (bg_changed) {
+        exit_active = false;
+        memset(x_was_visible, 0, sizeof(x_was_visible));
+        memset(x_dur_ms, 0, sizeof(x_dur_ms));
+    }
+
+    for (int i = 0; i < VN_MAX_CHARS; i++) {
+        uint8_t cur = scene->actors[i].character;
+        if (slot_char[i] != VN_NO_SPRITE && cur == VN_NO_SPRITE) {
+            uint8_t old_ch = slot_char[i];
+            if (!bg_changed && (scene->actors[i].flags & VN_FLAG_LHIDE)) {
+                exit_actor = scene->actors[i];
+                exit_actor.character = old_ch;
+                exit_from_x = x_last_target[old_ch];
+                exit_started_at = t;
+                exit_active = true;
+            }
+            x_was_visible[old_ch] = false;
+            x_dur_ms[old_ch] = 0;
+        }
+        slot_char[i] = cur;
+    }
+
     int  capture_at = mover_slot;
     int  movers = 0;
     int  first_mover = -1;
@@ -876,10 +957,21 @@ void render_scene(const vn_scene_t *scene)
             }
         }
     }
+    if (exit_active) {
+        unsigned elapsed = t - exit_started_at;
+        if (elapsed >= LEFTIN_MS) {
+            exit_active = false;
+        } else {
+            int cur_x = LEFTIN_PX + ease(ease_remain, exit_from_x - LEFTIN_PX,
+                                         t, exit_started_at, LEFTIN_MS);
+            draw_actor_at(&exit_actor, cur_x, t);
+            anim_moving = true;
+        }
+    }
     assets_sprite_end();
 
-    mover_slot  = (movers == 1) ? first_mover : -1;
-    plate_valid = captured && movers == 1 && first_mover == capture_at;
+    mover_slot  = (movers == 1 && !exit_active) ? first_mover : -1;
+    plate_valid = captured && movers == 1 && first_mover == capture_at && !exit_active;
 
     apply_tear(scene, t);
     if (scene->tear_on) {

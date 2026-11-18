@@ -311,6 +311,10 @@ enum vn_trans { TRANS_CUT = 0, TRANS_FADE = 1 };
                                 * bounce, triggered fresh each real OP_SHOW */
 #define VN_FLAG_SINK     0x04 /* authored "at s.." -- drifts down and holds
                                 * until the next Show lands back on t/f     */
+#define VN_FLAG_DIP      0x08 /* authored "at d.." -- one-shot +25/-25px dip */
+#define VN_FLAG_LEFTIN   0x10 /* authored "at l.." -- slide in from x=-75   */
+#define VN_FLAG_INSTANT  0x20 /* authored "at i.." -- snap x with no lerp   */
+#define VN_FLAG_LHIDE    0x40 /* authored "at lhide" -- slide out to x=-75  */
 
 /* ---------------------------------------------------------------------------
  * Host interface

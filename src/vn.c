@@ -153,6 +153,7 @@ static void actors_clear(vn_scene_t *scene)
 {
     for (int i = 0; i < VN_MAX_CHARS; i++) {
         scene->actors[i].character = VN_NO_SPRITE;
+        scene->actors[i].flags = 0;
     }
 }
 
@@ -414,7 +415,9 @@ bool vn_step(vn_vm_t *vm)
                 break;
             }
             actor_show(&vm->scene, ch, sprite, overlay, pos, flags);
-            vm->host->update(vm->host->ctx, &vm->scene, TRANS_CUT);
+            if (!(flags & VN_FLAG_LHIDE)) {
+                vm->host->update(vm->host->ctx, &vm->scene, TRANS_CUT);
+            }
             break;
         }
 

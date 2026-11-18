@@ -139,15 +139,23 @@ _POS_EXPR_RE = re.compile(r"^\w+\((\d+)\)$")
 # "this Show is the character's first appearance this scene" to trigger it
 # from. Treated as the base case (no zoom/hop/sink), matching this engine's
 # existing behavior, a deliberate simplification, not a regression.
-VN_FLAG_ZOOM = 1  # must match src/vn.h's VN_FLAG_ZOOM
-VN_FLAG_HOP = 2   # must match src/vn.h's VN_FLAG_HOP
-VN_FLAG_SINK = 4  # must match src/vn.h's VN_FLAG_SINK
+VN_FLAG_ZOOM = 1     # must match src/vn.h's VN_FLAG_ZOOM
+VN_FLAG_HOP = 2      # must match src/vn.h's VN_FLAG_HOP
+VN_FLAG_SINK = 4     # must match src/vn.h's VN_FLAG_SINK
+VN_FLAG_DIP = 8      # must match src/vn.h's VN_FLAG_DIP
+VN_FLAG_LEFTIN = 16  # must match src/vn.h's VN_FLAG_LEFTIN
+VN_FLAG_INSTANT = 32 # must match src/vn.h's VN_FLAG_INSTANT
+VN_FLAG_LHIDE = 64   # must match src/vn.h's VN_FLAG_LHIDE
+_ONESHOT_FLAGS = VN_FLAG_HOP | VN_FLAG_DIP | VN_FLAG_LEFTIN | VN_FLAG_INSTANT | VN_FLAG_LHIDE
 
 _ANIM_PREFIX_FLAGS = {
     "f": VN_FLAG_ZOOM,
     "h": VN_FLAG_HOP,
     "hf": VN_FLAG_ZOOM | VN_FLAG_HOP,
     "s": VN_FLAG_SINK,
+    "d": VN_FLAG_DIP,
+    "l": VN_FLAG_LEFTIN,
+    "i": VN_FLAG_INSTANT,
 }
 _ANIM_PREFIX_RE = re.compile(r"^([a-z]+?)\d*$")
 
@@ -689,9 +697,9 @@ class Compiler:
                 self.last_pos[char] = pos
                 self.last_flags[char] = flags
                 return pos, flags
-        # VN_FLAG_HOP is an authored one-shot bounce on initial show; do not
-        # persist it into subsequent Say attribute changes to avoid repeated bouncing.
-        persisted_flags = self.last_flags.get(char, 0) & ~vnasm.VN_FLAG_HOP
+        # One-shot transforms (hop/dip/leftin/instant/lhide) must not persist
+        # across subsequent Say attribute changes or bare Shows.
+        persisted_flags = self.last_flags.get(char, 0) & ~_ONESHOT_FLAGS
         return self.last_pos.get(char, vnasm.POS_CENTER), persisted_flags
 
     def _next_node(self):
@@ -892,7 +900,7 @@ class Compiler:
 
         self.asm.say(speaker, text)
         for c in list(self.last_flags.keys()):
-            self.last_flags[c] &= ~vnasm.VN_FLAG_HOP
+            self.last_flags[c] &= ~_ONESHOT_FLAGS
 
     # The real default warning DDLC's splash.rpyc shows over `splash_warning`
     # (its own `splash_message_default` literal, confirmed by decompiling
@@ -1191,7 +1199,13 @@ class Compiler:
         # carries the real per-line speaking/movement signal -- see
         # _resolve_anim and render.c's zoom/hop/sink handling.
         at_list = node.imspec[3] if len(node.imspec) > 3 else None
+        at_names = [str(a) for a in (at_list or [])]
+        if "thide" in at_names:
+            # Leave sprite unchanged until the paired OP_HIDE removes it.
+            return
         pos, flags = self._resolve_anim(char, at_list)
+        if "lhide" in at_names:
+            flags = (flags & ~_ONESHOT_FLAGS) | vnasm.VN_FLAG_LHIDE
         self.asm.show(char, base, overlay, pos, flags=flags)
         self.visible_chars.add(char)
 
