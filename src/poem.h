@@ -29,23 +29,19 @@ enum {
 /**
  * Runs the word-picking minigame to completion (20 rounds, 10 words a
  * round) and reports the outcome: the winning character's id (TAG_TO_CHAR
- * order: 0 = sayori, 1 = natsuki, 2 = yuri) plus each of the three club
- * members' individual point totals, which the internal scoring already
- * computed and used to be discarded once the winner was picked. DDLC's own
- * per-chapter poemwinner[]/s_poemappeal[]/n_poemappeal[]/y_poemappeal[]
- * need all four, not just the winner -- see OP_MINIGAME in vn.h and
- * docs/FORMAT.md's "Poem minigame".
+ * order: 0 = sayori, 1 = natsuki, 2 = yuri) plus each club member's
+ * normalized poemappeal tier (-1 dislike, 0 neutral, +1 like; winner forced
+ * to +1) matching script-poemgame.rpyc's POEM_DISLIKE/LIKE_THRESHOLD.
  *
  * @p playthrough (from persistent.playthrough) and @p chapter (0, 1, 2)
- * gate Act 2 specific behavior: Sayori absent, Monika sticker jump (1/11),
- * Yuri sticker distortion (1/101), Yuri cut-arms sticker, and glitched words (1/401).
+ * gate Act 1/2 behavior, and @p ch1_choice_char (0/1/2 or -1 if unset)
+ * applies DDLC's Day 1 +5 bonus on chapter == 1.
  *
  * Any of the three appeal out-params may be NULL if that call site has no
- * slot to store it in (compile_script.py always resolves all three
- * alongside the winner today, so this is defensive, not exercised).
- * Called by main.c's vn_host_t.minigame.
+ * slot to store it in. Called by main.c's vn_host_t.minigame.
  */
-uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal, int16_t playthrough, int16_t chapter);
+uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal,
+                 int16_t playthrough, int16_t chapter, int8_t ch1_choice_char);
 
 /**
  * Renders the in-game poem @p poem_id on full-screen notebook paper,

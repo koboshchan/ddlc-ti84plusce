@@ -403,7 +403,7 @@ static __attribute__((noinline)) void run_debug_poem_test(void)
     int16_t chapter = (sel == 1) ? 2 : 0;
 
     int16_t s = 0, n = 0, y = 0;
-    uint8_t winner = poem_run(&s, &n, &y, playthrough, chapter);
+    uint8_t winner = poem_run(&s, &n, &y, playthrough, chapter, -1);
     char line[32];
 
     render_backdrop(COL_BOX_FILL);
@@ -1975,7 +1975,16 @@ static uint8_t host_minigame(void *ctx, int16_t *s, int16_t *n, int16_t *y)
     const vn_vm_t *vm = (const vn_vm_t *)ctx;
     int16_t playthrough = vm ? vm->vars[VN_PLAYTHROUGH_VAR] : 0;
     int16_t chapter = vm ? vm->vars[VN_CHAPTER_VAR] : 0;
-    return poem_run(s, n, y, playthrough, chapter);
+    int8_t ch1_choice_char = -1;
+    if (vm && vm->vars[VN_CH1_CHOICE_VAR] >= VN_STR_BASE) {
+        const char *choice = assets_var_string((uint16_t)vm->vars[VN_CH1_CHOICE_VAR]);
+        if (choice) {
+            if (strcmp(choice, "sayori") == 0) ch1_choice_char = 0;
+            else if (strcmp(choice, "natsuki") == 0) ch1_choice_char = 1;
+            else if (strcmp(choice, "yuri") == 0) ch1_choice_char = 2;
+        }
+    }
+    return poem_run(s, n, y, playthrough, chapter, ch1_choice_char);
 }
 
 /* Compiles DDLC's own `try: renpy.file("../characters/X.chr")

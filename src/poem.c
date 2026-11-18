@@ -313,7 +313,11 @@ static void draw_round(const uint16_t *shown, uint8_t round, uint8_t sel_col, ui
  * Public API
  * ------------------------------------------------------------------------ */
 
-uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal, int16_t playthrough, int16_t chapter)
+#define POEM_DISLIKE_THRESHOLD 29
+#define POEM_LIKE_THRESHOLD    45
+
+uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal,
+                 int16_t playthrough, int16_t chapter, int8_t ch1_choice_char)
 {
     if (s_appeal) *s_appeal = 0;
     if (n_appeal) *n_appeal = 0;
@@ -437,6 +441,10 @@ uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal, int16_
         totals[2] += picked->yPoint;
     }
 
+    if (playthrough == 0 && chapter == 1 && ch1_choice_char >= 0 && ch1_choice_char < 3) {
+        totals[ch1_choice_char] += 5;
+    }
+
     if (playthrough > 0) {
         winner = (totals[1] > totals[2]) ? 1 : 2;
     } else {
@@ -448,12 +456,17 @@ uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal, int16_
         }
     }
 
-    /* totals[] is uint16_t (a sum of always-non-negative per-word points,
-     * see poem_word_t), well inside int16_t's positive range for 20 rounds
-     * of real word-bank values -- a plain cast, no clamping needed. */
-    if (s_appeal) *s_appeal = (int16_t)totals[0];
-    if (n_appeal) *n_appeal = (int16_t)totals[1];
-    if (y_appeal) *y_appeal = (int16_t)totals[2];
+    /* Official script-poemgame.rpyc maps raw point totals to -1/0/+1 appeal
+     * tiers and forces the round winner's appeal to +1. */
+    int16_t appeals[3];
+    for (int i = 0; i < 3; i++) {
+        appeals[i] = (totals[i] < POEM_DISLIKE_THRESHOLD) ? -1
+                   : (totals[i] > POEM_LIKE_THRESHOLD) ? 1 : 0;
+    }
+    appeals[winner] = 1;
+    if (s_appeal) *s_appeal = appeals[0];
+    if (n_appeal) *n_appeal = appeals[1];
+    if (y_appeal) *y_appeal = appeals[2];
 
 poem_done:
     free(poem_words);

@@ -485,6 +485,7 @@ class Compiler:
         self._var_slot("ch4_name")
         self._var_slot("currentname")
         self._var_slot("unfairto")
+        self._var_slot("ch1_choice")
 
     def compile_file(self, path: Path) -> None:
         _, top = load_rpyc(path)
