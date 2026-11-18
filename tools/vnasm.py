@@ -51,6 +51,7 @@ OP_EFFECT = 0x26
 OP_OVERLAY_FX = 0x27
 OP_LAYER_FX = 0x28
 OP_TRANS = 0x29
+OP_CREDITS = 0x2A
 
 VN_LAYER_NONE = 0
 VN_LAYER_DRIFT = 1
@@ -404,6 +405,16 @@ class Assembler:
         """Sets TRANS_HOLD or commits a batched transition. See OP_TRANS."""
         self._u8(OP_TRANS)
         self._u8(mode & 0xFF)
+
+    def credits(self, stage: int, clearall_var: int, clear_vars: list[int], scenes: list[int]) -> None:
+        """Runs interactive end credits (stage 0=lyrics, 1=CG scroll). See OP_CREDITS."""
+        self._u8(OP_CREDITS)
+        self._u8(stage & 0xFF)
+        self._u8(clearall_var & 0xFF)
+        for i in range(10):
+            self._u8((clear_vars[i] if i < len(clear_vars) else 0xFF) & 0xFF)
+        for i in range(13):
+            self._u8((scenes[i] if i < len(scenes) else 0xFF) & 0xFF)
 
     def ret(self) -> None:
         self._u8(OP_RETURN)

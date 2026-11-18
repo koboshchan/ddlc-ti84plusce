@@ -194,6 +194,7 @@ enum vn_op {
     OP_OVERLAY_FX   = 0x27, /* bit:u8 enable:u8 -- toggle procedural overlay bits (RectCluster/Blood/Mask/LiveTile) */
     OP_LAYER_FX     = 0x28, /* fx:u8 param:u16 -- ShowLayer camera/layer transform effect */
     OP_TRANS        = 0x29, /* trans:u8 -- 0xFF holds updates; other commits pending update with trans */
+    OP_CREDITS      = 0x2A, /* stage:u8 clearall_var:u8 clear[10]:u8 scenes[13]:u8 -- credits runner */
 };
 
 /** Layer camera/viewport effects carried by OP_LAYER_FX / vn_scene_t.layer_fx. */
@@ -580,6 +581,8 @@ typedef struct {
      */
     void (*request_quit)(void *ctx);
     void (*show_poem)(void *ctx, uint8_t poem_id);
+    void (*credits)(void *ctx, uint8_t stage, bool clearall,
+                    uint16_t clear_mask, const uint8_t *scenes);
 
     void *ctx;
 } vn_host_t;

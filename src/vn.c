@@ -875,6 +875,33 @@ bool vn_step(vn_vm_t *vm)
             break;
         }
 
+        case OP_CREDITS: {
+            uint8_t stage = read_u8(vm);
+            uint8_t clearall_var = read_u8(vm);
+            uint8_t clear_vars[10];
+            uint8_t scenes[13];
+            for (int i = 0; i < 10; i++) {
+                clear_vars[i] = read_u8(vm);
+            }
+            for (int i = 0; i < 13; i++) {
+                scenes[i] = read_u8(vm);
+            }
+            if (vm->status != VN_RUNNING) {
+                break;
+            }
+            bool clearall = (vm->vars[clearall_var] != 0);
+            uint16_t clear_mask = 0;
+            for (int i = 0; i < 10; i++) {
+                if (vm->vars[clear_vars[i]] != 0) {
+                    clear_mask |= (uint16_t)(1U << i);
+                }
+            }
+            if (vm->host->credits) {
+                vm->host->credits(vm->host->ctx, stage, clearall, clear_mask, scenes);
+            }
+            break;
+        }
+
         case OP_END:
             vm->status = VN_FINISHED;
             break;

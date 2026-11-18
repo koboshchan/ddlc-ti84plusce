@@ -10,6 +10,7 @@
 #include "chars.h"
 #include "name.h"
 #include "poem.h"
+#include "credits.h"
 #include "render.h"
 #include "noise.h"
 #include "noise_window.h"
@@ -2143,6 +2144,13 @@ static void host_show_poem(void *ctx, uint8_t poem_id)
     poem_view(poem_id);
 }
 
+static void host_credits(void *ctx, uint8_t stage, bool clearall,
+                         uint16_t clear_mask, const uint8_t *scenes)
+{
+    (void)ctx;
+    credits_run(stage, clearall, clear_mask, scenes, player_name);
+}
+
 /* .ctx is set to &vm once, in main(), after vm exists -- host_say needs it
  * to reach the pause menu (see wait_for_advance). */
 static vn_host_t host = {
@@ -2160,6 +2168,7 @@ static vn_host_t host = {
     .char_delete   = host_char_delete,
     .request_quit  = host_request_quit,
     .show_poem     = host_show_poem,
+    .credits       = host_credits,
     .ctx        = NULL,
 };
 

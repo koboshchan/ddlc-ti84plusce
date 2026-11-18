@@ -905,6 +905,29 @@ class Compiler:
             self.asm.ret()
             return
 
+        if (fname == "credits" or fname.endswith("credits.rpyc")) and name in ("credits", "credits2"):
+            clearall_var = self._var_slot("persistent.clearall")
+            clear_vars = [self._var_slot(f"persistent.clear[{i}]") for i in range(10)]
+            tags = ("credits_logo", "credits_ts", "end_glitch1") + tuple(f"credits_cg{i}" for i in range(1, 11))
+            scenes = []
+            for t in tags:
+                sid = self.resolver.scene_id((t,))
+                scenes.append(0xFF if sid is None else sid)
+            if name == "credits":
+                self.asm.credits(0, clearall_var, clear_vars, scenes)
+                self.asm.jump("credits2")
+                return
+            self.asm.credits(1, clearall_var, clear_vars, scenes)
+            tail = []
+            keep = False
+            for stmt in node.block or []:
+                if (kind(stmt) == "Show" and stmt.imspec and stmt.imspec[0] == ("poem_end",)):
+                    keep = True
+                if keep:
+                    tail.append(stmt)
+            self.emit_block(tail, fname)
+            return
+
         self._split_label_block(node.block, fname)
 
     def _split_label_block(self, nodes, fname: str,
