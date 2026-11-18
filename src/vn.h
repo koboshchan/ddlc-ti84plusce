@@ -191,6 +191,17 @@ enum vn_op {
     OP_MONIKA_TOPIC = 0x24, /* dest:u8 seen_colors:u8 m0..m3:u8x4 -- non-repeating Act 3 topic draw */
     OP_MENU_SPECIAL = 0x25, /* mode:u8 var:u8 count:u8 [text:u16]*count -- flash / rigged / confirm */
     OP_EFFECT       = 0x26, /* fx:u8 delay_ms:u16 length_ms:u16 -- timed screen palette effect */
+    OP_OVERLAY_FX   = 0x27, /* bit:u8 enable:u8 -- toggle procedural overlay bits (RectCluster/Blood/Mask/LiveTile) */
+};
+
+/** Procedural runtime overlay bits carried by vn_scene_t.overlay_fx_mask. */
+enum vn_overlay_fx {
+    VN_OVL_RECTS_N   = 0x01,
+    VN_OVL_RECTS_M   = 0x02,
+    VN_OVL_BLOOD     = 0x04,
+    VN_OVL_BLOOD_EYE = 0x08,
+    VN_OVL_ROOM_MASK = 0x10,
+    VN_OVL_LIVE_TILE = 0x20,
 };
 
 /** Timed effect ids carried by OP_EFFECT / vn_scene_t.timed_fx. */
@@ -384,6 +395,7 @@ typedef struct {
     uint8_t menu_mode;                  /* enum vn_menu_mode during host->menu() */
     uint8_t timed_fx;                   /* enum vn_timed_fx -- cleared on OP_SCENE */
     uint8_t timed_fx_seq;               /* bumped on every OP_EFFECT trigger */
+    uint8_t overlay_fx_mask;            /* enum vn_overlay_fx bitmask -- cleared on OP_SCENE */
     uint16_t timed_fx_delay_ms;
     uint16_t timed_fx_len_ms;
     uint8_t     background;             /* bg id, or VN_NO_SPRITE            */

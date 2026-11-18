@@ -59,6 +59,7 @@ _FIXED_OPS = {
     vnasm.OP_WINDOW_STYLE: 1,
     vnasm.OP_MONIKA_TOPIC: 6,
     vnasm.OP_EFFECT: 5,
+    vnasm.OP_OVERLAY_FX: 2,
 }
 
 

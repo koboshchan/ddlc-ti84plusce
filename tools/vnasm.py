@@ -48,9 +48,17 @@ OP_WINDOW_STYLE = 0x23
 OP_MONIKA_TOPIC = 0x24
 OP_MENU_SPECIAL = 0x25
 OP_EFFECT = 0x26
+OP_OVERLAY_FX = 0x27
 
 VN_EFFECT_NONE = 0
 VN_EFFECT_INVERT = 1
+
+VN_OVL_RECTS_N = 0x01
+VN_OVL_RECTS_M = 0x02
+VN_OVL_BLOOD = 0x04
+VN_OVL_BLOOD_EYE = 0x08
+VN_OVL_ROOM_MASK = 0x10
+VN_OVL_LIVE_TILE = 0x20
 
 VN_MENU_NORMAL = 0
 VN_MENU_FLASH = 1
@@ -355,6 +363,12 @@ class Assembler:
         self._u8(fx)
         self._u16(min(65535, max(0, delay_ms)))
         self._u16(min(65535, max(0, length_ms)))
+
+    def overlay_fx(self, bit: int, enable: int) -> None:
+        """Toggles procedural runtime overlay flags. See OP_OVERLAY_FX."""
+        self._u8(OP_OVERLAY_FX)
+        self._u8(bit)
+        self._u8(1 if enable else 0)
 
     def ret(self) -> None:
         self._u8(OP_RETURN)

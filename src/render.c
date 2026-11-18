@@ -695,11 +695,19 @@ static vn_actor_t exit_actor;
 static unsigned exit_started_at;
 static int16_t  exit_from_x;
 
+#define VN_OVL_PIXEL_MASK (VN_OVL_RECTS_N | VN_OVL_RECTS_M | \
+                           VN_OVL_BLOOD | VN_OVL_BLOOD_EYE | VN_OVL_LIVE_TILE)
+static bool ovl_pixel_active;
+
+static void render_live_tile_bg(void);
+static void render_overlay_fx(const vn_scene_t *scene);
+
 /* Captures the plate for actor @p a, sizing (or resizing) the buffer to fit.
  * Call with the background and every rearward actor already drawn. */
 static bool plate_capture(const vn_actor_t *a, int slot)
 {
-    if (exit_active || a->character >= VN_MAX_CHARS || x_dur_ms[a->character] > 0) {
+    if (exit_active || ovl_pixel_active ||
+        a->character >= VN_MAX_CHARS || x_dur_ms[a->character] > 0) {
         return false;
     }
     int rx, ry, rw, rh;
@@ -892,6 +900,10 @@ void render_scene(const vn_scene_t *scene)
     noise_restore();
     if (ch5_motion_draw(scene->background)) perf_overlay_mark_rendered();
     else draw_background(scene->background);
+    ovl_pixel_active = (scene->overlay_fx_mask & VN_OVL_PIXEL_MASK) != 0;
+    if (scene->overlay_fx_mask & VN_OVL_LIVE_TILE) {
+        render_live_tile_bg();
+    }
     anim_moving = false;
 
     /* Real elapsed time, not a frame count -- render_scene() is called from
@@ -970,9 +982,13 @@ void render_scene(const vn_scene_t *scene)
     }
     assets_sprite_end();
 
-    mover_slot  = (movers == 1 && !exit_active) ? first_mover : -1;
-    plate_valid = captured && movers == 1 && first_mover == capture_at && !exit_active;
+    mover_slot  = (movers == 1 && !exit_active && !ovl_pixel_active) ? first_mover : -1;
+    plate_valid = captured && movers == 1 && first_mover == capture_at &&
+                  !exit_active && !ovl_pixel_active;
 
+    if (ovl_pixel_active) {
+        render_overlay_fx(scene);
+    }
     apply_tear(scene, t);
     if (scene->tear_on) {
         /* Never settles while shown -- every band keeps re-rolling, so a
@@ -1098,15 +1114,21 @@ void render_invalidate_scene(void)
 
 bool render_scene_is_settled(uint8_t bg_id)
 {
-    return have_drawn_once && scene_settled && !ch5_motion_active(bg_id);
+    return have_drawn_once && scene_settled && !ch5_motion_active(bg_id) && !ovl_pixel_active;
 }
 
 void render_scene_lazy(const vn_scene_t *scene)
 {
     static clock_t motion_next;
+    static clock_t ovl_next;
     if (ch5_motion_active(scene->background) && clock() >= motion_next) {
         render_scene(scene);
         motion_next = clock() + CLOCKS_PER_SEC/4;
+        return;
+    }
+    if ((scene->overlay_fx_mask & VN_OVL_PIXEL_MASK) && (!have_drawn_once || clock() >= ovl_next)) {
+        render_scene(scene);
+        ovl_next = clock() + CLOCKS_PER_SEC / 8;
         return;
     }
     if (!have_drawn_once || !scene_settled) {
@@ -1627,6 +1649,7 @@ static uint16_t current_palette[256];
 static uint16_t fade_saved[256];
 static bool fade_active;
 static bool timed_fx_inverted;
+static bool room_mask_applied;
 
 static void fade_apply(uint8_t amount)
 {
@@ -1668,6 +1691,7 @@ void render_fade_in(void)
 void render_apply_palette(const uint16_t *palette)
 {
     timed_fx_inverted = false;
+    room_mask_applied = false;
     memcpy(current_palette, palette, sizeof(current_palette));
     memcpy(fade_saved, palette, sizeof(fade_saved));
     if (fade_active) {
@@ -1770,30 +1794,150 @@ static void monika_box_remap(uint8_t *dst, size_t count)
     fast_remap_bytes(dst, lut, (uint16_t)count);
 }
 
+static uint8_t blood_red_index(void)
+{
+    static uint8_t cached_col = COL_BOX_EDGE;
+    static uint16_t cached_key = 0;
+    static bool has_cache = false;
+
+    uint16_t key = (uint16_t)(current_palette[8] ^ current_palette[128] ^ current_palette[200]);
+    if (!has_cache || cached_key != key) {
+        has_cache = true;
+        cached_key = key;
+        int best_score = 8;
+        uint8_t best = COL_BOX_EDGE;
+        for (unsigned i = 1; i < 256; i++) {
+            uint16_t c = current_palette[i];
+            int r = (int)((c >> 10) & 31U);
+            int g = (int)((c >> 5) & 31U);
+            int b = (int)(c & 31U);
+            int score = r * 2 - g - b;
+            if (r >= 10 && score > best_score) {
+                best_score = score;
+                best = (uint8_t)i;
+            }
+        }
+        cached_col = best;
+    }
+    return cached_col;
+}
+
+static void render_live_tile_bg(void)
+{
+    for (int i = 0; i < 12; i++) {
+        uint32_t r = tear_rand_next();
+        int sx = (int)(r % 20U) * 16;
+        int sy = (int)((r >> 5) % 11U) * 16;   /* <= 160, 160 + 16 = 176 < SCENE_H */
+        int dx = (int)((r >> 10) % 20U) * 16;
+        int dy = (int)((r >> 15) % 11U) * 16;
+        uint8_t *dst = (uint8_t *)gfx_vbuffer + (size_t)dy * SCREEN_W + dx;
+        const uint8_t *src = (const uint8_t *)gfx_vbuffer + (size_t)sy * SCREEN_W + sx;
+        fast_rect_blit(dst, SCREEN_W, src, SCREEN_W, 16, 16);
+    }
+}
+
+#define BLOOD_MAX_DROPS 24
+typedef struct {
+    int16_t x, y;
+    int8_t  vx, vy;
+    uint8_t ttl;
+} blood_drop_t;
+
+static void spawn_blood_drop(blood_drop_t *d, bool eye_mode)
+{
+    uint32_t r = tear_rand_next();
+    if (eye_mode) {
+        d->x = (int16_t)(142 + (r % 36U));
+        d->y = (int16_t)(56 + ((r >> 6) % 12U));
+        d->vx = 0;
+        d->vy = (int8_t)(1 + ((r >> 10) % 3U));
+    } else {
+        d->x = (int16_t)(148 + (r % 24U));
+        d->y = (int16_t)(64 + ((r >> 6) % 22U));
+        d->vx = (int8_t)(((int)(r >> 10) % 9) - 4);
+        d->vy = (int8_t)(((int)(r >> 14) % 7) - 4);
+    }
+    d->ttl = (uint8_t)(10U + ((r >> 18) % 14U));
+}
+
+static void render_overlay_fx(const vn_scene_t *scene)
+{
+    uint8_t mask = scene->overlay_fx_mask;
+
+    if (mask & VN_OVL_RECTS_N) {
+        gfx_SetColor(COL_BLACK);
+        for (int i = 0; i < 6; i++) {
+            uint32_t r = tear_rand_next();
+            int rx = 138 + (int)(r % 56U);
+            int ry = 60 + (int)((r >> 6) % 42U);
+            int rw = 2 + (int)((r >> 12) % 4U);
+            int rh = 2 + (int)((r >> 15) % 3U);
+            if (rx + rw <= SCREEN_W && ry + rh <= SCENE_H) {
+                gfx_FillRectangle_NoClip(rx, ry, rw, rh);
+            }
+        }
+    }
+
+    if (mask & VN_OVL_RECTS_M) {
+        gfx_SetColor(COL_BLACK);
+        for (int i = 0; i < 14; i++) {
+            uint32_t r = tear_rand_next();
+            int rx = (int)(r % (SCREEN_W - 8));
+            int ry = (int)((r >> 9) % (SCENE_H - 8));
+            gfx_FillRectangle_NoClip(rx, ry, 8, 8);
+        }
+    }
+
+    if (mask & (VN_OVL_BLOOD | VN_OVL_BLOOD_EYE)) {
+        static blood_drop_t drops[BLOOD_MAX_DROPS];
+        static uint8_t prev_blood_mode;
+        bool eye_mode = (mask & VN_OVL_BLOOD_EYE) != 0 && !(mask & VN_OVL_BLOOD);
+        uint8_t cur_mode = eye_mode ? 2 : 1;
+        if (cur_mode != prev_blood_mode) {
+            prev_blood_mode = cur_mode;
+            for (int i = 0; i < BLOOD_MAX_DROPS; i++) {
+                spawn_blood_drop(&drops[i], eye_mode);
+            }
+        }
+        gfx_SetColor(blood_red_index());
+        for (int i = 0; i < BLOOD_MAX_DROPS; i++) {
+            blood_drop_t *d = &drops[i];
+            d->x += d->vx;
+            d->y += d->vy;
+            if (!eye_mode && d->vy < 6) {
+                d->vy++;
+            }
+            if (d->ttl == 0 || d->y < 0 || d->y >= SCENE_H - 2 ||
+                d->x < 0 || d->x >= SCREEN_W - 2) {
+                spawn_blood_drop(d, eye_mode);
+            } else {
+                d->ttl--;
+                gfx_FillRectangle_NoClip(d->x, d->y, 2, 2);
+            }
+        }
+    }
+}
+
 void render_timed_fx_tick(const vn_scene_t *scene)
 {
     static uint8_t  last_seq;
     static unsigned started_ms;
+    static unsigned mask_last_ms;
 
-    if (!scene || scene->timed_fx == VN_EFFECT_NONE) {
-        if (timed_fx_inverted) {
-            memcpy(gfx_palette, current_palette, sizeof(current_palette));
-            timed_fx_inverted = false;
-        }
+    if (!scene) {
         return;
     }
 
     unsigned now = ticks_to_ms(clock());
-    if (scene->timed_fx_seq != last_seq) {
-        last_seq = scene->timed_fx_seq;
-        started_ms = now;
-        if (timed_fx_inverted) {
-            memcpy(gfx_palette, current_palette, sizeof(current_palette));
-            timed_fx_inverted = false;
-        }
-    }
-
     if (scene->timed_fx == VN_EFFECT_INVERT) {
+        if (scene->timed_fx_seq != last_seq) {
+            last_seq = scene->timed_fx_seq;
+            started_ms = now;
+            if (timed_fx_inverted) {
+                memcpy(gfx_palette, current_palette, sizeof(current_palette));
+                timed_fx_inverted = false;
+            }
+        }
         unsigned elapsed = now - started_ms;
         bool want = (elapsed >= scene->timed_fx_delay_ms) &&
                     (elapsed < (unsigned)scene->timed_fx_delay_ms + scene->timed_fx_len_ms);
@@ -1807,6 +1951,34 @@ void render_timed_fx_tick(const vn_scene_t *scene)
                 memcpy(gfx_palette, current_palette, sizeof(current_palette));
             }
         }
+        if (timed_fx_inverted) {
+            return;
+        }
+    } else if (timed_fx_inverted) {
+        memcpy(gfx_palette, current_palette, sizeof(current_palette));
+        timed_fx_inverted = false;
+    }
+
+    if (scene->overlay_fx_mask & VN_OVL_ROOM_MASK) {
+        if (!room_mask_applied || now - mask_last_ms >= 100U) {
+            mask_last_ms = now;
+            room_mask_applied = true;
+            unsigned phase = (now / 120U) & 31U;
+            unsigned amp = (phase < 16U) ? phase : (31U - phase);
+            unsigned boost = amp >> 2;
+            for (unsigned i = 8; i < 256; i++) {
+                uint16_t c = current_palette[i];
+                unsigned r = ((c >> 10) & 31U) + boost;
+                unsigned g = ((c >> 5) & 31U) + (boost >> 1);
+                unsigned b = c & 31U;
+                if (r > 31U) r = 31U;
+                if (g > 31U) g = 31U;
+                gfx_palette[i] = (uint16_t)((c & 0x8000U) | (r << 10) | (g << 5) | b);
+            }
+        }
+    } else if (room_mask_applied) {
+        memcpy(gfx_palette, current_palette, sizeof(current_palette));
+        room_mask_applied = false;
     }
 }
 

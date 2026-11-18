@@ -376,6 +376,34 @@ class _FlashEntry:
     saved_chars: dict     # char -> (sprite, pos, flags)
 
 
+_OVERLAY_FX_BY_TAG = {
+    "n_rects_ghost1": vnasm.VN_OVL_RECTS_N,
+    "n_rects_ghost2": vnasm.VN_OVL_RECTS_N,
+    "n_rects_ghost3": vnasm.VN_OVL_RECTS_N,
+    "n_rects_ghost4": vnasm.VN_OVL_RECTS_N,
+    "n_rects_ghost5": vnasm.VN_OVL_RECTS_N,
+    "n_rects1": vnasm.VN_OVL_RECTS_N,
+    "n_rects2": vnasm.VN_OVL_RECTS_N,
+    "n_rects3": vnasm.VN_OVL_RECTS_N,
+    "m_rectstatic": vnasm.VN_OVL_RECTS_M,
+    "m_rectstatic2": vnasm.VN_OVL_RECTS_M,
+    "m_rectstatic3": vnasm.VN_OVL_RECTS_M,
+    "blood": vnasm.VN_OVL_BLOOD,
+    "blood2": vnasm.VN_OVL_BLOOD,
+    "blood_eye": vnasm.VN_OVL_BLOOD_EYE,
+    "blood_eye2": vnasm.VN_OVL_BLOOD_EYE,
+    "room_mask": vnasm.VN_OVL_ROOM_MASK,
+    "room_mask2": vnasm.VN_OVL_ROOM_MASK,
+}
+_CH30_SPACEROOM_TAGS = {
+    "monika_bg",
+    "monika_bg_highlight",
+    "monika_room",
+    "monika_room_highlight",
+    "monika_body_glitch1",
+}
+
+
 @dataclass
 class Compiler:
     resolver: "image_resolve.ImageResolver"
@@ -551,6 +579,8 @@ class Compiler:
         self._var_slot("ch4_name")
         self._var_slot("currentname")
         self._var_slot("unfairto")
+        self._active_ovl_tags: dict[int, set[str]] = {}
+        self._ch30_room_mask_pending: bool = False
         self._var_slot("ch1_choice")
 
     def compile_file(self, path: Path) -> None:
@@ -1096,6 +1126,19 @@ class Compiler:
                 self._flash_stack.clear()
                 return
 
+            ovl_alias = node.imspec[2] if (node.imspec and len(node.imspec) > 2 and node.imspec[2]) else None
+            ovl_bit = _OVERLAY_FX_BY_TAG.get(imgname[0]) or _OVERLAY_FX_BY_TAG.get(ovl_alias or "")
+            if ovl_bit is not None and len(imgname) == 1:
+                ovl_key = ovl_alias or imgname[0]
+                active = self._active_ovl_tags.setdefault(ovl_bit, set())
+                was_empty = not active
+                active.add(ovl_key)
+                if ovl_bit == vnasm.VN_OVL_ROOM_MASK:
+                    self._ch30_room_mask_pending = True
+                if was_empty:
+                    self.asm.overlay_fx(ovl_bit, 1)
+                return
+
             # Default calculator: omit vignette before scene registration,
             # preserving the live motion underlay and original source assets.
             if (fname == "script-ch5" or fname.endswith("script-ch5.rpyc")) and imgname[0] == "vignette":
@@ -1177,6 +1220,13 @@ class Compiler:
                 self.asm.motion(scene_id)
             else:
                 self.asm.scene(scene_id, vnasm.TRANS_CUT)
+                if imgname == ("bg", "glitch"):
+                    self.asm.overlay_fx(vnasm.VN_OVL_LIVE_TILE, 1)
+                elif imgname[0] in _CH30_SPACEROOM_TAGS and self._ch30_room_mask_pending:
+                    self.asm.overlay_fx(vnasm.VN_OVL_ROOM_MASK, 1)
+                elif not imgname[0].startswith("mask"):
+                    self._ch30_room_mask_pending = False
+                    self._active_ovl_tags.clear()
             self._current_bg = scene_id
             self.last_sprite.clear()
             self.last_pos.clear()
@@ -1238,6 +1288,17 @@ class Compiler:
     def _emit_Hide(self, node, fname: str) -> None:
         imgname = node.imspec[0] if node.imspec else None
         tag = imgname[0] if imgname else None
+        ovl_bit = _OVERLAY_FX_BY_TAG.get(tag or "")
+        if ovl_bit is not None:
+            self._flush_pending_scene(vnasm.TRANS_CUT)
+            active = self._active_ovl_tags.get(ovl_bit)
+            if active is not None:
+                active.discard(tag)
+                if not active:
+                    self.asm.overlay_fx(ovl_bit, 0)
+            if ovl_bit == vnasm.VN_OVL_ROOM_MASK and (not active):
+                self._ch30_room_mask_pending = False
+            return
         if (fname == "script-ch5" or fname.endswith("script-ch5.rpyc")) and tag == "vignette":
             return
         if fname in ("script-ch5", "script-ch5.rpyc") and tag is not None:
@@ -1323,6 +1384,8 @@ class Compiler:
 
     def _emit_Scene(self, node, fname: str) -> None:
         self._flush_pending_scene(vnasm.TRANS_CUT)
+        self._active_ovl_tags.clear()
+        self._ch30_room_mask_pending = False
         if (fname.endswith("script-ch5.rpyc") or fname == "script-ch5") and getattr(node, "linenumber", 0) == 309:
             self.asm.code.extend(bytes((0x1F, 0)))
         imgname = tuple(node.imspec[0]) if node.imspec and node.imspec[0] else None

@@ -402,6 +402,7 @@ bool vn_step(vn_vm_t *vm)
             vm->scene.background = bg;
             vm->scene.pal_fx = (trans & TRANS_SILHOUETTE) ? VN_FX_SILHOUETTE : VN_FX_NONE;
             vm->scene.timed_fx = VN_EFFECT_NONE;
+            vm->scene.overlay_fx_mask = 0;
             actors_clear(&vm->scene);
             vm->host->update(vm->host->ctx, &vm->scene, (uint8_t)(trans & 0x7FU));
             break;
@@ -804,6 +805,25 @@ bool vn_step(vn_vm_t *vm)
             vm->scene.timed_fx_delay_ms = dly;
             vm->scene.timed_fx_len_ms = len;
             vm->scene.timed_fx_seq++;
+            break;
+        }
+
+        case OP_OVERLAY_FX: {
+            uint8_t bit = read_u8(vm);
+            uint8_t en  = read_u8(vm);
+            if (vm->status != VN_RUNNING) {
+                break;
+            }
+            uint8_t prev = vm->scene.overlay_fx_mask;
+            if (en) {
+                vm->scene.overlay_fx_mask |= bit;
+            } else {
+                vm->scene.overlay_fx_mask &= (uint8_t)~bit;
+            }
+            if (vm->scene.overlay_fx_mask != prev && vm->host->update &&
+                bit != VN_OVL_LIVE_TILE && bit != VN_OVL_ROOM_MASK) {
+                vm->host->update(vm->host->ctx, &vm->scene, TRANS_CUT);
+            }
             break;
         }
 
