@@ -89,6 +89,7 @@ int main(void) {
    if((x&1)==0&&bdst[320+x]!=0)ok=false;
   }
   fail+=!ok;n++;
+  gfx_SetDrawScreen();
  }
  gfx_FillScreen(0);gfx_SetTextFGColor(1);char msg[60];
  sprintf(msg,"%u checks, %u failures",n,fail);gfx_PrintStringXY(msg,10,20);
