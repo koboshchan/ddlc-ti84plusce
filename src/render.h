@@ -195,6 +195,9 @@ void render_fade_retarget(const uint16_t *palette);
  * @p palette, returning either @p palette directly or an internal scratch copy. */
 const uint16_t *render_filter_palette(const vn_scene_t *scene, const uint16_t *palette);
 
+/** Advances non-blocking timed palette effects (e.g. invert screen) per frame. */
+void render_timed_fx_tick(const vn_scene_t *scene);
+
 /* ---------------------------------------------------------------------------
  * Title / pause / menu screens
  *

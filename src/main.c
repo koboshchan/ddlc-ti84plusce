@@ -1539,6 +1539,7 @@ static void wait_for_advance(vn_vm_t *vm, bool allow_pause)
                     idle_drawn = true;
                 }
             }
+            render_timed_fx_tick(scene);
             gfx_Wait();
         }
     } while (!in.advance && !quit_requested);
@@ -1896,6 +1897,7 @@ static void present_say_frame(vn_vm_t *vm, const vn_scene_t *scene, size_t visib
         draw_dialogue_box(vm, scene, visible);
         render_present(TRANS_CUT);
     }
+    render_timed_fx_tick(scene);
 }
 
 static void host_say(void *ctx, const vn_scene_t *scene)

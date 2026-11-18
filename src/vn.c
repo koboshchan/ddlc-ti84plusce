@@ -401,6 +401,7 @@ bool vn_step(vn_vm_t *vm)
             /* A scene change clears the stage, matching Ren'Py semantics. */
             vm->scene.background = bg;
             vm->scene.pal_fx = (trans & TRANS_SILHOUETTE) ? VN_FX_SILHOUETTE : VN_FX_NONE;
+            vm->scene.timed_fx = VN_EFFECT_NONE;
             actors_clear(&vm->scene);
             vm->host->update(vm->host->ctx, &vm->scene, (uint8_t)(trans & 0x7FU));
             break;
@@ -789,6 +790,20 @@ bool vn_step(vn_vm_t *vm)
             uint8_t pidx = (uint8_t)(picked - 1);
             vm->vars[m[pidx / 14]] |= (int16_t)(1U << (pidx % 14));
             vm->vars[dest] = (int16_t)picked;
+            break;
+        }
+
+        case OP_EFFECT: {
+            uint8_t  fx  = read_u8(vm);
+            uint16_t dly = read_u16(vm);
+            uint16_t len = read_u16(vm);
+            if (vm->status != VN_RUNNING) {
+                break;
+            }
+            vm->scene.timed_fx = fx;
+            vm->scene.timed_fx_delay_ms = dly;
+            vm->scene.timed_fx_len_ms = len;
+            vm->scene.timed_fx_seq++;
             break;
         }
 

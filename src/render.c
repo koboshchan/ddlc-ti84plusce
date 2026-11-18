@@ -1626,6 +1626,7 @@ void render_title_screen(uint8_t selected, unsigned t, int16_t playthrough)
 static uint16_t current_palette[256];
 static uint16_t fade_saved[256];
 static bool fade_active;
+static bool timed_fx_inverted;
 
 static void fade_apply(uint8_t amount)
 {
@@ -1666,6 +1667,7 @@ void render_fade_in(void)
 
 void render_apply_palette(const uint16_t *palette)
 {
+    timed_fx_inverted = false;
     memcpy(current_palette, palette, sizeof(current_palette));
     memcpy(fade_saved, palette, sizeof(fade_saved));
     if (fade_active) {
@@ -1766,6 +1768,46 @@ static void monika_box_remap(uint8_t *dst, size_t count)
         }
     }
     fast_remap_bytes(dst, lut, (uint16_t)count);
+}
+
+void render_timed_fx_tick(const vn_scene_t *scene)
+{
+    static uint8_t  last_seq;
+    static unsigned started_ms;
+
+    if (!scene || scene->timed_fx == VN_EFFECT_NONE) {
+        if (timed_fx_inverted) {
+            memcpy(gfx_palette, current_palette, sizeof(current_palette));
+            timed_fx_inverted = false;
+        }
+        return;
+    }
+
+    unsigned now = ticks_to_ms(clock());
+    if (scene->timed_fx_seq != last_seq) {
+        last_seq = scene->timed_fx_seq;
+        started_ms = now;
+        if (timed_fx_inverted) {
+            memcpy(gfx_palette, current_palette, sizeof(current_palette));
+            timed_fx_inverted = false;
+        }
+    }
+
+    if (scene->timed_fx == VN_EFFECT_INVERT) {
+        unsigned elapsed = now - started_ms;
+        bool want = (elapsed >= scene->timed_fx_delay_ms) &&
+                    (elapsed < (unsigned)scene->timed_fx_delay_ms + scene->timed_fx_len_ms);
+        if (want != timed_fx_inverted) {
+            timed_fx_inverted = want;
+            if (want) {
+                for (unsigned i = 0; i < 256; i++) {
+                    gfx_palette[i] = current_palette[i] ^ 0xFFFFU;
+                }
+            } else {
+                memcpy(gfx_palette, current_palette, sizeof(current_palette));
+            }
+        }
+    }
 }
 
 void render_splash_warning(const char *msg)

@@ -1911,6 +1911,15 @@ class Compiler:
             if call is not None:
                 self.asm.tear_show(*call)
                 return
+        if stripped == "hide screen invert":
+            self.asm.effect(vnasm.VN_EFFECT_NONE, 0, 0)
+            return
+        if stripped.startswith("show screen invert("):
+            inv = _parse_invert_call(stripped)
+            if inv is not None:
+                delay_ms, length_ms = inv
+                self.asm.effect(vnasm.VN_EFFECT_INVERT, delay_ms, length_ms)
+                return
         # `window hide`/`window hide(...)`/`window hide(config....)` all
         # mean the same thing here regardless of the transition argument
         # (this engine has no cross-fade to run one under) -- matched by
@@ -3415,6 +3424,35 @@ def _match_clearall_check(stmt) -> bool:
     return (isinstance(assign, ast.Assign) and len(assign.targets) == 1
             and _ident_name(assign.targets[0]) == "persistent.clearall"
             and _const_scalar(assign.value) == 1)
+
+
+def _parse_invert_call(stripped: str) -> tuple[int, int] | None:
+    """Parse `show screen invert(length, delay=0.0)` into (delay_ms, length_ms)."""
+    prefix = "show screen invert("
+    if not stripped.startswith(prefix) or not stripped.endswith(")"):
+        return None
+    try:
+        call = ast.parse(f"invert({stripped[len(prefix):-1]})", mode="eval").body
+    except SyntaxError:
+        return None
+    if not isinstance(call, ast.Call):
+        return None
+
+    def _num(n):
+        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)) and not isinstance(n.value, bool):
+            return float(n.value)
+        return None
+
+    length_s = _num(call.args[0]) if len(call.args) >= 1 else None
+    delay_s = _num(call.args[1]) if len(call.args) >= 2 else 0.0
+    for kw in call.keywords:
+        if kw.arg == "length":
+            length_s = _num(kw.value)
+        elif kw.arg == "delay":
+            delay_s = _num(kw.value)
+    if length_s is None or delay_s is None:
+        return None
+    return max(0, round(delay_s * 1000)), max(1, round(length_s * 1000))
 
 
 def _match_display_menu_call(node: ast.Call) -> tuple[list[str], bool, str] | None:

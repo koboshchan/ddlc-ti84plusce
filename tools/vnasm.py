@@ -47,6 +47,10 @@ OP_POEM_VIEW = 0x1E
 OP_WINDOW_STYLE = 0x23
 OP_MONIKA_TOPIC = 0x24
 OP_MENU_SPECIAL = 0x25
+OP_EFFECT = 0x26
+
+VN_EFFECT_NONE = 0
+VN_EFFECT_INVERT = 1
 
 VN_MENU_NORMAL = 0
 VN_MENU_FLASH = 1
@@ -344,6 +348,13 @@ class Assembler:
         self._u8(len(captions))
         for cap in captions:
             self._u16(self.string(cap))
+
+    def effect(self, fx: int, delay_ms: int = 0, length_ms: int = 0) -> None:
+        """Compiles timed screen effects (e.g. invert). See OP_EFFECT."""
+        self._u8(OP_EFFECT)
+        self._u8(fx)
+        self._u16(min(65535, max(0, delay_ms)))
+        self._u16(min(65535, max(0, length_ms)))
 
     def ret(self) -> None:
         self._u8(OP_RETURN)
