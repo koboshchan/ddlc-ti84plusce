@@ -592,6 +592,16 @@ class Compiler:
         value = _const_scalar(node)
         return self._intern(value) if isinstance(value, str) else value
 
+    def _const_operand_for_var(self, var_name: str | None, node) -> int | None:
+        """Like _const_operand(), but normalizes poemwinner[N] string tags
+        ("sayori"/"natsuki"/"yuri") to OP_MINIGAME's 0/1/2 enum IDs."""
+        value = _const_scalar(node)
+        if var_name and var_name.startswith("poemwinner[") and isinstance(value, str):
+            tag_id = TAG_TO_CHAR.get(value)
+            if tag_id is not None:
+                return tag_id
+        return self._intern(value) if isinstance(value, str) else value
+
     # -- scene buffering (so `scene X \n with dissolve` gets the real trans) ---
 
     def _flush_pending_scene(self, trans: int) -> None:
@@ -2136,7 +2146,7 @@ class Compiler:
                     self.asm.set(ch4_slot, self._intern("Natsuki"))
                     self.asm.label(lbl_done)
                     return True
-            val = self._const_operand(stmt.value)
+            val = self._const_operand_for_var(var, stmt.value)
             if var is not None and val is not None:
                 self.asm.set(self._var_slot(var), val)
                 if var == "chapter":
@@ -2306,8 +2316,9 @@ class Compiler:
                 val = self._const_operand(expr.comparators[0])
                 self._emit_chapter_condition(base, cmp, val, true_label, false_label)
                 return
-            slot = self._var_slot(_ident_name(expr.left))
-        val = self._const_operand(expr.comparators[0])
+            lhs_name = _ident_name(expr.left)
+            slot = self._var_slot(lhs_name)
+        val = self._const_operand_for_var(lhs_name if bounds is None else None, expr.comparators[0])
         self.asm.if_(slot, cmp, val, true_label)
         self.asm.jump(false_label)
 
@@ -2434,7 +2445,7 @@ class Compiler:
                 cmp_type = type(sub.ops[0])
                 if cmp_type in _CMP_MAP and isinstance(sub.left, (ast.Name, ast.Attribute, ast.Subscript)):
                     var_name = _ident_name(sub.left)
-                    val = self._const_operand(sub.comparators[0])
+                    val = self._const_operand_for_var(var_name, sub.comparators[0])
                     if val is not None:
                         clauses.append((self._var_slot(var_name), _CMP_MAP[cmp_type], val))
                         continue
