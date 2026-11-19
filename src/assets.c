@@ -754,10 +754,18 @@ static bool sprite_ensure_arena(uint16_t need)
     }
     if (!sprite_arena) {
 #ifdef __TICE__
-        static const uint16_t caps[] = { SPRITE_CACHE_ARENA_CAP, 34816u, 32768u, 30720u, 28672u, 24576u, 20480u, 16384u, 12288u, 8192u };
+        for (uint16_t cap = SPRITE_CACHE_ARENA_CAP; cap >= 8192u; cap -= 512u) {
+            if (cap < need) {
+                break;
+            }
+            sprite_arena = malloc(cap);
+            if (sprite_arena) {
+                sprite_arena_cap = cap;
+                break;
+            }
+        }
 #else
         static const uint16_t caps[] = { SPRITE_CACHE_ARENA_CAP, 12288u, 8192u };
-#endif
         for (size_t i = 0; i < sizeof(caps) / sizeof(caps[0]); i++) {
             if (caps[i] < need) {
                 continue;
@@ -768,6 +776,7 @@ static bool sprite_ensure_arena(uint16_t need)
                 break;
             }
         }
+#endif
         if (!sprite_arena) {
             sprite_arena = malloc(need);
             if (!sprite_arena) {
@@ -985,80 +994,135 @@ bool assets_zoom_prepare(uint16_t id)
     return sprite_lookup(id, &appvar_idx, &offset, NULL, &dx, &dy);
 }
 
+/* Per-sprite constant parameters for scale_rlet_row_spans() to keep its
+ * eZ80 call signature to 2 register/stack arguments instead of 8. */
+typedef struct {
+    unsigned src_w;
+    unsigned dst_w;
+    unsigned gap;
+    unsigned half;
+    unsigned step_q;
+    unsigned step_r;
+    unsigned start_dx;
+    unsigned end_dx;
+} rlet_scale_ctx_t;
+
+static rlet_scale_ctx_t rlet_sc;
+
+static __attribute__((noinline)) unsigned rlet_step_dx(unsigned dx, int *err,
+                                                       unsigned delta)
+{
+    dx += delta;
+    if (rlet_sc.gap > 0u) {
+        int e = *err - (int)(delta * rlet_sc.gap);
+        while (e < 0) {
+            e += (int)rlet_sc.src_w;
+            dx++;
+        }
+        *err = e;
+    }
+    return dx;
+}
+
 /* Composites one RLET sprite row directly from its precomputed opaque spans
- * (trans_run, opaque_run, pixels...) into @p dest_row (aligned to @p start_dx),
- * using memcpy/ldir on contiguous 1:1 sub-runs instead of unpacking transparent
- * pixels and checking each pixel. Requires dst_w >= src_w >= 1.
+ * (trans_run, opaque_run, pixels...) into @p dest_row (aligned to rlet_sc.start_dx),
+ * using incremental span stepping and memcpy/ldir on contiguous 1:1 sub-runs
+ * with zero per-pixel transparency checks and zero per-span divisions (except
+ * when a span straddles the left clip boundary). Requires src_w <= dst_w < 2*src_w.
  * Returns pointer to the start of the next RLET row. */
 static __attribute__((noinline)) const uint8_t *scale_rlet_row_spans(
-    uint8_t *dest_row, const uint8_t *rlet_ptr,
-    unsigned src_w, unsigned dst_w,
-    unsigned start_dx, unsigned end_dx)
+    uint8_t *dest_row, const uint8_t *rlet_ptr)
 {
-    unsigned half = dst_w >> 1;
-    unsigned gap = dst_w - src_w;
     unsigned sx = 0;
+    unsigned dx = 0;
+    int err = (int)rlet_sc.half;
 
-    while (sx < src_w) {
+    while (sx < rlet_sc.src_w) {
         unsigned trans = *rlet_ptr++;
-        sx += trans;
-        if (sx >= src_w) {
-            break;
+        if (trans > 0u) {
+            sx += trans;
+            if (sx >= rlet_sc.src_w) {
+                break;
+            }
+            dx = rlet_step_dx(dx, &err, trans);
         }
         unsigned olen = *rlet_ptr++;
         const uint8_t *pix = rlet_ptr;
         rlet_ptr += olen;
 
         unsigned sx0 = sx;
-        unsigned sx1 = sx + olen;
-        sx = sx1;
+        unsigned dx0 = dx;
+        unsigned err0 = (unsigned)err;
 
-        unsigned dx0 = (sx0 == 0u) ? 0u : (sx0 * dst_w - half + src_w - 1u) / src_w;
-        unsigned dx1 = (sx1 * dst_w - half + src_w - 1u) / src_w;
-        if (dx1 > dst_w) {
-            dx1 = dst_w;
-        }
-        if (dx0 < start_dx) {
-            dx0 = start_dx;
-        }
-        if (dx1 > end_dx) {
-            dx1 = end_dx;
-        }
-        if (dx0 >= dx1) {
+        sx += olen;
+        dx = rlet_step_dx(dx, &err, olen);
+        unsigned dx1 = dx > rlet_sc.dst_w ? rlet_sc.dst_w : dx;
+
+        unsigned cdx0 = dx0 < rlet_sc.start_dx ? rlet_sc.start_dx : dx0;
+        unsigned cdx1 = dx1 > rlet_sc.end_dx ? rlet_sc.end_dx : dx1;
+        if (cdx0 >= cdx1) {
             continue;
         }
 
-        uint8_t *dst_ptr = dest_row + (dx0 - start_dx);
-        unsigned rem = dx1 - dx0;
-        if (gap == 0u) {
-            memcpy(dst_ptr, pix + (dx0 - sx0), rem);
+        uint8_t *dst_ptr = dest_row + (cdx0 - rlet_sc.start_dx);
+        unsigned rem = cdx1 - cdx0;
+        if (rlet_sc.gap == 0u) {
+            memcpy(dst_ptr, pix + (cdx0 - sx0), rem);
             continue;
         }
 
-        unsigned num = dx0 * src_w + half;
-        unsigned cur_sx = num / dst_w;
-        unsigned acc = num % dst_w;
-        const uint8_t *src_ptr = pix + (cur_sx - sx0);
+        const uint8_t *src_ptr;
+        unsigned acc;
+        if (cdx0 == dx0) {
+            src_ptr = pix;
+            acc = err0;
+        } else {
+            unsigned num = cdx0 * rlet_sc.src_w + rlet_sc.half;
+            src_ptr = pix + (num / rlet_sc.dst_w - sx0);
+            acc = num % rlet_sc.dst_w;
+        }
 
+        /* Initial 1:1 run if acc >= gap, then division-free loop using (step_q, step_r). */
+        unsigned run = 0u;
+        if (acc >= rlet_sc.gap) {
+            run = acc / rlet_sc.gap;
+            acc -= run * rlet_sc.gap;
+        }
         while (rem > 0u) {
-            if (acc >= gap) {
-                unsigned run = acc / gap;
+            if (run > 0u) {
                 if (run > rem) {
                     run = rem;
                 }
                 memcpy(dst_ptr, src_ptr, run);
                 dst_ptr += run;
                 src_ptr += run;
-                acc -= run * gap;
                 rem -= run;
-            } else {
-                *dst_ptr++ = *src_ptr;
-                acc += src_w;
-                rem--;
+                if (rem == 0u) {
+                    break;
+                }
+            }
+            *dst_ptr++ = *src_ptr;
+            rem--;
+            run = rlet_sc.step_q;
+            acc += rlet_sc.step_r;
+            if (acc >= rlet_sc.gap) {
+                acc -= rlet_sc.gap;
+                run++;
             }
         }
     }
     return rlet_ptr;
+}
+
+static __attribute__((noinline)) int scale_permille_val(int v, unsigned permille)
+{
+    if (v == 0) {
+        return 0;
+    }
+    bool neg = v < 0;
+    unsigned av = (unsigned)(neg ? -v : v);
+    unsigned sv = (av * permille + 500u) / 1000u;
+    return neg ? -(int)sv : (int)sv;
 }
 
 bool assets_draw_sprite_scaled(uint16_t id, int center_x, int feet_y, unsigned int scale_permille)
@@ -1078,13 +1142,10 @@ bool assets_draw_sprite_scaled(uint16_t id, int center_x, int feet_y, unsigned i
         scale_permille = 1000u;
     }
 
-    int dst_w = (int)(((unsigned)src_w * scale_permille + 500u) / 1000u);
-    int dst_h = (int)(((unsigned)src_h * scale_permille + 500u) / 1000u);
-
-    int zdx = (dx >= 0) ? (int)(((unsigned)dx * scale_permille + 500u) / 1000u)
-                        : -(int)(((unsigned)(-dx) * scale_permille + 500u) / 1000u);
-    int zdy = (dy >= 0) ? (int)(((unsigned)dy * scale_permille + 500u) / 1000u)
-                        : -(int)(((unsigned)(-dy) * scale_permille + 500u) / 1000u);
+    int dst_w = scale_permille_val(src_w, scale_permille);
+    int dst_h = scale_permille_val(src_h, scale_permille);
+    int zdx = scale_permille_val(dx, scale_permille);
+    int zdy = scale_permille_val(dy, scale_permille);
 
     int dst_x = center_x - dst_w / 2 + zdx;
     int dst_y = feet_y - dst_h + zdy;
@@ -1101,9 +1162,16 @@ bool assets_draw_sprite_scaled(uint16_t id, int center_x, int feet_y, unsigned i
 
     if (x0 < x1 && y0 < y1) {
         int vis_h = y1 - y0;
-        unsigned start_dx = (unsigned)(x0 - dst_x);
-        unsigned end_dx = (unsigned)(x1 - dst_x);
         unsigned start_dy = (unsigned)(y0 - dst_y);
+        unsigned gap = (unsigned)(dst_w - src_w);
+        rlet_sc.src_w = (unsigned)src_w;
+        rlet_sc.dst_w = (unsigned)dst_w;
+        rlet_sc.gap = gap;
+        rlet_sc.half = (unsigned)dst_w >> 1;
+        rlet_sc.step_q = (gap > 0u) ? ((unsigned)src_w / gap) : 0u;
+        rlet_sc.step_r = (gap > 0u) ? ((unsigned)src_w % gap) : 0u;
+        rlet_sc.start_dx = (unsigned)(x0 - dst_x);
+        rlet_sc.end_dx = (unsigned)(x1 - dst_x);
 
         unsigned init_num_y = start_dy * (unsigned)src_h + (unsigned)(dst_h / 2);
         int start_sy = (int)(init_num_y / (unsigned)dst_h);
@@ -1133,9 +1201,7 @@ bool assets_draw_sprite_scaled(uint16_t id, int center_x, int feet_y, unsigned i
                 }
                 cached_sy = want_sy;
             }
-            next_row_ptr = scale_rlet_row_spans(dest_row, cur_row_ptr,
-                                                (unsigned)src_w, (unsigned)dst_w,
-                                                start_dx, end_dx);
+            next_row_ptr = scale_rlet_row_spans(dest_row, cur_row_ptr);
             dest_row += SCREEN_W;
             acc_y += (unsigned)src_h;
             while (acc_y >= (unsigned)dst_h) {

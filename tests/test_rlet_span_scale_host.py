@@ -12,8 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def extract_scale_rlet_row_spans() -> str:
     src = (ROOT / "src/assets.c").read_text()
-    start = src.index("static __attribute__((noinline)) const uint8_t *scale_rlet_row_spans(")
-    end = src.index("bool assets_draw_sprite_scaled(", start)
+    start = src.index("typedef struct {\n    unsigned src_w;")
+    end = src.index("static __attribute__((noinline)) int scale_permille_val(", start)
     return src[start:end]
 
 
@@ -152,8 +152,16 @@ int main(void)
                     memset(got_dst, 0x5A, sizeof(got_dst));
 
                     reference_scale_row(ref_dst, dense, src_w, dst_w, sdx, edx);
-                    const uint8_t *end_ptr = scale_rlet_row_spans(
-                        got_dst, rlet, src_w, dst_w, sdx, edx);
+                    unsigned gap = dst_w - src_w;
+                    rlet_sc.src_w = src_w;
+                    rlet_sc.dst_w = dst_w;
+                    rlet_sc.gap = gap;
+                    rlet_sc.half = dst_w >> 1;
+                    rlet_sc.step_q = gap ? (src_w / gap) : 0u;
+                    rlet_sc.step_r = gap ? (src_w % gap) : 0u;
+                    rlet_sc.start_dx = sdx;
+                    rlet_sc.end_dx = edx;
+                    const uint8_t *end_ptr = scale_rlet_row_spans(got_dst, rlet);
 
                     if (end_ptr != rlet + rlet_len) {
                         fprintf(stderr,

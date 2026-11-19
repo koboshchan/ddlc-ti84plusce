@@ -490,8 +490,9 @@ static __attribute__((noinline)) void run_debug_tags_test(vn_vm_t *vm)
      * allocate a temporary fallback VM so tag evaluation and glitch buffer are valid. */
     vn_vm_t *fallback_vm = NULL;
     vn_vm_t *active_vm = vm;
-    char saved_glitch[VN_GLITCH_MAX + 1];
-    memset(saved_glitch, 0, sizeof(saved_glitch));
+    extern uint8_t render_row_scratch[SCREEN_W];
+    char *saved_glitch = (char *)render_row_scratch;
+    saved_glitch[0] = '\0';
 
     if (!active_vm) {
         fallback_vm = calloc(1, sizeof(*fallback_vm));
@@ -499,7 +500,8 @@ static __attribute__((noinline)) void run_debug_tags_test(vn_vm_t *vm)
         strcpy(fallback_vm->glitch_buf, "bbbbbb");
         active_vm = fallback_vm;
     } else {
-        strncpy(saved_glitch, active_vm->glitch_buf, sizeof(saved_glitch) - 1);
+        strncpy(saved_glitch, active_vm->glitch_buf, VN_GLITCH_MAX);
+        saved_glitch[VN_GLITCH_MAX] = '\0';
         if (active_vm->glitch_buf[0] == '\0') {
             strcpy(active_vm->glitch_buf, "bbbbbb");
         }
@@ -677,24 +679,14 @@ static __attribute__((noinline)) void run_debug_anim_test(void)
         if (quit_requested || in.pause) {
             break;
         }
-        if (in.up) {
-            anim = (uint8_t)((anim + 1) % 3);
+        if (in.up || in.down) {
+            anim = (uint8_t)((anim + (in.up ? 1u : 2u)) % 3u);
             is_active = false;
             zoom_mode = 0;
             render_invalidate_scene();
         }
-        if (in.down) {
-            anim = (uint8_t)((anim + 2) % 3);
-            is_active = false;
-            zoom_mode = 0;
-            render_invalidate_scene();
-        }
-        if (in.left && sprite > 0) {
-            sprite--;
-            render_invalidate_scene();
-        }
-        if (in.right) {
-            sprite++;
+        if ((in.left && sprite > 0) || in.right) {
+            sprite = in.left ? (uint16_t)(sprite - 1u) : (uint16_t)(sprite + 1u);
             render_invalidate_scene();
         }
         if (in.advance) {

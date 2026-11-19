@@ -550,7 +550,6 @@ typedef struct {
     int      center_x;
     int      feet_y;
     unsigned scale_permille;
-    rect_t   body_rect;
     rect_t   face_rect;
     rect_t   bounds;
 } actor_pose_t;
@@ -690,10 +689,9 @@ static __attribute__((noinline)) bool resolve_actor_pose_at(const vn_actor_t *ac
         return true;
     }
     if (!sprite_screen_rect(out->sprite, out->center_x, out->feet_y,
-                            out->scale_permille, &out->body_rect)) {
+                            out->scale_permille, &out->bounds)) {
         return false;
     }
-    out->bounds = out->body_rect;
     if (out->overlay != VN_NO_OVERLAY) {
         if (!sprite_screen_rect(out->overlay, out->center_x, out->feet_y,
                                 out->scale_permille, &out->face_rect)) {
