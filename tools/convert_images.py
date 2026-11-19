@@ -148,8 +148,21 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
         return p.name
 
     sprite_files = [rel(img_dir / s["file"]) for s in manifest["sprites"]]
-    shared_files = [rel(img_dir / s["file"])
-                    for s in manifest["scenes"] if s["palette"] == "shared"]
+    shared_scenes = [s for s in manifest["scenes"] if s["palette"] == "shared"]
+    shared_files = [rel(img_dir / s["file"]) for s in shared_scenes]
+
+    def _is_raw_room_bg(scene: dict) -> bool:
+        if scene.get("w") != 320 or scene.get("h") != 180:
+            return False
+        imgname = scene.get("imgname") or []
+        return (
+            len(imgname) >= 2
+            and imgname[0] == "bg"
+            and "eyes" not in str(imgname[1])
+        )
+
+    shared_raw_files = [rel(img_dir / s["file"]) for s in shared_scenes if _is_raw_room_bg(s)]
+    shared_zx0_files = [rel(img_dir / s["file"]) for s in shared_scenes if not _is_raw_room_bg(s)]
     own_scenes = [s for s in manifest["scenes"] if s["palette"] == "own"]
     title_files = [rel(img_dir / t["file"]) for t in manifest.get("title_art", [])]
     title_bg = manifest.get("title_bg") or {}
@@ -222,27 +235,24 @@ def build_yaml(manifest: dict, img_dir: Path, gfx_dir: Path, quality: int = 8) -
         })
         outputs_converts.append("stickers")
 
-    if shared_files:
+    if shared_raw_files:
         converts.append({
-            # width-and-height off: convimg's dimension header is one byte
-            # per axis (max 255), but backgrounds/CGs are a fixed 320x180 --
-            # over the limit, and redundant anyway since BG_SIZE/CG_SIZE in
-            # image_resolve.py already fix the size at conversion time.
-            #
-            # zx0: a background's decompressed size is always exactly
-            # SCENE_BYTES (320x180, fixed above), so src/assets.c can
-            # bounds-check a destination safely. assets_scene() decompresses
-            # on every call (every typewriter tick, every idle-bob redraw --
-            # not just an actual scene change), which is real per-frame cost;
-            # a decompressed-results cache was tried to avoid that but didn't
-            # fit real on-device RAM (graphx's own draw buffer plus a
-            # resident script chunk already use most of it) -- see
-            # assets_scene()'s comment. Compression stays on anyway: at real
-            # game scale, uncompressed 24 backgrounds alone need ~1.3MB
-            # against a real ~2.9MB archive, which doesn't fit at all.
+            # Room backgrounds (320x180 where layered actors appear) ship as
+            # raw contiguous 57,600 B palette indices inside DPK volumes so
+            # full redraws use _fast_rect_blit's zero-skip ldir path and
+            # dirty-rect updates restore arbitrary BG sub-rects directly from
+            # Flash with zero RAM overhead.
+            "name": "backgrounds_raw", "palette": "pal_game", "style": "palette",
+            "dither": 0.4, "width-and-height": False,
+            "images": shared_raw_files,
+        })
+        outputs_converts.append("backgrounds_raw")
+
+    if shared_zx0_files:
+        converts.append({
             "name": "backgrounds", "palette": "pal_game", "style": "palette",
             "dither": 0.4, "width-and-height": False, "compress": "zx0",
-            "images": shared_files,
+            "images": shared_zx0_files,
         })
         outputs_converts.append("backgrounds")
 

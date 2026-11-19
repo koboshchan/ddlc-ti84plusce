@@ -1378,16 +1378,22 @@ bool assets_scene(uint8_t id, uint8_t *dest)
 #endif
 
     if (!is_cg(id)) {
-#ifdef __TICE__
-        fast_zx0_decompress(dest, src);
-#else
-        if (assets_scene_fullscreen(id)) {
-            fast_zx0_decompress(dest, src);
+        if (!assets_scene_fullscreen(id) && entry_len == SCENE_BYTES) {
+            fast_rect_blit(dest, SCREEN_W, src, SCREEN_W, SCREEN_W, SCENE_H);
         } else {
-            zx0_Decompress(dest, src);
-        }
+#ifdef __TICE__
+            fast_zx0_decompress(dest, src);
+#else
+            if (assets_scene_fullscreen(id)) {
+                fast_zx0_decompress(dest, src);
+            } else {
+                zx0_Decompress(dest, src);
+            }
 #endif
-        if (handle) ti_Close(handle);
+        }
+        if (handle) {
+            ti_Close(handle);
+        }
         free(tmp);
         return true;
     }
@@ -1413,6 +1419,84 @@ bool assets_scene(uint8_t id, uint8_t *dest)
     } else {
         fast_cg_upscale_2x(dest, cg_scratch);
     }
+    return true;
+}
+
+bool assets_scene_has_bg_rect(uint8_t id)
+{
+    if (id == VN_NO_SPRITE) {
+        return true;
+    }
+    if (is_cg(id) || assets_scene_fullscreen(id)) {
+        return false;
+    }
+    uint8_t appvar_idx;
+    uint16_t offset;
+    uint16_t entry_len = 0;
+    if (!lut_lookup(scene_lut, scene_lut_count, id, &appvar_idx, &offset, &entry_len)) {
+        return false;
+    }
+    return entry_len == SCENE_BYTES;
+}
+
+bool assets_scene_bg_rect(uint8_t id, int x, int y, int w, int h, uint8_t *dest)
+{
+    if (x < 0) {
+        w += x;
+        x = 0;
+    }
+    if (y < 0) {
+        h += y;
+        y = 0;
+    }
+    if (x + w > SCREEN_W) {
+        w = SCREEN_W - x;
+    }
+    if (y + h > SCENE_H) {
+        h = SCENE_H - y;
+    }
+    if (w <= 0 || h <= 0) {
+        return true;
+    }
+
+    if (id == VN_NO_SPRITE) {
+        for (int row = 0; row < h; row++) {
+            memset(dest + (size_t)(y + row) * SCREEN_W + (size_t)x, COL_BLACK, (size_t)w);
+        }
+        return true;
+    }
+
+    if (is_cg(id) || assets_scene_fullscreen(id)) {
+        return false;
+    }
+
+    uint8_t appvar_idx;
+    uint16_t offset;
+    uint16_t entry_len = 0;
+    if (!lut_lookup(scene_lut, scene_lut_count, id, &appvar_idx, &offset, &entry_len) ||
+        entry_len != SCENE_BYTES) {
+        return false;
+    }
+
+    assets_sprite_end();
+#ifdef __TICE__
+    assets_box_end();
+#endif
+    uint8_t handle = pak_open_vol("DSCN", appvar_idx);
+    if (!handle) {
+        return false;
+    }
+    uint32_t vol_sz = ti_GetSize(handle);
+    if ((uint32_t)offset + SCENE_BYTES > vol_sz) {
+        ti_Close(handle);
+        return false;
+    }
+
+    const uint8_t *src = (const uint8_t *)ti_GetDataPtr(handle) + offset +
+                         (size_t)y * SCREEN_W + (size_t)x;
+    uint8_t *dst = dest + (size_t)y * SCREEN_W + (size_t)x;
+    fast_rect_blit(dst, SCREEN_W, src, SCREEN_W, (size_t)w, (size_t)h);
+    ti_Close(handle);
     return true;
 }
 

@@ -38,8 +38,17 @@ HOST_PREAMBLE = r"""
 
 #define SCREEN_W 320u
 #define SCREEN_H 240u
+#define SCENE_H  180u
 #define SCENE_BYTES (320u * 180u)
 #define SCENE_CG_SRC_W 160u
+
+static void fast_rect_blit(uint8_t *dest, size_t dest_pitch,
+                           const uint8_t *src, size_t src_pitch,
+                           size_t w, size_t h) {
+    for (size_t row = 0; row < h; row++) {
+        memcpy(dest + row * dest_pitch, src + row * src_pitch, w);
+    }
+}
 
 typedef struct {
     uint8_t width;

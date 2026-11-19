@@ -229,6 +229,19 @@ bool assets_scene_fullscreen(uint8_t id);
 bool assets_scene(uint8_t id, uint8_t *dest);
 
 /**
+ * Returns true if scene @p id supports direct sub-rectangle restoration via
+ * assets_scene_bg_rect() (solid black VN_NO_SPRITE or a raw 320x180 room BG).
+ */
+bool assets_scene_has_bg_rect(uint8_t id);
+
+/**
+ * Restores the rectangular sub-region (@p x, @p y, @p w, @p h) of background
+ * @p id into the 320px-stride framebuffer @p dest using fast_rect_blit().
+ * Returns false if @p id is compressed/CG/fullscreen and requires full decode.
+ */
+bool assets_scene_bg_rect(uint8_t id, int x, int y, int w, int h, uint8_t *dest);
+
+/**
  * The 256-entry RGB565 palette scene/background @p id should render under --
  * the shared game palette for an ordinary background, or a CG's own private
  * one if @p id was baked with one (tools/convert_images.py's per-CG palette
