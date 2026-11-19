@@ -6,6 +6,7 @@
 #include "poem.h"
 
 #include "assets.h"
+#include "fast_ops.h"
 #include "pak.h"
 #include "perf_memory.h"
 #include "perf_overlay.h"
@@ -244,19 +245,22 @@ static int poem_cell_y(uint8_t col, uint8_t row)
 
 static bool persistent_seen_sticker = false;
 
-static void draw_stickers(int16_t playthrough, int16_t chapter,
+static __attribute__((noinline)) void draw_stickers(int16_t playthrough, int16_t chapter,
                           bool s_hop, bool n_hop, bool y_hop,
                           bool m_hop, bool y_glitch, bool y_cut,
                           bool poem_glitched)
 {
     (void)chapter;
+    assets_stickers_begin();
     if (poem_glitched) {
         assets_draw_sticker_centered(STICKER_Y_BROKEN, SCREEN_W / 2, POEM_STICKER_Y_IDLE);
+        assets_stickers_end();
         return;
     }
 
     if (playthrough == 3) {
         assets_draw_sticker_centered(STICKER_M_IDLE, SCREEN_W / 2, POEM_STICKER_Y_IDLE);
+        assets_stickers_end();
         return;
     }
 
@@ -294,6 +298,7 @@ static void draw_stickers(int16_t playthrough, int16_t chapter,
             assets_draw_sticker_centered(STICKER_M_HOP, POEM_M_X_ACT2, POEM_STICKER_Y_HOP - 8);
         }
     }
+    assets_stickers_end();
 }
 
 static void draw_background(bool poem_glitched)
@@ -305,11 +310,11 @@ static void draw_background(bool poem_glitched)
     }
 }
 
-static void draw_round(const uint16_t *shown, uint8_t round, uint8_t sel_col, uint8_t sel_row,
+static __attribute__((noinline)) void draw_round(const uint16_t *shown, uint8_t round, uint8_t sel_col, uint8_t sel_row,
                        int16_t playthrough, int16_t chapter,
                        bool s_hop, bool n_hop, bool y_hop,
                        bool m_hop, bool y_glitch, bool y_cut,
-                       bool poem_glitched)
+                       bool poem_glitched, uint8_t *hl_bg)
 {
     perf_overlay_frame_start();
     draw_background(poem_glitched);
@@ -336,6 +341,14 @@ static void draw_round(const uint16_t *shown, uint8_t round, uint8_t sel_col, ui
             bool     selected = col == sel_col && row == sel_row;
 
             if (selected) {
+                if (hl_bg) {
+                    /* Draw unselected word onto clean notebook first, save cell
+                     * (notebook rule + unselected word) for instant cursor moves. */
+                    render_text(poem_words[shown[i]].word, x, y, COL_BLACK);
+                    fast_rect_blit(hl_bg, (size_t)hl_w,
+                                   (const uint8_t *)gfx_vbuffer + (size_t)y * SCREEN_W + (size_t)(x - 3),
+                                   SCREEN_W, (size_t)hl_w, POEM_ROW_HL_H);
+                }
                 gfx_SetColor(COL_HIGHLIGHT);
                 gfx_FillRectangle_NoClip(x - 3, y, hl_w, POEM_ROW_HL_H);
             }
@@ -347,6 +360,44 @@ static void draw_round(const uint16_t *shown, uint8_t round, uint8_t sel_col, ui
                   m_hop, y_glitch, y_cut, poem_glitched);
 
     render_present(TRANS_CUT);
+    gfx_Wait();
+}
+
+/* Fast incremental cursor-move update: restores the old cell (clean ruled
+ * notebook + unselected word) and highlights the new cell without re-decoding
+ * the 76.8 KB notebook or redrawing all 10 words and 3 stickers. */
+static __attribute__((noinline)) void move_round_cursor(const uint16_t *shown,
+                              uint8_t old_col, uint8_t old_row,
+                              uint8_t new_col, uint8_t new_row,
+                              uint8_t *hl_bg)
+{
+    perf_overlay_frame_start();
+    uint8_t *fb = (uint8_t *)gfx_vbuffer;
+    int old_x = poem_col_x(old_col), old_y = poem_cell_y(old_col, old_row);
+    int new_x = poem_col_x(new_col), new_y = poem_cell_y(new_col, new_row);
+    int old_w = (old_col == 0) ? POEM_COL_W0 : POEM_COL_W1;
+    int new_w = (new_col == 0) ? POEM_COL_W0 : POEM_COL_W1;
+
+    /* 1. Restore old cell's clean notebook + unselected word */
+    fast_rect_blit(fb + (size_t)old_y * SCREEN_W + (size_t)(old_x - 3), SCREEN_W,
+                   hl_bg, (size_t)old_w, (size_t)old_w, POEM_ROW_HL_H);
+    /* 2. Save new cell's clean notebook + unselected word */
+    fast_rect_blit(hl_bg, (size_t)new_w,
+                   fb + (size_t)new_y * SCREEN_W + (size_t)(new_x - 3), SCREEN_W,
+                   (size_t)new_w, POEM_ROW_HL_H);
+    /* 3. Draw yellow highlight + selected word */
+    gfx_SetColor(COL_HIGHLIGHT);
+    gfx_FillRectangle_NoClip(new_x - 3, new_y, new_w, POEM_ROW_HL_H);
+    render_text(poem_words[shown[new_col * POEM_ROWS + new_row]].word, new_x, new_y, COL_BLACK);
+
+    perf_overlay_end();
+    perf_overlay_present_begin();
+    gfx_SwapDraw();
+    gfx_BlitLines(gfx_screen, (uint8_t)old_y, POEM_ROW_HL_H);
+    if (new_y != old_y) {
+        gfx_BlitLines(gfx_screen, (uint8_t)new_y, POEM_ROW_HL_H);
+    }
+    perf_overlay_present_end();
     gfx_Wait();
 }
 
@@ -375,6 +426,7 @@ uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal,
     uint8_t winner = 0;
     bool poemgame_glitched = false;
     bool played_baa = false;
+    uint8_t *hl_bg = malloc((size_t)POEM_COL_W0 * POEM_ROW_HL_H);
 
     for (uint8_t round = 0; round < POEM_ROUNDS; round++) {
         uint16_t shown[POEM_PER_ROUND];
@@ -421,20 +473,23 @@ uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal,
         }
 
         uint8_t sel_col = 0, sel_row = 0;
-        bool dirty = true;
+        draw_round(shown, round, sel_col, sel_row,
+                   playthrough, chapter,
+                   false, false, false, false, false, false,
+                   poemgame_glitched, hl_bg);
         for (;;) {
-            if (dirty) draw_round(shown, round, sel_col, sel_row,
-                       playthrough, chapter,
-                       false, false, false, false, false, false,
-                       poemgame_glitched);
-            dirty = false;
-
             poem_input_t in;
             poem_poll(&in);
             if (in.quit) {
                 goto poem_done;
             }
-            dirty = in.up || in.down || in.left || in.right;
+            if (perf_overlay_page_dirty()) {
+                draw_round(shown, round, sel_col, sel_row,
+                           playthrough, chapter,
+                           false, false, false, false, false, false,
+                           poemgame_glitched, hl_bg);
+            }
+            uint8_t old_col = sel_col, old_row = sel_row;
             if (in.up) {
                 sel_row = sel_row == 0 ? POEM_ROWS - 1 : (uint8_t)(sel_row - 1);
             }
@@ -446,6 +501,16 @@ uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal,
             }
             if (in.right) {
                 sel_col = POEM_COLS - 1;
+            }
+            if (sel_col != old_col || sel_row != old_row) {
+                if (hl_bg) {
+                    move_round_cursor(shown, old_col, old_row, sel_col, sel_row, hl_bg);
+                } else {
+                    draw_round(shown, round, sel_col, sel_row,
+                               playthrough, chapter,
+                               false, false, false, false, false, false,
+                               poemgame_glitched, NULL);
+                }
             }
             if (in.advance) {
                 break;
@@ -488,7 +553,7 @@ uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal,
                        playthrough, chapter,
                        s_hop, n_hop, y_hop,
                        m_hop, y_glitch, y_cut,
-                       poemgame_glitched);
+                       poemgame_glitched, NULL);
             msleep(150);
         }
 
@@ -529,6 +594,7 @@ uint8_t poem_run(int16_t *s_appeal, int16_t *n_appeal, int16_t *y_appeal,
     if (y_appeal) *y_appeal = appeals[2];
 
 poem_done:
+    free(hl_bg);
     free(poem_words);
     free(pool);
     poem_words = NULL;

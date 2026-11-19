@@ -8,7 +8,6 @@
 #if defined(__TICE__) || defined(DDLC_PAK_ENABLE)
 
 #include <fileioc.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "perf_memory.h"
@@ -114,10 +113,28 @@ PAK_NOINLINE bool pak_stat(const char *name, uint8_t *vol_out, uint16_t *off_out
     return false;
 }
 
+static char *append_u8(char *p, uint8_t v)
+{
+    if (v >= 100u) {
+        *p++ = (char)('0' + v / 100u);
+        v %= 100u;
+        *p++ = (char)('0' + v / 10u);
+        *p++ = (char)('0' + v % 10u);
+    } else if (v >= 10u) {
+        *p++ = (char)('0' + v / 10u);
+        *p++ = (char)('0' + v % 10u);
+    } else {
+        *p++ = (char)('0' + v);
+    }
+    *p = '\0';
+    return p;
+}
+
 static PAK_NOINLINE uint8_t open_dpk_vol(uint8_t vol)
 {
     char vname[9];
-    sprintf(vname, "DPK%u", vol);
+    vname[0] = 'D'; vname[1] = 'P'; vname[2] = 'K';
+    append_u8(vname + 3, vol);
     return ti_Open(vname, "r");
 }
 
@@ -275,7 +292,10 @@ PAK_NOINLINE uint8_t pak_open_vol(const char *legacy_prefix, uint8_t vol)
         return open_dpk_vol(vol);
     }
     char name[9];
-    sprintf(name, "%s%u", legacy_prefix, vol);
+    size_t n = strlen(legacy_prefix);
+    if (n > 5u) n = 5u;
+    memcpy(name, legacy_prefix, n);
+    append_u8(name + n, vol);
     return ti_Open(name, "r");
 }
 

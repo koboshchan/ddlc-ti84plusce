@@ -167,6 +167,11 @@ void render_dialog_ok(const char *msg, const char *ok_label);
 /** Present the back buffer, optionally with a fade (enum vn_trans). */
 void render_present(uint8_t trans);
 
+/** Fast presentation for settled-scene dialogue ticks: swaps buffers and
+ * syncs only the namebox+textbox rows (73 lines instead of all 240) when both
+ * framebuffers are already identical above the namebox. */
+void render_present_box(const vn_scene_t *scene);
+
 /**
  * Fade the screen to black, hold, and (render_fade_in) back up.
  *

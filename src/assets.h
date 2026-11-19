@@ -334,8 +334,15 @@ bool assets_draw_box(bool namebox, uint8_t *dest);
 /**
  * Draws the poem minigame chibi sticker @p id centered at (@p center_x, @p bottom_y)
  * from DSTKRS. Returns false if DSTKRS is missing or @p id is out of range.
+ * Optional assets_stickers_begin()/end() keeps DSTKRS open across all stickers
+ * drawn in a single frame.
  */
+void assets_stickers_begin(void);
+void assets_stickers_end(void);
 bool assets_draw_sticker_centered(uint8_t id, int center_x, int bottom_y);
+
+/** Closes any cached read-only UI box AppVar handle (call before file writes). */
+void assets_box_end(void);
 
 #ifdef DDLC_PERF_OVERLAY
 bool assets_sprite_debug_info(uint16_t id, uint8_t *vol_out, uint16_t *off_out,

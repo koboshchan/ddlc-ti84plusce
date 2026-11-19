@@ -1490,7 +1490,7 @@ static void wait_for_advance(vn_vm_t *vm, bool allow_pause)
                     perf_overlay_set_vm(vm->chunk_id, (uint16_t)(vm->pc & 0xFFFFu), scene->background);
                     render_scene_lazy(scene);
                     draw_dialogue_box(vm, scene, SIZE_MAX);
-                    render_present(TRANS_CUT);
+                    render_present_box(scene);
                     idle_drawn = true;
                 }
             }
@@ -1879,7 +1879,7 @@ static void present_say_frame(vn_vm_t *vm, const vn_scene_t *scene, size_t visib
         perf_overlay_frame_start();
         render_scene_lazy(scene);
         draw_dialogue_box(vm, scene, visible);
-        render_present(TRANS_CUT);
+        render_present_box(scene);
     }
     render_timed_fx_tick(scene);
 }

@@ -39,16 +39,13 @@
 #include "perf_memory.h"
 #include <string.h>
 
-/* A single resident chunk's string pool, generously capped -- the largest
- * single compiled chunk seen so far (script-poemresponses) uses 1257. Table
- * of pointers, not copies: each points directly into script_buf (this
- * module's private copy of the current chunk's bytes). */
-#define MAX_STRINGS 512
-
+/* A single resident chunk's string pool. Offsets into script_buf (u16) are
+ * allocated per chunk to exact string_count instead of reserving 1,536 B of
+ * permanent BSS. */
 static uint8_t         *script_buf; /* owns the current chunk's bytes */
 static const uint8_t   *script_code;
 static size_t            script_code_size;
-static const char       *string_ptrs[MAX_STRINGS];
+static uint16_t         *string_offs;
 static uint16_t          string_count;
 
 /* The interned variable-string pool (DVSTR). Small and fixed for the
@@ -111,9 +108,22 @@ static const uint8_t *title_lut;
 static uint16_t   title_lut_count;
 static uint8_t   *title_pos_buf;      /* i16 x, y, dx, dy per title art id */
 static uint16_t   title_pos_count;
-static uint16_t   title_palette[256]; /* swapped into gfx_palette on the title */
 static uint16_t   game_palette[256];  /* kept so it can be swapped back */
-static bool       title_palette_ok;
+
+/* Cached DPK location for DTXTBOX (0) and DNAMEBOX (1) so typewriter frames
+ * avoid repeated pak_stat() binary searches and repeated TI-OS VAT scans. */
+typedef struct {
+    uint8_t  vol;
+    uint8_t  flags;
+    uint16_t off;
+    size_t   size;
+    bool     cached;
+} box_pak_info_t;
+
+static box_pak_info_t box_info[2];
+static uint8_t        box_handle;
+static uint8_t        box_handle_vol;
+static pak_view_t     stickers_view;
 
 /* Per-CG palettes: DCGIDX maps a scene id to an index into DCGPLUT (or 0xFF
  * for a scene that renders under the shared game palette). Both optional --
@@ -153,6 +163,9 @@ bool assets_load_chunk(uint8_t chunk_id)
      * the previous one's buffer has to go before loading the next, or a long
      * session that crosses many chunk boundaries would leak one chunk's
      * worth of RAM per crossing. First call has nothing to free yet. */
+    assets_box_end();
+    free(string_offs);
+    string_offs = NULL;
     free(script_buf);
     script_buf = NULL;
     script_code = NULL;
@@ -168,16 +181,6 @@ bool assets_load_chunk(uint8_t chunk_id)
     char name[9];
     sprintf(name, "DSCR%u", chunk_id);
 
-    /* Chunks ship zx0-compressed now (tools/import_game.py's
-     * zx0_compress()): a 2-byte uncompressed-size header (unlike a
-     * background's fixed SCENE_BYTES, a chunk's real size varies, so it
-     * has to travel with the data) followed by the compressed stream.
-     * Safe the same way assets_scene() already is -- the header gives an
-     * exact malloc size before zx0_Decompress ever writes a byte, so
-     * there's no risk of it overrunning a too-small destination. This
-     * only runs once per chunk *swap* (not per frame, unlike
-     * assets_scene()'s per-redraw decompress), so the decode cost here is
-     * negligible next to what it buys back in archive space. */
     pak_view_t v;
     if (pak_view_open(name, &v)) {
         if (v.size < 4) {
@@ -190,7 +193,11 @@ bool assets_load_chunk(uint8_t chunk_id)
             pak_view_close(&v);
             return false;
         }
+#ifdef __TICE__
+        fast_zx0_decompress(script_buf, v.ptr + 2);
+#else
         zx0_Decompress(script_buf, v.ptr + 2);
+#endif
         pak_view_close(&v);
     } else {
         uint8_t vol, flags;
@@ -214,7 +221,11 @@ bool assets_load_chunk(uint8_t chunk_id)
             free(tmp);
             return false;
         }
+#ifdef __TICE__
+        fast_zx0_decompress(script_buf, tmp + 2);
+#else
         zx0_Decompress(script_buf, tmp + 2);
+#endif
         free(tmp);
     }
 
@@ -223,22 +234,25 @@ bool assets_load_chunk(uint8_t chunk_id)
     script_code_size = code_len;
 
     const uint8_t *p = script_buf + 2 + code_len;
-    string_count = read_u16le(p);
+    uint16_t scount = read_u16le(p);
     p += 2;
 
-    if (string_count > MAX_STRINGS) {
-        free(script_buf);
-        script_buf = NULL;
-        script_code = NULL;
-        script_code_size = 0;
-        string_count = 0;
-        return false;
+    if (scount > 0) {
+        string_offs = malloc((size_t)scount * sizeof(uint16_t));
+        if (!string_offs) {
+            free(script_buf);
+            script_buf = NULL;
+            script_code = NULL;
+            script_code_size = 0;
+            return false;
+        }
     }
+    string_count = scount;
 
-    for (uint16_t i = 0; i < string_count; i++) {
+    for (uint16_t i = 0; i < scount; i++) {
         uint16_t len = read_u16le(p);
         p += 2;
-        string_ptrs[i] = (const char *)p;
+        string_offs[i] = (uint16_t)(p - script_buf);
         p += (size_t)len + 1; /* +1: trailing NUL, see vnasm.py's to_chunk_bytes */
     }
     return true;
@@ -352,15 +366,12 @@ assets_status_t assets_init(void)
     title_pos_buf = read_whole("DTILPOS", &pos_size);
     title_pos_count = title_pos_buf ? (uint16_t)(pos_size / 8) : 0;
 
-    uint16_t tpal_size;
-    uint8_t *tpal = read_whole("DPALTTL", &tpal_size);
-    if (tpal) {
-        if (tpal_size >= sizeof(title_palette)) {
-            memcpy(title_palette, tpal, sizeof(title_palette));
-            title_palette_ok = true;
-        }
-        free(tpal);
-    }
+    /* Pre-resolve UI box DPK locations once at startup to eliminate per-frame
+     * pak_stat() binary searches during typewriter dialogue rendering. */
+    box_info[0].cached = pak_stat("DTXTBOX", &box_info[0].vol, &box_info[0].off,
+                                  &box_info[0].size, &box_info[0].flags);
+    box_info[1].cached = pak_stat("DNAMEBOX", &box_info[1].vol, &box_info[1].off,
+                                  &box_info[1].size, &box_info[1].flags);
 
     /* Per-CG palettes are optional too -- a bundle with no CGs baked ships
      * neither AppVar, and every scene just falls back to the game palette. */
@@ -399,13 +410,36 @@ bool assets_cgpack_fingerprint(uint8_t out[4])
 
 void assets_use_title_palette(bool on)
 {
-    if (on && !title_palette_ok) {
-        return; /* no title palette shipped -- leave the game one in place */
-    }
+    assets_box_end();
+    if (!on) {
 #ifdef DDLC_PERF_OVERLAY
-    perf_overlay_set_pal(on ? PERF_PAL_TITLE : PERF_PAL_GAME, 0);
+        perf_overlay_set_pal(PERF_PAL_GAME, 0);
 #endif
-    render_apply_palette(on ? title_palette : game_palette);
+        render_apply_palette(game_palette);
+        return;
+    }
+    pak_view_t v;
+    if (pak_view_open("DPALTTL", &v)) {
+        if (v.size >= 512u) {
+#ifdef DDLC_PERF_OVERLAY
+            perf_overlay_set_pal(PERF_PAL_TITLE, 0);
+#endif
+            render_apply_palette((const uint16_t *)v.ptr);
+        }
+        pak_view_close(&v);
+        return;
+    }
+    uint16_t tpal_sz = 0;
+    uint8_t *tpal = read_whole("DPALTTL", &tpal_sz);
+    if (tpal) {
+        if (tpal_sz >= 512u) {
+#ifdef DDLC_PERF_OVERLAY
+            perf_overlay_set_pal(PERF_PAL_TITLE, 0);
+#endif
+            render_apply_palette((const uint16_t *)tpal);
+        }
+        free(tpal);
+    }
 }
 
 const char *assets_status_str(assets_status_t status)
@@ -457,7 +491,9 @@ const uint8_t *assets_script(size_t *size_out)
 
 const char *assets_string(uint16_t index)
 {
-    return index < string_count ? string_ptrs[index] : "";
+    return (index < string_count && script_buf && string_offs)
+         ? (const char *)(script_buf + string_offs[index])
+         : "";
 }
 
 const char *assets_var_string(int16_t value)
@@ -804,7 +840,11 @@ static bool sprite_open_rlet(uint16_t id, const gfx_rletsprite_t **rle_out,
         }
         const uint8_t *compressed = (const uint8_t *)ti_GetDataPtr(sprite_handle) + offset;
         dst_off = sprite_arena_used;
+#ifdef __TICE__
+        fast_zx0_decompress(sprite_arena + dst_off, compressed + 2);
+#else
         zx0_Decompress(sprite_arena + dst_off, compressed + 2);
+#endif
     } else {
         /* Spanning fallback: always copy spanning sprites into RAM first. */
         assets_sprite_end();
@@ -826,7 +866,11 @@ static bool sprite_open_rlet(uint16_t id, const gfx_rletsprite_t **rle_out,
             return false;
         }
         dst_off = sprite_arena_used;
+#ifdef __TICE__
+        fast_zx0_decompress(sprite_arena + dst_off, tmp + 2);
+#else
         zx0_Decompress(sprite_arena + dst_off, tmp + 2);
+#endif
         free(tmp);
     }
 
@@ -946,7 +990,8 @@ bool assets_draw_sprite_scaled(uint16_t id, int center_x, int feet_y, unsigned i
     int y1 = (dst_y + dst_h) < SCREEN_H ? (dst_y + dst_h) : SCREEN_H;
 
     if (x0 < x1 && y0 < y1) {
-        uint8_t row_buf[256];
+        extern uint8_t render_row_scratch[SCREEN_W];
+        uint8_t *row_buf = render_row_scratch;
         int vis_w = x1 - x0;
         int vis_h = y1 - y0;
         int start_dx = x0 - dst_x;
@@ -1105,6 +1150,7 @@ bool assets_title_bg(uint8_t px, uint8_t py, uint8_t *dest)
 
 bool assets_poem_bg(uint8_t *dest)
 {
+    assets_box_end();
     pak_view_t v;
     if (pak_view_open("DPOEMBG", &v)) {
         fast_zx0_decompress(dest, v.ptr);
@@ -1137,13 +1183,41 @@ bool assets_poem_bg(uint8_t *dest)
     return true;
 }
 
+void assets_box_end(void)
+{
+    if (box_handle) {
+        ti_Close(box_handle);
+        box_handle = 0;
+    }
+}
+
 /* The dialogue/name boxes are immutable archived palette indices.
- * Open/copy/close together: never keep an AppVar pointer across another
- * fileioc call. No 20KB permanent RAM mirror of immutable flash pixels. */
+ * Uses pre-resolved DPK metadata and a single reusable read-only volume handle
+ * across consecutive typewriter frames to avoid repeated pak_stat() binary
+ * searches and TI-OS VAT scans. Closed on scene/chunk transitions and saves. */
 bool assets_draw_box(bool namebox, uint8_t *dest)
 {
     size_t w = namebox ? NAMEBOX_W : TEXTBOX_W;
     size_t h = namebox ? NAMEBOX_H : TEXTBOX_H;
+    const box_pak_info_t *bi = &box_info[namebox ? 1 : 0];
+
+    if (bi->cached && !(bi->flags & PAK_FLAG_SPANNING) && bi->size == w * h) {
+        if (box_handle && box_handle_vol != bi->vol) {
+            assets_box_end();
+        }
+        if (!box_handle) {
+            box_handle = pak_open_vol(namebox ? "DNAMEBOX" : "DTXTBOX", bi->vol);
+            if (!box_handle) {
+                return false;
+            }
+            box_handle_vol = bi->vol;
+        }
+        const uint8_t *ptr = (const uint8_t *)ti_GetDataPtr(box_handle) + bi->off;
+        fast_rect_blit(dest, SCREEN_W, ptr, w, w, h);
+        return true;
+    }
+
+    assets_box_end();
     const char *aname = namebox ? "DNAMEBOX" : "DTXTBOX";
     pak_view_t v;
     if (pak_view_open(aname, &v)) {
@@ -1170,22 +1244,41 @@ bool assets_draw_box(bool namebox, uint8_t *dest)
     return true;
 }
 
+void assets_stickers_begin(void)
+{
+    if (!stickers_view.handle) {
+        pak_view_open("DSTKRS", &stickers_view);
+    }
+}
+
+void assets_stickers_end(void)
+{
+    pak_view_close(&stickers_view);
+}
+
 bool assets_draw_sticker_centered(uint8_t id, int center_x, int bottom_y)
 {
-    pak_view_t v;
-    if (!pak_view_open("DSTKRS", &v)) {
-        return false;
+    pak_view_t local_v;
+    const uint8_t *data;
+    bool owned = false;
+    if (stickers_view.handle && stickers_view.ptr) {
+        data = stickers_view.ptr;
+    } else {
+        if (!pak_view_open("DSTKRS", &local_v)) {
+            return false;
+        }
+        data = local_v.ptr;
+        owned = true;
     }
-    const uint8_t *data = v.ptr;
     uint8_t count = data[0];
     if (id >= count) {
-        pak_view_close(&v);
+        if (owned) pak_view_close(&local_v);
         return false;
     }
     uint16_t offset = (uint16_t)(data[1 + (size_t)id * 2] | ((uint16_t)data[2 + (size_t)id * 2] << 8));
     const gfx_rletsprite_t *spr = (const gfx_rletsprite_t *)(data + offset);
     gfx_RLETSprite(spr, center_x - spr->width / 2, bottom_y - spr->height);
-    pak_view_close(&v);
+    if (owned) pak_view_close(&local_v);
     return true;
 }
 
@@ -1236,6 +1329,9 @@ bool assets_scene_fullscreen(uint8_t id)
 bool assets_scene(uint8_t id, uint8_t *dest)
 {
     assets_sprite_end();
+#ifdef __TICE__
+    assets_box_end();
+#endif
     if (is_cg(id) && !assets_scene_fullscreen(id) && cgpack_read_pixels(id, dest)) {
 #ifdef DDLC_PERF_OVERLAY
         perf_overlay_set_bg(id, 0xFF, 0, 0, (uintptr_t)dest, true);
@@ -1282,11 +1378,15 @@ bool assets_scene(uint8_t id, uint8_t *dest)
 #endif
 
     if (!is_cg(id)) {
+#ifdef __TICE__
+        fast_zx0_decompress(dest, src);
+#else
         if (assets_scene_fullscreen(id)) {
             fast_zx0_decompress(dest, src);
         } else {
             zx0_Decompress(dest, src);
         }
+#endif
         if (handle) ti_Close(handle);
         free(tmp);
         return true;
@@ -1297,7 +1397,11 @@ bool assets_scene(uint8_t id, uint8_t *dest)
      * at most dest[76159] before reading dest[76480], and row 119 copies
      * cleanly through a 160-byte stack buffer so input never overlaps output. */
     uint8_t *cg_scratch = dest + SCENE_BYTES;
+#ifdef __TICE__
+    fast_zx0_decompress(cg_scratch, src);
+#else
     zx0_Decompress(cg_scratch, src);
+#endif
     if (handle) ti_Close(handle);
     free(tmp);
 

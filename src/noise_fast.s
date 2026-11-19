@@ -247,8 +247,9 @@ _noise_draw_asm:
 
 ; ---------------------------------------------------------------------------
 ; Fast precomputed-tile 2x2 sparse noise cell kernels (20x20 px cell).
-; Each entry is u16: bits 0..14 = byte offset within cell (0..5778),
-;                    bit 15 = 0 (c_dark) / 1 (c_light).
+; Each entry is u16 byte offset within cell (0..5778). Even entries use c_dark,
+; odd entries use c_light. Zero push/pop, zero color RAM loads, zero branching
+; inside the per-block loop (writable RAM code; immediates patched at entry).
 ; ---------------------------------------------------------------------------
 	.section .text._noise_tile,"ax",@progbits
 	.global _noise_tile_draw_cell
@@ -261,63 +262,83 @@ _noise_tile_draw_cell:
 	push	iy
 	ld	iy, 0
 	add	iy, sp
-	ld	b, (iy+18)
-	ld	a, b
+	ld	a, (iy+18)
 	or	a, a
-	jr	z, .nt_draw_done
-	ld	c, (iy+21)
-	ld	a, (iy+24)
-	ld	(.nt_clight), a
-	ld	de, (iy+12)
-	ld	ix, (iy+15)
-	ld	iy, (iy+9)
-.nt_draw_loop:
+	jp	z, .nt_draw_done
+	ld	(.nt_cnt), a
+	ld	a, (iy+21)		; c_dark
+	ld	(.nt_d0), a
+	ld	(.nt_d1), a
+	ld	(.nt_d2), a
+	ld	(.nt_d3), a
+	ld	a, (iy+24)		; c_light
+	ld	(.nt_l0), a
+	ld	(.nt_l1), a
+	ld	(.nt_l2), a
+	ld	(.nt_l3), a
+	ld	de, (iy+9)		; DE = cell_fb (constant)
+	ld	ix, (iy+12)		; IX = cell_undo
+	ld	iy, (iy+15)		; IY = entries
+	ld	bc, 319			; BC = row stride - 1 (constant)
+.nt_draw_pair:
+	; Dark block (even index)
 	ld	hl, 0
-	ld	l, (ix+0)
-	ld	a, (ix+1)
-	lea	ix, ix+2
-	or	a, a
-	jp	p, .nt_dark
-	and	a, 0x7F
-	ld	h, a
-	ld	a, (.nt_clight)
-	jr	.nt_have_col
-.nt_dark:
-	ld	h, a
-	ld	a, c
-.nt_have_col:
-	ld	(.nt_col), a
-	push	de
-	lea	de, iy+0
+	ld	l, (iy+0)
+	ld	h, (iy+1)
+	lea	iy, iy+2
 	add	hl, de
-	pop	de
 	ld	a, (hl)
-	ld	(de), a
-	inc	de
-	ld	a, (.nt_col)
-	ld	(hl), a
+	ld	(ix+0), a
+	.byte	0x36			; ld (hl), c_dark
+.nt_d0:	.byte	0
 	inc	hl
 	ld	a, (hl)
-	ld	(de), a
-	inc	de
-	ld	a, (.nt_col)
-	ld	(hl), a
-	push	de
-	ld	de, 319
-	add	hl, de
-	pop	de
+	ld	(ix+1), a
+	.byte	0x36
+.nt_d1:	.byte	0
+	add	hl, bc
 	ld	a, (hl)
-	ld	(de), a
-	inc	de
-	ld	a, (.nt_col)
-	ld	(hl), a
+	ld	(ix+2), a
+	.byte	0x36
+.nt_d2:	.byte	0
 	inc	hl
 	ld	a, (hl)
-	ld	(de), a
-	inc	de
-	ld	a, (.nt_col)
-	ld	(hl), a
-	djnz	.nt_draw_loop
+	ld	(ix+3), a
+	.byte	0x36
+.nt_d3:	.byte	0
+	lea	ix, ix+4
+	ld	hl, .nt_cnt
+	dec	(hl)
+	jr	z, .nt_draw_done
+	; Light block (odd index)
+	ld	hl, 0
+	ld	l, (iy+0)
+	ld	h, (iy+1)
+	lea	iy, iy+2
+	add	hl, de
+	ld	a, (hl)
+	ld	(ix+0), a
+	.byte	0x36			; ld (hl), c_light
+.nt_l0:	.byte	0
+	inc	hl
+	ld	a, (hl)
+	ld	(ix+1), a
+	.byte	0x36
+.nt_l1:	.byte	0
+	add	hl, bc
+	ld	a, (hl)
+	ld	(ix+2), a
+	.byte	0x36
+.nt_l2:	.byte	0
+	inc	hl
+	ld	a, (hl)
+	ld	(ix+3), a
+	.byte	0x36
+.nt_l3:	.byte	0
+	lea	ix, ix+4
+	ld	hl, .nt_cnt
+	dec	(hl)
+	jp	nz, .nt_draw_pair
 .nt_draw_done:
 	pop	iy
 	pop	ix
@@ -332,48 +353,39 @@ _noise_tile_restore_cell:
 	push	iy
 	ld	iy, 0
 	add	iy, sp
-	ld	b, (iy+18)
-	ld	a, b
+	ld	a, (iy+18)
 	or	a, a
 	jr	z, .nt_rest_done
-	ld	de, (iy+12)
-	ld	ix, (iy+15)
-	ld	iy, (iy+9)
+	ld	(.nt_cnt), a
+	ld	de, (iy+9)		; DE = cell_fb (constant)
+	ld	ix, (iy+12)		; IX = cell_undo
+	ld	iy, (iy+15)		; IY = entries
+	ld	bc, 319			; BC = row stride - 1 (constant)
 .nt_rest_loop:
 	ld	hl, 0
-	ld	l, (ix+0)
+	ld	l, (iy+0)
+	ld	h, (iy+1)
+	lea	iy, iy+2
+	add	hl, de
+	ld	a, (ix+0)
+	ld	(hl), a
+	inc	hl
 	ld	a, (ix+1)
-	lea	ix, ix+2
-	and	a, 0x7F
-	ld	h, a
-	push	de
-	lea	de, iy+0
-	add	hl, de
-	pop	de
-	ld	a, (de)
 	ld	(hl), a
-	inc	de
+	add	hl, bc
+	ld	a, (ix+2)
+	ld	(hl), a
 	inc	hl
-	ld	a, (de)
+	ld	a, (ix+3)
 	ld	(hl), a
-	inc	de
-	push	de
-	ld	de, 319
-	add	hl, de
-	pop	de
-	ld	a, (de)
-	ld	(hl), a
-	inc	de
-	inc	hl
-	ld	a, (de)
-	ld	(hl), a
-	inc	de
-	djnz	.nt_rest_loop
+	lea	ix, ix+4
+	ld	hl, .nt_cnt
+	dec	(hl)
+	jr	nz, .nt_rest_loop
 .nt_rest_done:
 	pop	iy
 	pop	ix
 	ret
 
 	.section .data,"aw",@progbits
-.nt_clight: .byte 0
-.nt_col:    .byte 0
+.nt_cnt: .byte 0

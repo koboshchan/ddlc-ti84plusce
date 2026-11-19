@@ -71,36 +71,51 @@ _fast_cg_upscale_2x_rows:
 .cg_common:
 	ld	de, (iy + 9)		; DE = dest (row 0)
 	ld	hl, (iy + 12)		; HL = src
-
-	ld	bc, 320
-	push	de
-	pop	ix
-	add	ix, bc			; IX = dest + 320 (row 1)
-
 	ld	iyl, a
 
 .cg_row_loop:
-	ld	b, 160
+	push	de
+	pop	ix			; IX = start of row 0
+	ld	b, 40			; 40 * 4 = 160 src pixels -> 320 dst pixels
 
 .cg_pixel_loop:
 	ld	a, (hl)
 	inc	hl
-
 	ld	(de), a
 	inc	de
 	ld	(de), a
 	inc	de
 
-	ld	(ix + 0), a
-	ld	(ix + 1), a
-	lea	ix, ix + 2
+	ld	a, (hl)
+	inc	hl
+	ld	(de), a
+	inc	de
+	ld	(de), a
+	inc	de
+
+	ld	a, (hl)
+	inc	hl
+	ld	(de), a
+	inc	de
+	ld	(de), a
+	inc	de
+
+	ld	a, (hl)
+	inc	hl
+	ld	(de), a
+	inc	de
+	ld	(de), a
+	inc	de
 
 	djnz	.cg_pixel_loop
 
-	push	ix
-	pop	de			; DE = start of next row 0
+	; Duplicate completed 320-byte row 0 into row 1 via hardware LDIR.
+	; DE is already at row0 + 320 and finishes at row0 + 640 (next row 0).
+	push	hl
+	lea	hl, ix + 0
 	ld	bc, 320
-	add	ix, bc			; IX = start of next row 1
+	ldir
+	pop	hl
 
 	dec	iyl
 	jr	nz, .cg_row_loop
@@ -123,43 +138,79 @@ _fast_rect_blit:
 	ld	iy, 0
 	add	iy, sp
 
+	ld	bc, (iy + 21)		; BC = w
+	ld	hl, 0
+	or	a, a
+	sbc	hl, bc
+	jp	z, .rect_done
+
+	ld	ix, (iy + 24)		; IX = h
+	ld	hl, 0
+	push	ix
+	pop	de
+	or	a, a
+	sbc	hl, de
+	jp	z, .rect_done
+
+	; Precompute dest_skip = dest_pitch - w, src_skip = src_pitch - w
+	ld	hl, (iy + 12)		; dest_pitch
+	or	a, a
+	sbc	hl, bc
+	push	hl			; (iy - 3) = dest_skip
+
+	ld	hl, (iy + 18)		; src_pitch
+	or	a, a
+	sbc	hl, bc
+	push	hl			; (iy - 6) = src_skip
+
 	ld	de, (iy + 9)		; DE = dest
 	ld	hl, (iy + 15)		; HL = src
 
-	ld	bc, (iy + 21)		; BC = w
-	push	hl
-	ld	hl, 0
-	or	a, a
-	sbc	hl, bc
-	pop	hl
-	jr	z, .rect_done
+	; Fast 8-bit height paths when h <= 255 (every screen blit on 320x240)
+	ld	a, (iy + 25)
+	or	a, (iy + 26)
+	jr	nz, .rect_loop_wide
 
-	ld	ix, (iy + 24)		; height
-	push	hl
-	ld	hl, 0
-	push	ix
-	pop	bc
-	or	a, a
-	sbc	hl, bc
-	pop	hl
-	jr	z, .rect_done
+	ld	a, (iy + 24)
+	ld	ixl, a
+	; Check if both 24-bit skips are zero (contiguous block, e.g. 320x60 textbox)
+	ld	a, (iy - 3)
+	or	a, (iy - 2)
+	or	a, (iy - 1)
+	or	a, (iy - 6)
+	or	a, (iy - 5)
+	or	a, (iy - 4)
+	jr	nz, .rect_strided
 
-.rect_loop:
-	push	hl
-	push	de
+.rect_contig:
 	ld	bc, (iy + 21)
 	ldir
-	pop	de
-	pop	hl
+	dec	ixl
+	jr	nz, .rect_contig
+	jr	.rect_pop_done
 
-	ld	bc, (iy + 12)		; dest_pitch
-	ex	de, hl
+.rect_strided:
+	ld	bc, (iy + 21)
+	ldir
+	ld	bc, (iy - 6)		; src_skip
 	add	hl, bc
 	ex	de, hl
-
-	ld	bc, (iy + 18)		; src_pitch
+	ld	bc, (iy - 3)		; dest_skip
 	add	hl, bc
+	ex	de, hl
+	dec	ixl
+	jr	nz, .rect_strided
+	jr	.rect_pop_done
 
+.rect_loop_wide:
+	ld	bc, (iy + 21)
+	ldir
+	ld	bc, (iy - 6)
+	add	hl, bc
+	ex	de, hl
+	ld	bc, (iy - 3)
+	add	hl, bc
+	ex	de, hl
 	dec	ix
 	push	hl
 	ld	hl, 0
@@ -168,7 +219,11 @@ _fast_rect_blit:
 	or	a, a
 	sbc	hl, bc
 	pop	hl
-	jr	nz, .rect_loop
+	jr	nz, .rect_loop_wide
+
+.rect_pop_done:
+	pop	hl
+	pop	hl
 
 .rect_done:
 	pop	iy
@@ -768,16 +823,60 @@ _fast_remap_bytes:
 	or	a, c
 	jr	z, .remap_done
 
-.remap_loop:
+	; 4x unrolled loop over count >> 2 quads, then 0..3 tail bytes
+	ld	a, c
+	and	a, 3
+	ld	ixl, a			; tail = count & 3
+	srl	b
+	rr	c
+	srl	b
+	rr	c
+	ld	a, b
+	or	a, c
+	jr	z, .remap_tail_chk
+
+.remap_quad:
 	ld	a, (de)
 	ld	l, a
 	ld	a, (hl)
 	ld	(de), a
 	inc	de
+
+	ld	a, (de)
+	ld	l, a
+	ld	a, (hl)
+	ld	(de), a
+	inc	de
+
+	ld	a, (de)
+	ld	l, a
+	ld	a, (hl)
+	ld	(de), a
+	inc	de
+
+	ld	a, (de)
+	ld	l, a
+	ld	a, (hl)
+	ld	(de), a
+	inc	de
+
 	dec	bc
 	ld	a, b
 	or	a, c
-	jr	nz, .remap_loop
+	jr	nz, .remap_quad
+
+.remap_tail_chk:
+	ld	a, ixl
+	or	a, a
+	jr	z, .remap_done
+	ld	b, a
+.remap_tail:
+	ld	a, (de)
+	ld	l, a
+	ld	a, (hl)
+	ld	(de), a
+	inc	de
+	djnz	.remap_tail
 
 .remap_done:
 	pop	iy
@@ -986,6 +1085,13 @@ _fast_bayer_dissolve:
 	jr	.bayer_next_row
 
 .bayer_not_zero:
+	cp	a, 0xFF
+	jr	nz, .bayer_masked
+	ld	bc, 320
+	ldir
+	jr	.bayer_next_row
+
+.bayer_masked:
 	ld	b, 80			; 80 * 4 = 320 pixels
 .bayer_px4:
 	rlc	c

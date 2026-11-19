@@ -185,8 +185,8 @@ static void print_slice_outlined(const char *str, size_t len, int x, int y,
 {
     fontlib_font_t *expanded = (active_font_index < 2) ? fonts[active_font_index + 2] : NULL;
     if (expanded && x > 0 && y > 0 &&
-        x + (int)measure(NULL, str, len) + 1 < SCREEN_W &&
-        y + fontlib_GetCurrentFontHeight() + 1 < SCREEN_H) {
+        y + fontlib_GetCurrentFontHeight() + 1 < SCREEN_H &&
+        ((x <= 12 && len <= 28) || x + (int)measure(NULL, str, len) + 1 < SCREEN_W)) {
         fontlib_font_t *fill_font = active_font;
         fontlib_SetFont(expanded, 0);
         fontlib_SetItalicSpacingAdjustment(2);
@@ -838,7 +838,8 @@ static __attribute__((noinline)) void apply_tear(const vn_scene_t *scene, unsign
     int     active_h = (scene->window_hidden && assets_scene_fullscreen(scene->background))
                      ? SCREEN_H : SCENE_H;
     int     rows_per_chunk = (active_h + chunks - 1) / chunks;
-    uint8_t tear_scratch[SCREEN_W];
+    extern uint8_t render_row_scratch[SCREEN_W];
+    uint8_t *tear_scratch = render_row_scratch;
 
     for (uint8_t i = 0; i < chunks; i++) {
         if (t >= tear_reroll_at[i]) {
@@ -894,6 +895,8 @@ static __attribute__((noinline)) void apply_tear(const vn_scene_t *scene, unsign
  * to decide it can skip -- see it below. */
 static bool scene_settled;
 static bool have_drawn_once;
+static bool buffers_synced;
+static bool console_active;
 
 /* Which actor slot moved during the last full redraw, or -1 if none did --
  * or if more than one did. The plate reconstructs exactly one moving actor,
@@ -932,6 +935,8 @@ static bool last_scene_used_motion;
 void render_scene(const vn_scene_t *scene)
 {
     perf_overlay_frame_start();
+    buffers_synced = false;
+    assets_box_end();
     if (ch5_motion_active(scene->background)) {
         noise_release();
         assets_sprite_cache_clear();
@@ -1116,6 +1121,7 @@ bool render_timed_scene(const vn_scene_t *scene) {
 static void render_scene_moving(const vn_scene_t *scene)
 {
     perf_overlay_frame_start();
+    buffers_synced = false;
     noise_restore();
     if (plate == NULL || plate_slot < 0) {   /* can't happen; cheap insurance */
         render_scene(scene);
@@ -1143,17 +1149,14 @@ static void render_scene_moving(const vn_scene_t *scene)
 static void scene_obscured(void)
 {
     have_drawn_once = false;
+    buffers_synced = false;
     plate_free();
 }
 
 void render_invalidate_scene(void)
 {
-    /* Same mechanism as scene_obscured() above, minus plate_free(): nothing
-     * about actor animation changed, so there's no plate to release -- just
-     * force the next render_scene_lazy() call past its "already correct,
-     * skip" shortcut. See its own doc comment in render.h for why this
-     * exists (src/cgpack.c's availability changing mid-scene). */
     have_drawn_once = false;
+    buffers_synced = false;
 }
 
 bool render_scene_used_motion(void)
@@ -1504,6 +1507,10 @@ void render_dialog_ok(const char *msg, const char *ok_label)
     print_slice(ok, olen, btn_x + (btn_w - ow) / 2, btn_y + 3);
 }
 
+static bool fade_active;
+static bool palette_defer;
+static bool palette_staged;
+
 void render_present(uint8_t trans)
 {
     /* TRANS_FADE is accepted but still presents as a cut; a real fade needs
@@ -1516,6 +1523,27 @@ void render_present(uint8_t trans)
     render_commit_palette();
     gfx_BlitScreen();
     perf_overlay_present_end();
+    buffers_synced = true;
+}
+
+void render_present_box(const vn_scene_t *scene)
+{
+    if (buffers_synced && scene_settled && have_drawn_once &&
+        !console_active && !palette_staged && !fade_active &&
+        scene && scene->overlay_mask == 0 &&
+        !(scene->overlay_fx_mask & VN_OVL_FAKE_SKIP)) {
+        perf_overlay_end();
+        perf_overlay_present_begin();
+        gfx_SwapDraw();
+        /* Rows 0..166 are already identical in both framebuffers; sync only
+         * the namebox + dialogue box band (73 lines = 23,360 B instead of
+         * 76,800 B), saving 53,440 B of VRAM copy per typewriter frame. */
+        enum { SYNC_Y = BOX_Y - NAMEBOX_H + 4 };
+        gfx_BlitLines(gfx_screen, SYNC_Y, SCREEN_H - SYNC_Y);
+        perf_overlay_present_end();
+        return;
+    }
+    render_present(TRANS_CUT);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1738,10 +1766,12 @@ void render_title_screen(uint8_t selected, unsigned t, int16_t playthrough)
 #define FADE_HOLD_MS 250  /* DDLC's Pause() between the two dissolves */
 
 static uint16_t current_palette[256];
-static uint16_t fade_saved[256];
+#define fade_saved current_palette
+#ifndef __TICE__
 static bool fade_active;
 static bool palette_defer;
 static bool palette_staged;
+#endif
 static bool timed_fx_inverted;
 static bool room_mask_applied;
 
@@ -1749,19 +1779,13 @@ static void fade_apply(uint8_t amount)
 {
     /* gfx_Darken: 0 is full black, 255 is the original color. */
     for (unsigned i = 0; i < 256; i++) {
-        gfx_palette[i] = gfx_Darken(fade_saved[i], amount);
+        gfx_palette[i] = gfx_Darken(current_palette[i], amount);
     }
 }
 
-/* Paced with msleep(), not gfx_Wait(): gfx_Wait() only blocks on a pending
- * gfx_SwapDraw(), and a fade changes no pixels -- it only re-tints the
- * palette of whatever is already on screen -- so nothing here ever swaps.
- * Without a real delay the whole fade (and the black hold) would collapse to
- * a handful of back-to-back palette writes with no visible time passing. */
 void render_fade_out(void)
 {
     fade_active = true;
-    memcpy(fade_saved, current_palette, sizeof(fade_saved));
 
     for (unsigned s = 1; s <= FADE_STEPS; s++) {
         fade_apply((uint8_t)(255 - s * 255 / FADE_STEPS));
@@ -1777,8 +1801,7 @@ void render_fade_in(void)
         msleep(FADE_STEP_MS);
     }
     /* Restore exactly rather than trusting gfx_Darken(c, 255) to round-trip. */
-    memcpy(gfx_palette, fade_saved, sizeof(fade_saved));
-    memcpy(current_palette, fade_saved, sizeof(current_palette));
+    memcpy(gfx_palette, current_palette, sizeof(current_palette));
     fade_active = false;
 }
 
@@ -1804,7 +1827,6 @@ void render_apply_palette(const uint16_t *palette)
     timed_fx_inverted = false;
     room_mask_applied = false;
     memcpy(current_palette, palette, sizeof(current_palette));
-    memcpy(fade_saved, palette, sizeof(fade_saved));
     if (fade_active) {
         palette_staged = false;
         fade_apply(0);
@@ -1824,7 +1846,6 @@ const uint16_t *render_active_palette(void)
 void render_fade_retarget(const uint16_t *palette)
 {
     memcpy(current_palette, palette, sizeof(current_palette));
-    memcpy(fade_saved, palette, sizeof(fade_saved));
     fade_apply(0); /* re-hold at full black under the new palette's values */
 }
 
@@ -2171,7 +2192,8 @@ static uint8_t  layer_s_seq;
 static uint16_t layer_s_param;
 static unsigned layer_s_started_ms;
 static uint16_t layer_s_drawn_key;
-static uint8_t  layer_row_scratch[SCREEN_W];
+uint8_t  render_row_scratch[SCREEN_W];
+#define layer_row_scratch render_row_scratch
 
 static void copy_row_shifted(uint8_t *dst, const uint8_t *src, int dx)
 {
@@ -2716,7 +2738,6 @@ bool render_palette_matches(const uint16_t *palette)
 void render_dissolve_out(void)
 {
     fade_active = true;
-    memcpy(fade_saved, current_palette, sizeof(fade_saved));
     for (unsigned s = 1; s <= DISSOLVE_STEPS; s++) {
         fade_apply((uint8_t)(255U - (s * 255U) / DISSOLVE_STEPS));
         msleep(DISSOLVE_STEP_MS);
@@ -2729,8 +2750,7 @@ void render_dissolve_in(void)
         fade_apply((uint8_t)((s * 255U) / DISSOLVE_STEPS));
         msleep(DISSOLVE_STEP_MS);
     }
-    memcpy(gfx_palette, fade_saved, sizeof(fade_saved));
-    memcpy(current_palette, fade_saved, sizeof(current_palette));
+    memcpy(gfx_palette, current_palette, sizeof(current_palette));
     fade_active = false;
 }
 
@@ -2821,7 +2841,6 @@ void render_eyes_open_reveal(void)
 #define CONSOLE_HIST_MAX 4
 #define CONSOLE_LINE_MAX 48
 
-static bool console_active;
 static char console_hist[CONSOLE_HIST_MAX][CONSOLE_LINE_MAX];
 static uint8_t console_hist_count;
 

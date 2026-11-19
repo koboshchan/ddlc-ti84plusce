@@ -51,18 +51,29 @@ extern void noise_restore_asm(uint8_t *fb,uint8_t *saved,unsigned seed,unsigned 
 #define NOISE_CELL_UNDO   100u
 #define NOISE_AMORT_SLOTS 5u
 
+/* Pack cell tracking + tile tables inside the dynamic Ch5 undo allocation
+ * (20,176 B, allocated only during Ch5 noise and freed on noise_release),
+ * reclaiming 976 B of permanent .bss for the entire rest of the game. */
+#define NOISE_UNDO_PIXELS (NOISE_CELLS * NOISE_CELL_UNDO)
+#define NOISE_OFF_MASK    (NOISE_UNDO_PIXELS)
+#define NOISE_OFF_TILE    (NOISE_OFF_MASK + NOISE_CELLS)
+#define NOISE_OFF_CNT     (NOISE_OFF_TILE + NOISE_CELLS)
+#define NOISE_OFF_TILES   (NOISE_OFF_CNT + NOISE_CELLS)
+#define NOISE_ALLOC_BYTES (NOISE_OFF_TILES + NOISE_TILES * NOISE_TILE_MAX * 2u)
+
+#define noise_mask_cache()  (undo + NOISE_OFF_MASK)
+#define noise_cell_tile()   (undo + NOISE_OFF_TILE)
+#define noise_cell_cnt()    (undo + NOISE_OFF_CNT)
+#define noise_tile_ptr(t)   ((uint16_t *)(undo + NOISE_OFF_TILES) + (size_t)(t) * NOISE_TILE_MAX)
+
 extern void noise_tile_draw_cell(uint8_t *cell_fb, uint8_t *cell_undo,
                                  const uint16_t *entries, uint8_t count,
                                  uint8_t c_dark, uint8_t c_light);
 extern void noise_tile_restore_cell(uint8_t *cell_fb, const uint8_t *cell_undo,
                                     const uint16_t *entries, uint8_t count);
 
-static uint16_t noise_tiles[NOISE_TILES][NOISE_TILE_MAX];
 static bool tiles_ready;
-static uint8_t mask_cache[NOISE_CELLS];
 static bool mask_cached;
-static uint8_t cell_tile[NOISE_CELLS];
-static uint8_t cell_cnt[NOISE_CELLS];
 static uint8_t amort_slot;
 static bool frame_ready;
 static uint16_t xorshift_state = 0xACE1u;
@@ -77,9 +88,11 @@ static uint16_t noise_xorshift16(void) {
     return x;
 }
 
-static void noise_build_tile(uint8_t t) {
-    /* Pick NOISE_TILE_MAX distinct 2x2 blocks inside a 10x10 block cell (20x20 px). */
+static __attribute__((noinline)) void noise_build_tile(uint8_t t) {
+    /* Pick NOISE_TILE_MAX distinct 2x2 blocks inside a 10x10 block cell (20x20 px).
+     * Even indices render c_dark, odd indices render c_light (branchless ASM). */
     uint8_t used[100];
+    uint16_t *dst = noise_tile_ptr(t);
     memset(used, 0, sizeof(used));
     for (uint8_t k = 0; k < NOISE_TILE_MAX; k++) {
         uint8_t idx = (uint8_t)(noise_xorshift16() % 100u);
@@ -89,14 +102,12 @@ static void noise_build_tile(uint8_t t) {
         used[idx] = 1;
         uint8_t by = (uint8_t)(idx / 10u);
         uint8_t bx = (uint8_t)(idx - by * 10u);
-        uint16_t off = (uint16_t)((uint16_t)by * 640u + (uint16_t)bx * 2u);
-        if (noise_xorshift16() & 1u) off |= 0x8000u;
-        noise_tiles[t][k] = off;
+        dst[k] = (uint16_t)((uint16_t)by * 640u + (uint16_t)bx * 2u);
     }
 }
 
 static void noise_ensure_tiles(void) {
-    if (tiles_ready) return;
+    if (tiles_ready || !undo) return;
     for (uint8_t t = 0; t < NOISE_TILES; t++) {
         noise_build_tile(t);
     }
@@ -114,13 +125,15 @@ void noise_restore(void){
     if(!undo_size)return;
 #ifndef NOISE_HOST_GOLDEN
     if (undo && undo_buffer) {
+        uint8_t *cc = noise_cell_cnt();
+        uint8_t *ct = noise_cell_tile();
         for (uint8_t c = 0; c < NOISE_CELLS; c++) {
-            uint8_t cnt = cell_cnt[c];
+            uint8_t cnt = cc[c];
             if (!cnt) continue;
             noise_tile_restore_cell(noise_cell_ptr(undo_buffer, c),
                                     undo + (size_t)c * NOISE_CELL_UNDO,
-                                    noise_tiles[cell_tile[c]], cnt);
-            cell_cnt[c] = 0;
+                                    noise_tile_ptr(ct[c]), cnt);
+            cc[c] = 0;
         }
     }
 #else
@@ -142,6 +155,7 @@ void noise_release(void){
     noise_restore();free(undo);undo=0;
 #ifndef NOISE_HOST_GOLDEN
     mask_cached = false;
+    tiles_ready = false;
 #endif
 }
 
@@ -154,8 +168,15 @@ bool noise_begin(uint8_t scene) {
     unsigned i,k;
     noise_end();
 #ifndef NOISE_HOST_GOLDEN
+    if (!undo) {
+        undo = malloc(NOISE_ALLOC_BYTES);
+        if (!undo) return false;
+        memset(noise_cell_cnt(), 0, NOISE_CELLS);
+        mask_cached = false;
+        tiles_ready = false;
+    }
     if (!mask_cached) {
-        if (!pak_read_asset("DNFX", 256, mask_cache, NOISE_CELLS)) {
+        if (!pak_read_asset("DNFX", 256, noise_mask_cache(), NOISE_CELLS)) {
             return false;
         }
         mask_cached = true;
@@ -198,7 +219,6 @@ static void noise_frame_rows(unsigned elapsed_ms,unsigned frame_rows) {
     unsigned coverage=elapsed_ms>=3000?4u:(uint32_t)elapsed_ms*4u/3000u;
 #ifndef NOISE_HOST_GOLDEN
     if(!coverage){ noise_restore(); frame_ready = true; return; }
-    if(!undo)undo=malloc(NOISE_UNDO_BYTES);
     if(!undo){ frame_ready = true; return; }
     noise_ensure_tiles();
 
@@ -206,6 +226,9 @@ static void noise_frame_rows(unsigned elapsed_ms,unsigned frame_rows) {
     uint8_t active_cells = (frame_rows >= 240u) ? NOISE_CELLS : (uint8_t)(16u * 9u);
     static const uint8_t cov_counts[5] = { 0, 6, 12, 19, 25 };
     uint8_t cnt = cov_counts[coverage];
+    uint8_t *cc = noise_cell_cnt();
+    uint8_t *ct = noise_cell_tile();
+    const uint8_t *mc = noise_mask_cache();
 
     /* If framebuffer pointer changed (e.g. after gfx_SwapDraw), re-anchor
      * undo_buffer without restoring since gfx_BlitScreen already synced it. */
@@ -215,11 +238,11 @@ static void noise_frame_rows(unsigned elapsed_ms,unsigned frame_rows) {
     /* If shrinking from 240 -> 180 rows, restore bottom dialogue cells cleanly. */
     if (undo_size && active_cells < NOISE_CELLS) {
         for (uint8_t c = active_cells; c < NOISE_CELLS; c++) {
-            if (!cell_cnt[c]) continue;
+            if (!cc[c]) continue;
             noise_tile_restore_cell(noise_cell_ptr(fb, c),
                                     undo + (size_t)c * NOISE_CELL_UNDO,
-                                    noise_tiles[cell_tile[c]], cell_cnt[c]);
-            cell_cnt[c] = 0;
+                                    noise_tile_ptr(ct[c]), cc[c]);
+            cc[c] = 0;
         }
     }
 
@@ -229,30 +252,29 @@ static void noise_frame_rows(unsigned elapsed_ms,unsigned frame_rows) {
 
     if (!undo_size) {
         /* Fresh background frame: clear cell tracking and start slice 0 of 5. */
-        memset(cell_cnt, 0, sizeof(cell_cnt));
+        memset(cc, 0, NOISE_CELLS);
         amort_slot = 0;
     }
 
     /* Generate exactly 1/5 of the screen's noise cells per tick into the
-     * off-screen back buffer (<= 24ms budget). Only mark frame_ready on the
-     * 5th slice (slot == 4) so the caller swaps the completed frame atomically
-     * with gfx_SwapDraw() and nothing partial is ever visible. */
+     * off-screen back buffer. Only mark frame_ready on the 5th slice (slot == 4)
+     * so the caller swaps the completed frame atomically with gfx_SwapDraw(). */
     uint8_t slot = amort_slot;
     for (uint8_t c = slot; c < active_cells; c += NOISE_AMORT_SLOTS) {
         uint8_t *cfb = noise_cell_ptr(fb, c);
         uint8_t *cu  = undo + (size_t)c * NOISE_CELL_UNDO;
-        if (cell_cnt[c]) {
-            noise_tile_restore_cell(cfb, cu, noise_tiles[cell_tile[c]], cell_cnt[c]);
+        if (cc[c]) {
+            noise_tile_restore_cell(cfb, cu, noise_tile_ptr(ct[c]), cc[c]);
         }
         uint8_t t = (uint8_t)(noise_xorshift16() & (NOISE_TILES - 1u));
-        if (cell_cnt[c] && t == cell_tile[c]) {
+        if (cc[c] && t == ct[c]) {
             t = (uint8_t)((t + 1u) & (NOISE_TILES - 1u));
         }
-        uint8_t mv = mask_cache[c];
-        noise_tile_draw_cell(cfb, cu, noise_tiles[t], cnt,
+        uint8_t mv = mc[c];
+        noise_tile_draw_cell(cfb, cu, noise_tile_ptr(t), cnt,
                              colors[mv], colors[mv + 16u]);
-        cell_tile[c] = t;
-        cell_cnt[c] = cnt;
+        ct[c] = t;
+        cc[c] = cnt;
     }
     undo_size = (unsigned)active_cells * NOISE_CELL_UNDO;
     if (++amort_slot >= NOISE_AMORT_SLOTS) {

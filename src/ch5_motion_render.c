@@ -359,29 +359,32 @@ bool ch5_motion_active(uint8_t scene) {
 #endif
 }
 
+static void sync_record_clock(uint8_t scene, const uint8_t *record) {
+    clock_t now = clock();
+    if (last_scene != scene) {
+        last_scene = scene;
+        started = now;
+        ch5_band_invalidate();
+    }
+    for (uint8_t j = 0; j < record[1] && j < 8; j++) {
+        uint8_t mode = record[3 + j * 2];
+        if (previous_mode[j] != mode) {
+            previous_mode[j] = mode;
+            layer_start[j] = now;
+        }
+    }
+}
+
 /* Clock lifetime is independent of framebuffer drawing. A successful USB
  * frame must advance the same scene/layer clocks as the on-calc renderer. */
 bool ch5_motion_sync_clock(uint8_t scene) {
     uint16_t n = 0;
     uint8_t *p = pak_read_whole("DMOTMAP", &n);
     if (!p) return false;
-    unsigned i, j;
-    clock_t now = clock();
     bool found = false;
-    for (i = 0; i + 18 <= n; i += 18) {
+    for (unsigned i = 0; i + 18 <= n; i += 18) {
         if (p[i] == scene) {
-            if (last_scene != scene) {
-                last_scene = scene;
-                started = now;
-                ch5_band_invalidate();
-            }
-            for (j = 0; j < p[i + 1] && j < 8; j++) {
-                uint8_t mode = p[i + 3 + j * 2];
-                if (previous_mode[j] != mode) {
-                    previous_mode[j] = mode;
-                    layer_start[j] = now;
-                }
-            }
+            sync_record_clock(scene, p + i);
             found = true;
             break;
         }
@@ -406,20 +409,21 @@ bool ch5_motion_draw(uint8_t scene) {
     if (!found) { last_scene = 255; return false; }
     if (record[1] > 8) return false;
 
+    /* Read and validate DMOTPAL once (heap ptr keeps stack frame < 128 B on eZ80). */
     uint16_t pal_sz = 0;
-    uint8_t *pal_check = pak_read_whole("DMOTPAL", &pal_sz);
-    free(pal_check);
-    if (!pal_check || pal_sz != 512) return false;
-    if (!ch5_motion_sync_clock(scene)) return false;
+    uint8_t *pal = pak_read_whole("DMOTPAL", &pal_sz);
+    if (!pal || pal_sz != 512) { free(pal); return false; }
+
+    sync_record_clock(scene, record);
 
     pak_view_t blend_v;
-    if (!pak_view_open("DMOTRGB", &blend_v)) return false;
-    if (blend_v.size != 32768u) { pak_view_close(&blend_v); return false; }
+    if (!pak_view_open("DMOTRGB", &blend_v)) { free(pal); return false; }
+    if (blend_v.size != 32768u) { pak_view_close(&blend_v); free(pal); return false; }
 
     /* DMOTRGB is validated above; no unused data-pointer lookup. */
     pak_view_t qv;
-    if (!pak_view_open("DLUTQ", &qv)) { pak_view_close(&blend_v); return false; }
-    if (qv.size != 12560u) { pak_view_close(&qv); pak_view_close(&blend_v); return false; }
+    if (!pak_view_open("DLUTQ", &qv)) { pak_view_close(&blend_v); free(pal); return false; }
+    if (qv.size != 12560u) { pak_view_close(&qv); pak_view_close(&blend_v); free(pal); return false; }
     const uint8_t *qdata = qv.ptr;
     const uint8_t *quant_groups = qdata;
     {
@@ -428,6 +432,7 @@ bool ch5_motion_draw(uint8_t scene) {
             if (quant_groups[q] >= 16) {
                 pak_view_close(&qv);
                 pak_view_close(&blend_v);
+                free(pal);
                 return false;
             }
         } while (++q);
@@ -451,7 +456,7 @@ bool ch5_motion_draw(uint8_t scene) {
 #else
     /* Host adversarial tests assert gfx_vbuffer[57600..] stays untouched. */
     uint8_t *lookup_alloc = malloc(4096 + 256 + 4095 + 2000);
-    if (!lookup_alloc) { pak_view_close(&blend_v); return false; }
+    if (!lookup_alloc) { pak_view_close(&blend_v); free(pal); return false; }
     uint8_t *table = (uint8_t *)(((uintptr_t)lookup_alloc + 4095u) & ~(uintptr_t)4095u);
     uint8_t *pages = table + 4096;
     int16_t *pair_x = (int16_t *)(pages + 256);
@@ -485,8 +490,27 @@ bool ch5_motion_draw(uint8_t scene) {
         bg_idx = 1;
     }
     /* Authored bg_zoom has 2x coverage for every permitted phase. Never
-     * skip for other modes or assets containing transparent pixels. */
+     * skip for other modes or assets containing transparent pixels. On-calc
+     * DMOT0 is immutable in Flash, so cache its solid-window check once. */
     if (bg_idx >= 0) {
+#ifdef __TICE__
+        static bool solid_bg0_checked;
+        static bool solid_bg0_val;
+        if (!solid_bg0_checked) {
+            bool solid = true;
+            for (uint8_t row = 26; row <= 116; row++) {
+                const uint8_t *pixels = ch5_band_row(0, row);
+                if (!pixels) goto motion_done;
+                if (memchr(pixels + 31, 255, 161)) { solid = false; break; }
+            }
+            solid_bg0_val = solid;
+            solid_bg0_checked = true;
+        }
+        if (solid_bg0_val) {
+            first_layer = (uint8_t)bg_idx;
+            solid_bg_skip = true;
+        }
+#else
         bool solid = true;
         for (uint8_t row = 26; row <= 116; row++) {
             const uint8_t *pixels = ch5_band_row(0, row);
@@ -497,6 +521,7 @@ bool ch5_motion_draw(uint8_t scene) {
             first_layer = (uint8_t)bg_idx;
             solid_bg_skip = true;
         }
+#endif
     }
 
     /* Proven full-screen opaque mode-3 coverage overwrites every pixel. */
@@ -555,29 +580,19 @@ motion_done:
 #endif
     pak_view_close(&blend_v);
     if (success) {
-        uint16_t psz = 0;
-        uint8_t *pal = pak_read_whole("DMOTPAL", &psz);
-        if (pal) {
-            if (psz == 512) {
-                /* Publish palette and fade state only after dependency/stream success. */
+        /* Publish palette and fade state only after dependency/stream success. */
 #ifdef DDLC_PERF_OVERLAY
-                perf_overlay_set_pal(PERF_PAL_MOTION, 0);
-                {
-                    uint8_t mv = 0, mf = 0; uint16_t moff = 0; size_t mlen = 0;
-                    pak_stat("DMOT0", &mv, &moff, &mlen, &mf);
-                    perf_overlay_set_bg(scene, mv, moff, (uint16_t)mlen,
-                                        (uintptr_t)gfx_vbuffer, true);
-                }
-#endif
-                render_apply_palette((const uint16_t *)pal);
-            } else {
-                success = false;
-            }
-            free(pal);
-        } else {
-            success = false;
+        perf_overlay_set_pal(PERF_PAL_MOTION, 0);
+        {
+            uint8_t mv = 0, mf = 0; uint16_t moff = 0; size_t mlen = 0;
+            pak_stat("DMOT0", &mv, &moff, &mlen, &mf);
+            perf_overlay_set_bg(scene, mv, moff, (uint16_t)mlen,
+                                (uintptr_t)gfx_vbuffer, true);
         }
+#endif
+        render_apply_palette((const uint16_t *)pal);
     }
+    free(pal);
     /* Bottom rows are transient work space, not scene pixels. Every caller
      * must compose the dialogue/letterbox after this draw and before present. */
     return success;
