@@ -1748,8 +1748,10 @@ class ImageResolver:
                 else:
                     full_cg = canvas_bg
             elif fullscreen and imgname == ("bsod",):
-                top = _fit_and_center(art, CG_FULL_SIZE, (31, 103, 179, 255))
-                bg_rgba = art.convert("RGBA").getpixel((0, art.height - 1))
+                bsod_src = _find_art_file(self.raw_dir, "images/bg/bsod.png")
+                src_art = PILImage.open(bsod_src).convert("RGBA") if bsod_src else art
+                top = _fit_and_center(src_art, CG_FULL_SIZE, (31, 103, 179, 255))
+                bg_rgba = src_art.getpixel((0, src_art.height - 1))
                 full_cg = PILImage.new("RGBA", full_target, bg_rgba)
                 full_cg.paste(top, (0, 0))
             else:
