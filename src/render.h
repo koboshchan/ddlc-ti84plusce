@@ -199,6 +199,11 @@ void render_console_draw_step(const char *typing_cmd, size_t visible_chars);
  * fade in progress). */
 void render_apply_palette(const uint16_t *palette);
 
+/** Target palette for the active screen (the destination palette during a
+ * fade, or the live gfx_palette otherwise), used by the debug perf overlay so
+ * it chooses readable paper/ink indices even while gfx_palette is blacked out. */
+const uint16_t *render_active_palette(void);
+
 /** Remaps @p count bytes in-place through a 256-byte aligned lookup table. */
 void fast_remap_bytes(uint8_t *buf, const uint8_t *lut_aligned256, uint16_t count);
 

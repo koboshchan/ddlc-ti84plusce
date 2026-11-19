@@ -5,17 +5,25 @@
 void perf_overlay_toggle(void);
 bool perf_overlay_enabled(void);
 void perf_overlay_begin(void);
+void perf_overlay_frame_start(void);
 void perf_overlay_mark_rendered(void);
 void perf_overlay_end(void);
 void perf_overlay_draw(void);
+void perf_overlay_present_begin(void);
+void perf_overlay_present_end(void);
+void perf_overlay_draw_buffer(void);
 void perf_overlay_shutdown(void);
 #else
 #define perf_overlay_toggle() ((void)0)
 #define perf_overlay_enabled() false
 #define perf_overlay_begin() ((void)0)
+#define perf_overlay_frame_start() ((void)0)
 #define perf_overlay_mark_rendered() ((void)0)
 #define perf_overlay_end() ((void)0)
 #define perf_overlay_draw() ((void)0)
+#define perf_overlay_present_begin() ((void)0)
+#define perf_overlay_present_end() ((void)0)
+#define perf_overlay_draw_buffer() ((void)0)
 #define perf_overlay_shutdown() ((void)0)
 #endif
 #endif

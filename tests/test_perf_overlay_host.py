@@ -111,7 +111,7 @@ int main(void){
             # render.h imports graphx/vn dependencies; remove ONLY this include
             # from the tested copy and use its actual two palette constants.
             actual=(ROOT/"src/perf_overlay.c").read_text().replace('#include "render.h"',
-                        '#define COL_BLACK 1\n#define COL_WHITE 2')
+                        '#define COL_BLACK 1\n#define COL_WHITE 2\nextern uint16_t gfx_palette[256];\nstatic const uint16_t *render_active_palette(void){return gfx_palette;}')
             (path/"perf_overlay.c").write_text(actual)
             (path/"test.c").write_text(harness)
             subprocess.run(["cc","-Wall","-Wextra","-Werror","-fsanitize=undefined",

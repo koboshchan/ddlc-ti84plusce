@@ -2563,15 +2563,18 @@ class Compiler:
             return True
 
         if (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
-                and _ident_name(stmt.value.func) == "pause"):
+                and _ident_name(stmt.value.func) in ("pause", "renpy.pause")):
             # DDLC's own pause(seconds) helper (a thin renpy.pause()
-            # wrapper) -- not Ren'Py's built-in `pause` statement, which
-            # never actually shows up in the compiled game; this is a plain
-            # function call, hence living here in the Python-statement
-            # dispatcher rather than as its own node kind in emit_node().
-            ms = _pause_ms(stmt.value)
-            if ms is not None:
-                self.asm.pause(ms)
+            # wrapper) and direct renpy.pause(seconds, hard=True/False) calls.
+            parsed_pause = _pause_call(stmt.value)
+            if parsed_pause is not None:
+                ms, hard = parsed_pause
+                if hard and ms > 0:
+                    self.asm.pause_hard(ms)
+                elif ms > 65535:
+                    self.asm.pause_long(ms)
+                else:
+                    self.asm.pause(ms)
                 return True
             absolute = _match_absolute_pause(stmt.value)
             if absolute is not None and absolute[1] == self.time_anchor_var:
@@ -2771,9 +2774,22 @@ class Compiler:
                     self.asm.set(ch4_slot, self._intern("Natsuki"))
                     self.asm.label(lbl_done)
                     return True
+            if var == "_dismiss_pause":
+                rhs_name = _ident_name(stmt.value)
+                rhs_val = _const_scalar(stmt.value)
+                if rhs_name == "config.developer" or rhs_val == 0:
+                    self.asm.skip_lock(vnasm.VN_DISMISS_PAUSE_LOCK)
+                    return True
+                if rhs_val == 1:
+                    self.asm.skip_lock(vnasm.VN_DISMISS_PAUSE_UNLOCK)
+                    return True
             val = self._const_operand_for_var(var, stmt.value)
             if var is not None and val is not None:
                 self.asm.set(self._var_slot(var), val)
+                if var in ("config.allow_skipping", "allow_skipping"):
+                    self.asm.skip_lock(vnasm.VN_SKIP_UNLOCK if val else vnasm.VN_SKIP_LOCK)
+                elif var == "config.skipping" and not val:
+                    self.asm.skip_lock(vnasm.VN_SKIP_LOCK)
                 if var == "chapter":
                     # DDLC's own script always writes `chapter = <literal>`
                     # immediately before `call poem` -- confirmed by reading
@@ -3670,31 +3686,33 @@ def _pure_number(node) -> float | int | None:
     return None
 
 
-def _pause_ms(call: ast.Call) -> int | None:
-    """The ms:u16 OP_PAUSE should carry for DDLC's own `pause(...)` helper
-    call, or None if the duration can't be resolved at compile time (e.g.
-    `pause(len(text) / 30.0 + 0.5)`, a real per-line duration scaled by the
-    text just shown -- genuinely dynamic, correctly left unsupported rather
-    than guessed).
+def _pause_call(call: ast.Call) -> tuple[int, bool] | None:
+    """Return (ms, hard) for pause(...) or renpy.pause(..., hard=True/False)."""
+    hard = False
+    for kw in call.keywords:
+        if kw.arg == "hard":
+            v = _const_scalar(kw.value)
+            if not isinstance(v, int):
+                return None
+            hard = bool(v)
+        else:
+            return None
+    if not call.args:
+        return (0, hard)
+    if len(call.args) != 1:
+        return None
+    seconds = _pure_number(call.args[0])
+    if seconds is None or seconds < 0:
+        return None
+    ms = round(seconds * 1000)
+    if not hard and ms > 65535:
+        return None
+    return (max(ms, 1), hard)
 
-    A bare `pause()` (no args) is DDLC's "wait for a click, no timeout" --
-    OP_PAUSE's own ms=0 sentinel, so this returns 0 for that case rather
-    than None (0 is a real, meaningful answer here, not "unresolved").
-    A resolved duration that rounds to exactly 0ms (a sub-millisecond
-    pause, i.e. essentially decorative) is bumped to 1ms instead, so it
-    doesn't collide with that same sentinel and silently turn into an
-    indefinite wait."""
-    if call.args or call.keywords:
-        if len(call.args) != 1 or call.keywords:
-            return None
-        seconds = _pure_number(call.args[0])
-        if seconds is None or seconds < 0:
-            return None
-        ms = round(seconds * 1000)
-        if ms > 65535:
-            return None
-        return max(ms, 1)
-    return 0
+
+def _pause_ms(call: ast.Call) -> int | None:
+    res = _pause_call(call)
+    return res[0] if (res is not None and not res[1]) else None
 
 
 def _randint_call(node) -> tuple[int, int] | None:

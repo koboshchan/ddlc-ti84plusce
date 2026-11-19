@@ -914,6 +914,7 @@ static bool last_scene_used_motion;
 
 void render_scene(const vn_scene_t *scene)
 {
+    perf_overlay_frame_start();
     if (ch5_motion_active(scene->background)) {
         noise_release();
         assets_sprite_cache_clear();
@@ -1096,6 +1097,8 @@ bool render_timed_scene(const vn_scene_t *scene) {
  * buffer, which render_present() keeps in step with the screen. */
 static void render_scene_moving(const vn_scene_t *scene)
 {
+    perf_overlay_frame_start();
+    noise_restore();
     if (plate == NULL || plate_slot < 0) {   /* can't happen; cheap insurance */
         render_scene(scene);
         return;
@@ -1201,6 +1204,7 @@ void render_scene_lazy(const vn_scene_t *scene)
 void render_box(const vn_scene_t *scene, const char *speaker,
                 const char *text, size_t visible)
 {
+    perf_overlay_frame_start();
     static bool had_namebox;
     /* Restore scene before filling the textbox: motion uses its lower rows
      * as temporary scratch, so a late redraw would erase the new box. */
@@ -1487,9 +1491,11 @@ void render_present(uint8_t trans)
      * the palette-ramp pass that lands with the asset pipeline. */
     (void)trans;
 
+    perf_overlay_end();
+    perf_overlay_present_begin();
     gfx_SwapDraw();
     gfx_BlitScreen();
-    perf_overlay_draw();
+    perf_overlay_present_end();
 }
 
 /* ---------------------------------------------------------------------------
@@ -1498,6 +1504,7 @@ void render_present(uint8_t trans)
 
 void render_backdrop(uint8_t color)
 {
+    perf_overlay_frame_start();
     scene_obscured();
     gfx_SetColor(color);
     gfx_FillRectangle_NoClip(0, 0, SCREEN_W, SCREEN_H);
@@ -1635,6 +1642,7 @@ static void draw_title_art(uint8_t id, int dx_left, int dy_left)
 
 void render_title_screen(uint8_t selected, unsigned t, int16_t playthrough)
 {
+    perf_overlay_frame_start();
     scene_obscured();
     static const char *const items[] = { "New Game", "Load Game", "Help", "Quit" };
     const uint8_t count = sizeof(items) / sizeof(items[0]);
@@ -1763,6 +1771,11 @@ void render_apply_palette(const uint16_t *palette)
     } else {
         memcpy(gfx_palette, palette, sizeof(current_palette));
     }
+}
+
+const uint16_t *render_active_palette(void)
+{
+    return fade_active ? fade_saved : gfx_palette;
 }
 
 void render_fade_retarget(const uint16_t *palette)
@@ -2553,6 +2566,7 @@ void render_splash_warning(const char *msg)
 void render_game_menu(uint8_t mode, uint8_t focused_pane, uint8_t sidebar_selected,
                       uint8_t slot_selected, bool is_in_game, unsigned t)
 {
+    perf_overlay_frame_start();
     scene_obscured();
 
     static const char *const in_game_items[] = {

@@ -244,3 +244,136 @@ _noise_draw_asm:
 
 .draw_context: .long 0
 .draw_mask_start: .long 0
+
+; ---------------------------------------------------------------------------
+; Fast precomputed-tile 2x2 sparse noise cell kernels (20x20 px cell).
+; Each entry is u16: bits 0..14 = byte offset within cell (0..5778),
+;                    bit 15 = 0 (c_dark) / 1 (c_light).
+; ---------------------------------------------------------------------------
+	.section .text._noise_tile,"ax",@progbits
+	.global _noise_tile_draw_cell
+	.type _noise_tile_draw_cell,@function
+; void noise_tile_draw_cell(uint8_t *cell_fb, uint8_t *cell_undo,
+;                           const uint16_t *entries, uint8_t count,
+;                           uint8_t c_dark, uint8_t c_light)
+_noise_tile_draw_cell:
+	push	ix
+	push	iy
+	ld	iy, 0
+	add	iy, sp
+	ld	b, (iy+18)
+	ld	a, b
+	or	a, a
+	jr	z, .nt_draw_done
+	ld	c, (iy+21)
+	ld	a, (iy+24)
+	ld	(.nt_clight), a
+	ld	de, (iy+12)
+	ld	ix, (iy+15)
+	ld	iy, (iy+9)
+.nt_draw_loop:
+	ld	hl, 0
+	ld	l, (ix+0)
+	ld	a, (ix+1)
+	lea	ix, ix+2
+	or	a, a
+	jp	p, .nt_dark
+	and	a, 0x7F
+	ld	h, a
+	ld	a, (.nt_clight)
+	jr	.nt_have_col
+.nt_dark:
+	ld	h, a
+	ld	a, c
+.nt_have_col:
+	ld	(.nt_col), a
+	push	de
+	lea	de, iy+0
+	add	hl, de
+	pop	de
+	ld	a, (hl)
+	ld	(de), a
+	inc	de
+	ld	a, (.nt_col)
+	ld	(hl), a
+	inc	hl
+	ld	a, (hl)
+	ld	(de), a
+	inc	de
+	ld	a, (.nt_col)
+	ld	(hl), a
+	push	de
+	ld	de, 319
+	add	hl, de
+	pop	de
+	ld	a, (hl)
+	ld	(de), a
+	inc	de
+	ld	a, (.nt_col)
+	ld	(hl), a
+	inc	hl
+	ld	a, (hl)
+	ld	(de), a
+	inc	de
+	ld	a, (.nt_col)
+	ld	(hl), a
+	djnz	.nt_draw_loop
+.nt_draw_done:
+	pop	iy
+	pop	ix
+	ret
+
+	.global _noise_tile_restore_cell
+	.type _noise_tile_restore_cell,@function
+; void noise_tile_restore_cell(uint8_t *cell_fb, const uint8_t *cell_undo,
+;                              const uint16_t *entries, uint8_t count)
+_noise_tile_restore_cell:
+	push	ix
+	push	iy
+	ld	iy, 0
+	add	iy, sp
+	ld	b, (iy+18)
+	ld	a, b
+	or	a, a
+	jr	z, .nt_rest_done
+	ld	de, (iy+12)
+	ld	ix, (iy+15)
+	ld	iy, (iy+9)
+.nt_rest_loop:
+	ld	hl, 0
+	ld	l, (ix+0)
+	ld	a, (ix+1)
+	lea	ix, ix+2
+	and	a, 0x7F
+	ld	h, a
+	push	de
+	lea	de, iy+0
+	add	hl, de
+	pop	de
+	ld	a, (de)
+	ld	(hl), a
+	inc	de
+	inc	hl
+	ld	a, (de)
+	ld	(hl), a
+	inc	de
+	push	de
+	ld	de, 319
+	add	hl, de
+	pop	de
+	ld	a, (de)
+	ld	(hl), a
+	inc	de
+	inc	hl
+	ld	a, (de)
+	ld	(hl), a
+	inc	de
+	djnz	.nt_rest_loop
+.nt_rest_done:
+	pop	iy
+	pop	ix
+	ret
+
+	.section .data,"aw",@progbits
+.nt_clight: .byte 0
+.nt_col:    .byte 0

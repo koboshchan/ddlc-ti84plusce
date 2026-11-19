@@ -7,6 +7,7 @@
 
 #include "assets.h"
 #include "perf_memory.h"
+#include "perf_overlay.h"
 #include "render.h"
 #include "text.h"
 
@@ -187,14 +188,37 @@ static void poem_poll(poem_input_t *in)
  * Rendering
  * ------------------------------------------------------------------------ */
 
-#define POEM_COL_X0   36
-#define POEM_COL_X1  172
-#define POEM_ROW_Y0   50
-#define POEM_ROW_H    24
+/* Exact ruled-line Y coordinates measured from poem_bg_notebook.png (320x240).
+ * font[0] (dfonts.8xv) has space_above=1 and baseline=12 (bottom of caps/x-height
+ * sits at cursor_y + POEM_FONT_BASELINE), so drawing at rule_y - POEM_FONT_BASELINE
+ * seats every line's baseline directly on the notebook's printed blue rules. */
+#define POEM_FONT_BASELINE 12
+
+static const uint8_t poem_right_rule_y[14] = {
+    55, 66, 77, 89, 100, 112, 123, 135, 146, 158, 169, 181, 192, 203
+};
+static const uint8_t poem_left_rule_y[5] = {
+    63, 84, 105, 127, 148
+};
+static const uint8_t poem_game_right_rule_y[5] = {
+    66, 89, 112, 135, 158
+};
+
+#define POEM_COL_X0    8
+#define POEM_COL_X1  114
+#define POEM_COL_W0   88
+#define POEM_COL_W1  108
+#define POEM_ROW_HL_H 15
 
 static int poem_col_x(uint8_t col)
 {
     return col == 0 ? POEM_COL_X0 : POEM_COL_X1;
+}
+
+static int poem_cell_y(uint8_t col, uint8_t row)
+{
+    uint8_t rule_y = (col == 0) ? poem_left_rule_y[row] : poem_game_right_rule_y[row];
+    return (int)rule_y - POEM_FONT_BASELINE;
 }
 
 #define POEM_STICKER_Y_IDLE  234
@@ -277,6 +301,7 @@ static void draw_round(const uint16_t *shown, uint8_t round, uint8_t sel_col, ui
                        bool m_hop, bool y_glitch, bool y_cut,
                        bool poem_glitched)
 {
+    perf_overlay_frame_start();
     draw_background(poem_glitched);
 
     char progress[24];
@@ -290,18 +315,19 @@ static void draw_round(const uint16_t *shown, uint8_t round, uint8_t sel_col, ui
     } else {
         sprintf(progress, "%u/%u", round + 1, POEM_ROUNDS);
     }
-    render_text(progress, SCREEN_W - 55, 10, COL_BLACK);
+    render_text(progress, 184, poem_right_rule_y[0] - POEM_FONT_BASELINE, COL_BLACK);
 
     for (uint8_t col = 0; col < POEM_COLS; col++) {
+        int hl_w = (col == 0) ? POEM_COL_W0 : POEM_COL_W1;
         for (uint8_t row = 0; row < POEM_ROWS; row++) {
             uint8_t  i        = (uint8_t)(col * POEM_ROWS + row);
             int      x        = poem_col_x(col);
-            int      y        = POEM_ROW_Y0 + row * POEM_ROW_H;
+            int      y        = poem_cell_y(col, row);
             bool     selected = col == sel_col && row == sel_row;
 
             if (selected) {
                 gfx_SetColor(COL_HIGHLIGHT);
-                gfx_FillRectangle_NoClip(x - 4, y - 3, 120, POEM_ROW_H - 4);
+                gfx_FillRectangle_NoClip(x - 3, y, hl_w, POEM_ROW_HL_H);
             }
             render_text(poem_words[shown[i]].word, x, y, COL_BLACK);
         }
@@ -503,12 +529,12 @@ poem_done:
 
 #include <fontlibc.h>
 
-#define POEM_VIEW_MAX_LINES 128
-#define POEM_PAGE_LINES     13
-#define POEM_TEXT_X         32
-#define POEM_TEXT_MAX_W     256
-#define POEM_TEXT_Y0        38
-#define POEM_LINE_H         13
+#define POEM_VIEW_MAX_LINES 240
+#define POEM_PAGE_LINES     14
+/* Keep poem text cleanly on the notebook's white right-hand page (x=107..226),
+ * away from the green bookmark ribbon (x=98..106) and the curved grey left page. */
+#define POEM_TEXT_X         112
+#define POEM_TEXT_MAX_W     110
 
 typedef struct {
     char author[8];
@@ -547,8 +573,20 @@ void poem_view(uint8_t poem_id)
 
     const char *p = poem->text;
     while (*p && total_lines < POEM_VIEW_MAX_LINES) {
-        const char *nl = strchr(p, '\n');
-        size_t par_len = nl ? (size_t)(nl - p) : strlen(p);
+        const char *q = p;
+        size_t brk_len = 0;
+        while (*q) {
+            if (*q == '\n') {
+                brk_len = 1;
+                break;
+            }
+            if (q[0] == '\\' && q[1] == 'n') {
+                brk_len = 2;
+                break;
+            }
+            q++;
+        }
+        size_t par_len = (size_t)(q - p);
 
         if (par_len == 0) {
             lines[total_lines].start = p;
@@ -595,7 +633,7 @@ void poem_view(uint8_t poem_id)
                 total_lines++;
             }
         }
-        p = nl ? nl + 1 : p + par_len;
+        p = q + brk_len;
     }
 
     uint16_t scroll = 0;
@@ -604,29 +642,30 @@ void poem_view(uint8_t poem_id)
     while (!quit_requested) {
         bool has_more = (scroll + POEM_PAGE_LINES < total_lines);
         if (dirty) {
+            perf_overlay_frame_start();
             draw_background(false);
 
-            /* Draw Title */
+            /* Draw Title in top white margin above the notebook cover */
             if (poem->title[0]) {
-                render_text(poem->title, POEM_TEXT_X, 18, COL_NAME);
+                render_text(poem->title, POEM_TEXT_X, 12, COL_NAME);
             }
 
-            /* Draw visible lines */
+            /* Draw visible lines aligned to the notebook's 14 printed ruled lines */
             for (uint8_t i = 0; i < POEM_PAGE_LINES; i++) {
                 uint16_t l_idx = scroll + i;
                 if (l_idx >= total_lines) break;
                 if (lines[l_idx].len > 0) {
                     fontlib_SetForegroundColor(COL_BLACK);
-                    fontlib_SetCursorPosition(POEM_TEXT_X, (uint8_t)(POEM_TEXT_Y0 + i * POEM_LINE_H));
+                    fontlib_SetCursorPosition(POEM_TEXT_X, (uint8_t)(poem_right_rule_y[i] - POEM_FONT_BASELINE));
                     fontlib_DrawStringL(lines[l_idx].start, lines[l_idx].len);
                 }
             }
 
-            /* Draw bottom prompt */
+            /* Draw bottom prompt in lower white margin below notebook */
             if (has_more) {
-                render_text("v 2nd / Down for more", SCREEN_W - 145, SCREEN_H - 18, COL_NAME);
+                render_text("v 2nd / Down for more", SCREEN_W - 145, 218, COL_NAME);
             } else {
-                render_text("2nd / Enter to dismiss", SCREEN_W - 145, SCREEN_H - 18, COL_NAME);
+                render_text("2nd / Enter to dismiss", SCREEN_W - 145, 218, COL_NAME);
             }
 
             render_present(TRANS_CUT);

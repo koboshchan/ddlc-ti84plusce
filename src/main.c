@@ -1447,11 +1447,9 @@ static void noise_tick(vn_vm_t *vm, const vn_scene_t *scene, size_t visible) {
     clock_t now=clock();
     if (now < noise_next_frame) return;
     perf_overlay_begin();
-    /* Restore BOTH scene and textbox before every effect frame. Never blend
-     * into last frame; archive handles are closed before any asset load. */
-    noise_restore();
-    /* USB frame is complete before palette commit; noise_begin remaps its
-     * colors against whichever palette the successful/fallback path chose. */
+    /* Only restore if render_timed_scene / render_scene actually redraws; when
+     * the scene is settled or between motion ticks, noise_frame_* amortizes
+     * 1/5 of the screen cells per frame in-place without a full restore. */
     if (!render_timed_scene(scene)) render_scene_lazy(scene);
     assets_sprite_cache_clear();
     if (noise_begin(scene->background)) {
@@ -1466,14 +1464,16 @@ static void noise_tick(vn_vm_t *vm, const vn_scene_t *scene, size_t visible) {
         } else {
             noise_frame_scene(nms);
         }
+        perf_overlay_mark_rendered();
     }
     noise_end();
     draw_dialogue_box(vm, scene, visible);
     perf_overlay_end();
+    perf_overlay_present_begin();
     gfx_BlitBuffer();
-    perf_overlay_draw();
-    noise_next_frame += CLOCKS_PER_SEC/10;
-    if (noise_next_frame <= clock()) noise_next_frame=clock()+CLOCKS_PER_SEC/10;
+    perf_overlay_present_end();
+    noise_next_frame += CLOCKS_PER_SEC/20;
+    if (noise_next_frame <= clock()) noise_next_frame=clock()+CLOCKS_PER_SEC/20;
 }
 
 static void wait_for_advance(vn_vm_t *vm, bool allow_pause)
@@ -1879,6 +1879,7 @@ static void present_say_frame(vn_vm_t *vm, const vn_scene_t *scene, size_t visib
         noise_tick(vm, scene, visible);
     } else {
         noise_tick(vm, scene, visible);
+        perf_overlay_frame_start();
         render_scene_lazy(scene);
         draw_dialogue_box(vm, scene, visible);
         render_present(TRANS_CUT);
@@ -1899,9 +1900,10 @@ static void host_say(void *ctx, const vn_scene_t *scene)
                                              sizeof(clean_text), &no_wait,
                                              &wait_ms, &fast_len, &cps_step);
     vm->scene.text = clean_text;
+    const bool lock_reveal = no_wait || vm->skip_locked;
 
-    /* Typewriter reveal, interruptible: the first press completes the line
-     * rather than advancing past it. {fast} starts with its prefix visible. */
+    /* Typewriter reveal: interruptible on normal lines, but locked on {nw}
+     * beats and whenever config.allow_skipping / config.skipping is False. */
     size_t visible = fast_len <= len ? fast_len : len;
     if (visible > 0 && visible == len && !quit_requested) {
         present_say_frame(vm, scene, SIZE_MAX);
@@ -1911,7 +1913,7 @@ static void host_say(void *ctx, const vn_scene_t *scene)
     while (visible < len && !quit_requested) {
         input_t in;
         input_poll(&in);
-        if (in.advance) {
+        if (!lock_reveal && in.advance) {
             break;
         }
 
@@ -1926,7 +1928,12 @@ static void host_say(void *ctx, const vn_scene_t *scene)
 
     if (wait_ms > 0 && !quit_requested) {
         present_say_frame(vm, scene, SIZE_MAX);
+        bool prev_hard = vm->pause_hard;
+        if (lock_reveal) {
+            vm->pause_hard = true;
+        }
         host_pause(vm, wait_ms);
+        vm->pause_hard = prev_hard;
     }
 
     if (no_wait) {
@@ -2029,9 +2036,12 @@ static void host_pause(void *ctx, uint32_t ms)
     vn_vm_t *vm=ctx;
     clock_t start=clock();
     input_t in;
+    bool unskippable = (ms > 0) &&
+                       (vm->pause_hard || vm->skip_locked || vm->dismiss_pause_locked);
     for (;;) {
         input_poll(&in);
-        if (quit_requested || in.advance) break;
+        if (quit_requested) break;
+        if (!unskippable && in.advance) break;
         if (ms && main_ticks_to_ms(clock() - start) >= ms) break;
         if (vm->noise_enabled) {
             noise_tick(vm, &vm->scene, SIZE_MAX);

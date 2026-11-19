@@ -9,6 +9,7 @@
 #include "cgpack.h"
 #include "fast_ops.h"
 #include "perf_memory.h"
+#include "perf_overlay.h"
 #include "poem.h"
 #include "render.h"
 #include "text.h"
@@ -37,18 +38,23 @@ static unsigned credits_ticks_to_ms(clock_t ticks)
 #endif
 }
 
+static void credits_swap(void)
+{
+    perf_overlay_end();
+    perf_overlay_draw_buffer();
+    gfx_SwapDraw();
+}
+
 static bool credits_poll_skip(void)
 {
-    static bool held_adv;
+    /* Original DDLC credits.rpyc locks skipping (config.allow_skipping = False);
+     * only Clear exits cleanly, never 2nd/Enter skip. */
     kb_Scan();
     if (kb_IsDown(kb_KeyClear)) {
         quit_requested = true;
         return true;
     }
-    bool adv = kb_IsDown(kb_Key2nd) || kb_IsDown(kb_KeyEnter);
-    bool pressed = adv && !held_adv;
-    held_adv = adv;
-    return pressed;
+    return false;
 }
 
 static void credits_draw_centered_text(const char *s, int cx, int y, uint8_t color)
@@ -100,7 +106,7 @@ static void credits_clear_bottom_bar(void)
 static void credits_clear_both(void)
 {
     gfx_FillScreen(COL_BLACK);
-    gfx_SwapDraw();
+    credits_swap();
     gfx_FillScreen(COL_BLACK);
 }
 
@@ -111,11 +117,12 @@ static void credits_hold_scene(uint8_t scene_id, unsigned duration_ms)
     }
     credits_clear_both();
     render_apply_palette(assets_scene_palette(scene_id));
+    perf_overlay_frame_start();
     assets_scene(scene_id, (uint8_t *)gfx_vbuffer);
     if (!assets_scene_fullscreen(scene_id)) {
         credits_clear_bottom_bar();
     }
-    gfx_SwapDraw();
+    credits_swap();
 
     clock_t start = clock();
     while (!quit_requested) {
@@ -172,6 +179,7 @@ static void credits_run_stage0(const uint8_t *scenes)
         }
         if (vis != prev_vis) {
             prev_vis = vis;
+            perf_overlay_frame_start();
             gfx_FillScreen(COL_BLACK);
             for (size_t i = 0; i < vis; i++) {
                 int base_y = 26 + (int)i * 32;
@@ -180,7 +188,7 @@ static void credits_run_stage0(const uint8_t *scenes)
                     credits_draw_centered_text(lyrics[i].line2, SCREEN_W / 2, base_y + 14, COL_WHITE);
                 }
             }
-            gfx_SwapDraw();
+            credits_swap();
         }
         gfx_Wait();
     }
@@ -204,6 +212,7 @@ static void credits_sticker_dance(void)
             break;
         }
         unsigned beat = (elapsed / 240U) & 3U;
+        perf_overlay_frame_start();
         gfx_FillScreen(COL_BLACK);
         credits_draw_centered_text("Special Thanks", SCREEN_W / 2, 54, COL_WHITE);
         credits_draw_centered_text("David Evelyn  &  Corey Shin", SCREEN_W / 2, 74, COL_WHITE);
@@ -211,7 +220,7 @@ static void credits_sticker_dance(void)
             bool hop = (beat == i);
             assets_draw_sticker_centered(hop ? h_ids[i] : s_ids[i], xs[i], hop ? 172 : 186);
         }
-        gfx_SwapDraw();
+        credits_swap();
         gfx_Wait();
     }
 }
@@ -314,6 +323,7 @@ static void credits_run_stage1(bool clearall, uint16_t clear_mask,
                 committed_out = true;
             }
             int scroll_y = 200 - (int)((elapsed * 260UL) / card_ms);
+            perf_overlay_frame_start();
 
             gfx_FillScreen(COL_BLACK);
             if (has_thumb) {
@@ -333,7 +343,7 @@ static void credits_run_stage1(bool clearall, uint16_t clear_mask,
                 size_t vis = committed_out ? 0 : (size_t)((elapsed * cmd_len) / 600U + 1U);
                 render_console_draw_step(committed_out ? NULL : entries[i].del_msg, vis);
             }
-            gfx_SwapDraw();
+            credits_swap();
             gfx_Wait();
         }
         if (!clearall && !committed_out) {
@@ -373,11 +383,12 @@ static void credits_run_stage1(bool clearall, uint16_t clear_mask,
                     render_console_set(tail_del[j].cmd, tail_del[j].out, false);
                     committed = true;
                 }
+                perf_overlay_frame_start();
                 gfx_FillScreen(COL_BLACK);
                 size_t clen = strlen(tail_del[j].cmd);
                 size_t vis = committed ? 0 : (size_t)((elapsed * clen) / 420U + 1U);
                 render_console_draw_step(committed ? NULL : tail_del[j].cmd, vis);
-                gfx_SwapDraw();
+                credits_swap();
                 gfx_Wait();
             }
             if (!committed) {
@@ -391,10 +402,11 @@ static void credits_run_stage1(bool clearall, uint16_t clear_mask,
     if (!quit_requested && scenes && scenes[1] != VN_NO_SPRITE) {
         credits_clear_both();
         render_apply_palette(assets_scene_palette(scenes[1]));
+        perf_overlay_frame_start();
         assets_scene(scenes[1], (uint8_t *)gfx_vbuffer);
         credits_clear_bottom_bar();
         credits_draw_centered_text("made with love by", SCREEN_W / 2, 12, COL_WHITE);
-        gfx_SwapDraw();
+        credits_swap();
 
         clock_t start = clock();
         while (!quit_requested) {
@@ -416,7 +428,7 @@ void credits_run(uint8_t stage, bool clearall, uint16_t clear_mask,
         credits_run_stage1(clearall, clear_mask, scenes, player_name);
     }
     gfx_FillScreen(COL_BLACK);
-    gfx_SwapDraw();
+    credits_swap();
     gfx_BlitScreen();
     render_invalidate_scene();
 }

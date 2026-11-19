@@ -56,6 +56,13 @@ OP_CREDITS = 0x2A
 OP_CONSOLE = 0x2B
 OP_TEXT_STYLE = 0x2C
 OP_JMP_VAR_CMP = 0x2D
+OP_SKIP_LOCK = 0x2E
+OP_PAUSE_HARD = 0x2F
+
+VN_SKIP_UNLOCK = 0
+VN_SKIP_LOCK = 1
+VN_DISMISS_PAUSE_LOCK = 2
+VN_DISMISS_PAUSE_UNLOCK = 3
 
 VN_CONSOLE_SHOW = 0
 VN_CONSOLE_SHOW_CLR = 1
@@ -515,6 +522,16 @@ class Assembler:
         ceiling -- see OP_PAUSE_LONG."""
         self._u8(OP_PAUSE_LONG)
         self._u32(ms)
+
+    def pause_hard(self, ms: int) -> None:
+        """Unskippable timed pause (renpy.pause(..., hard=True))."""
+        self._u8(OP_PAUSE_HARD)
+        self._u32(ms)
+
+    def skip_lock(self, mode: int) -> None:
+        """Control skip / dismiss-pause lock state (VN_SKIP_* / VN_DISMISS_PAUSE_*)."""
+        self._u8(OP_SKIP_LOCK)
+        self._u8(mode)
 
     def sound(self, id_: int = 0) -> None:
         """Always a no-op on-calc (no CE audio) -- reserved so audio-control

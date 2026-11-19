@@ -65,6 +65,8 @@ _FIXED_OPS = {
     vnasm.OP_CREDITS: 25,
     vnasm.OP_TEXT_STYLE: 1,
     vnasm.OP_JMP_VAR_CMP: 6,
+    vnasm.OP_SKIP_LOCK: 1,
+    vnasm.OP_PAUSE_HARD: 4,
 }
 
 

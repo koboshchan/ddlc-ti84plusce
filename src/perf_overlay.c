@@ -54,6 +54,13 @@ void perf_overlay_begin(void) {
     measuring = enabled && owns_timer;
     if (measuring) started = timer_Get(3);
 }
+void perf_overlay_frame_start(void) {
+    if (enabled && owns_timer && !measuring) {
+        measuring = true;
+        rendered = true;
+        started = timer_Get(3);
+    }
+}
 void perf_overlay_mark_rendered(void) {
     if (measuring) rendered = true;
 }
@@ -100,12 +107,61 @@ static uint16_t glyph(char c) {
 }
 static uint8_t ink;
 static void text(uint8_t *fb, const char *s, unsigned x, unsigned y) {
-    for (; *s; ++s, x += 4) {
+    uint8_t *base = fb + y * 320u + x;
+    for (; *s; ++s, base += 4) {
         uint16_t bits = glyph(*s);
-        for (unsigned row=0; row<5; ++row)
-            for (unsigned col=0; col<3; ++col)
-                if (bits & (1u << (14u-row*3u-col)))
-                    fb[(y+row)*320u+x+col] = ink;
+        if (!bits) continue;
+        uint8_t *rowp = base;
+        for (unsigned row=0; row<5; ++row, rowp += 320) {
+            uint8_t mask = (uint8_t)((bits >> (12u - row * 3u)) & 7u);
+            if (mask & 4u) rowp[0] = ink;
+            if (mask & 2u) rowp[1] = ink;
+            if (mask & 1u) rowp[2] = ink;
+        }
+    }
+}
+enum { OV_X = 210, OV_Y = 3, OV_W = 104, OV_H = 80 };
+#ifdef __TICE__
+/* Use TI-OS pixelShadow (0xD031F6..0xD052C5, 8400 B strictly below BSSHEAP_LOW)
+ * for off-screen atomic overlay staging: 104*80 = 8320 B, zero BSS/heap cost. */
+#define PERF_BG_SAVE ((uint8_t *)0xD031F6)
+#else
+static uint8_t perf_bg_save_host[OV_W * OV_H];
+#define PERF_BG_SAVE perf_bg_save_host
+#endif
+static bool bg_saved;
+
+static void perf_overlay_render_to(uint8_t *fb) {
+    /* Skip index 0 (transparent/pink key in game/title palettes). Use the
+     * target palette (fade_saved during a fade) so off-screen draws while
+     * gfx_palette is blacked out still pick the destination's dark/light pair. */
+    const uint16_t *pal = render_active_palette();
+    unsigned darkest=~0u, brightest=0; uint8_t paper=COL_BLACK; ink=COL_WHITE;
+    for (unsigned i=1;i<256;i++) {
+        unsigned c=pal[i];
+        unsigned light=((c>>10)&31u)*3u+((c>>5)&31u)*6u+(c&31u);
+        if(light<darkest){darkest=light;paper=i;}
+        if(light>brightest){brightest=light;ink=i;}
+    }
+    if (brightest == darkest) { paper = COL_BLACK; ink = COL_WHITE; }
+    for (unsigned y=OV_Y; y<OV_Y+OV_H; ++y) memset(fb+y*320u+OV_X, paper, OV_W);
+    char line[27];
+    void *unused;
+    sprintf(line, "BSS %u B", (unsigned)((uintptr_t)__bss_high-(uintptr_t)__bss_low));
+    text(fb,line,OV_X+3,OV_Y+3);
+    sprintf(line, "OS FREE %u B", (unsigned)os_MemChk(&unused));
+    text(fb,line,OV_X+3,OV_Y+10);
+    perf_memory_t mem=perf_memory_snapshot();
+    sprintf(line, "HEAP %u B%s", (unsigned)mem.bytes, mem.complete ? "" : " PART");
+    text(fb,line,OV_X+3,OV_Y+17);
+    sprintf(line, "ALLOCS %u", mem.count);
+    text(fb,line,OV_X+3,OV_Y+24);
+    text(fb,"VRAM RESERVED 150 KIB",OV_X+3,OV_Y+31);
+    text(fb,owns_timer ? "FRAME MS NEW FIRST" : "TIMER BUSY",OV_X+3,OV_Y+38);
+    for (uint8_t age=0; age<5; ++age) {
+        if (age<history.count) sprintf(line,"%u %u MS",age+1,(unsigned)perf_history_ms(&history,age));
+        else sprintf(line,"%u -",age+1);
+        text(fb,line,OV_X+3,OV_Y+45+age*7u);
     }
 }
 void perf_overlay_draw(void) {
@@ -114,35 +170,28 @@ void perf_overlay_draw(void) {
     gfx_Wait();
     uint8_t old_draw = gfx_GetDraw();
     gfx_SetDrawScreen();
-    uint8_t *fb = (uint8_t *)gfx_vbuffer;
-    /* Motion palettes need not reserve the normal UI colour indices. */
-    unsigned darkest=~0u, brightest=0; uint8_t paper=0; ink=0;
-    for (unsigned i=0;i<256;i++) {
-        unsigned c=gfx_palette[i];
-        unsigned light=((c>>10)&31u)*3u+((c>>5)&31u)*6u+(c&31u);
-        if(light<darkest){darkest=light;paper=i;}
-        if(light>brightest){brightest=light;ink=i;}
-    }
-    enum { X=210, Y=3, W=107, H=81 };
-    for (unsigned y=Y; y<Y+H; ++y) memset(fb+y*320u+X, paper, W);
-    char line[27];
-    void *unused;
-    sprintf(line, "BSS %u B", (unsigned)((uintptr_t)__bss_high-(uintptr_t)__bss_low));
-    text(fb,line,X+3,Y+3);
-    sprintf(line, "OS FREE %u B", (unsigned)os_MemChk(&unused));
-    text(fb,line,X+3,Y+10);
-    perf_memory_t mem=perf_memory_snapshot();
-    sprintf(line, "HEAP %u B%s", (unsigned)mem.bytes, mem.complete ? "" : " PART");
-    text(fb,line,X+3,Y+17);
-    sprintf(line, "ALLOCS %u", mem.count);
-    text(fb,line,X+3,Y+24);
-    text(fb,"VRAM RESERVED 150 KIB",X+3,Y+31);
-    text(fb,owns_timer ? "FRAME MS NEW FIRST" : "TIMER BUSY",X+3,Y+38);
-    for (uint8_t age=0; age<5; ++age) {
-        if (age<history.count) sprintf(line,"%u %u MS",age+1,(unsigned)perf_history_ms(&history,age));
-        else sprintf(line,"%u -",age+1);
-        text(fb,line,X+3,Y+45+age*7u);
-    }
+    perf_overlay_render_to((uint8_t *)gfx_vbuffer);
     gfx_SetDraw(old_draw);
+}
+void perf_overlay_draw_buffer(void) {
+    if (!enabled) return;
+    perf_overlay_render_to((uint8_t *)gfx_vbuffer);
+}
+void perf_overlay_present_begin(void) {
+    if (!enabled) return;
+    uint8_t *fb = (uint8_t *)gfx_vbuffer;
+    for (unsigned r = 0; r < OV_H; ++r) {
+        memcpy(PERF_BG_SAVE + r * OV_W, fb + (OV_Y + r) * 320u + OV_X, OV_W);
+    }
+    bg_saved = true;
+    perf_overlay_render_to(fb);
+}
+void perf_overlay_present_end(void) {
+    if (!bg_saved) return;
+    bg_saved = false;
+    uint8_t *fb = (uint8_t *)gfx_vbuffer;
+    for (unsigned r = 0; r < OV_H; ++r) {
+        memcpy(fb + (OV_Y + r) * 320u + OV_X, PERF_BG_SAVE + r * OV_W, OV_W);
+    }
 }
 #endif

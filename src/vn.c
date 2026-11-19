@@ -601,6 +601,36 @@ bool vn_step(vn_vm_t *vm)
             break;
         }
 
+        case OP_PAUSE_HARD: {
+            uint32_t ms = read_u32(vm);
+            if (vm->status != VN_RUNNING) {
+                break;
+            }
+            if (vm->host->pause) {
+                vm->pause_hard = true;
+                vm->host->pause(vm->host->ctx, ms);
+                vm->pause_hard = false;
+            }
+            break;
+        }
+
+        case OP_SKIP_LOCK: {
+            uint8_t mode = read_u8(vm);
+            if (vm->status != VN_RUNNING) {
+                break;
+            }
+            if (mode == 0) {
+                vm->skip_locked = false;
+            } else if (mode == 1) {
+                vm->skip_locked = true;
+            } else if (mode == 2) {
+                vm->dismiss_pause_locked = true;
+            } else if (mode == 3) {
+                vm->dismiss_pause_locked = false;
+            }
+            break;
+        }
+
         case OP_MINIGAME: {
             uint8_t winner_var = read_u8(vm);
             uint8_t s_var      = read_u8(vm);

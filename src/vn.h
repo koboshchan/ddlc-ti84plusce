@@ -198,6 +198,8 @@ enum vn_op {
     OP_CONSOLE      = 0x2B, /* op:u8 [cmd:u16 out:u16] -- Python console overlay */
     OP_TEXT_STYLE   = 0x2C, /* style:u8 -- 0 = normal, 1 = Act 2 edited horror text */
     OP_JMP_VAR_CMP  = 0x2D, /* a:u8 cmp:u8 b:u8 addr:u24 -- branch comparing vars[a] vs vars[b] */
+    OP_SKIP_LOCK    = 0x2E, /* mode:u8 -- 0=unlock skip, 1=lock skip, 2=lock dismiss_pause, 3=unlock dismiss_pause */
+    OP_PAUSE_HARD   = 0x2F  /* ms:u32 -- unskippable timed pause (renpy.pause(hard=True)) */
 };
 
 /** Console overlay sub-operations for OP_CONSOLE / vn_host_t.console(). */
@@ -648,6 +650,9 @@ typedef struct {
     vn_status_t      status;
     bool            noise_enabled;
     bool            defer_update;
+    bool            skip_locked;
+    bool            dismiss_pause_locked;
+    bool            pause_hard;
 } vn_vm_t;
 
 /** Reset @p vm and point it at @p code. Does not draw anything. */
