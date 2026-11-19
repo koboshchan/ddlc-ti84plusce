@@ -985,6 +985,82 @@ bool assets_zoom_prepare(uint16_t id)
     return sprite_lookup(id, &appvar_idx, &offset, NULL, &dx, &dy);
 }
 
+/* Composites one RLET sprite row directly from its precomputed opaque spans
+ * (trans_run, opaque_run, pixels...) into @p dest_row (aligned to @p start_dx),
+ * using memcpy/ldir on contiguous 1:1 sub-runs instead of unpacking transparent
+ * pixels and checking each pixel. Requires dst_w >= src_w >= 1.
+ * Returns pointer to the start of the next RLET row. */
+static __attribute__((noinline)) const uint8_t *scale_rlet_row_spans(
+    uint8_t *dest_row, const uint8_t *rlet_ptr,
+    unsigned src_w, unsigned dst_w,
+    unsigned start_dx, unsigned end_dx)
+{
+    unsigned half = dst_w >> 1;
+    unsigned gap = dst_w - src_w;
+    unsigned sx = 0;
+
+    while (sx < src_w) {
+        unsigned trans = *rlet_ptr++;
+        sx += trans;
+        if (sx >= src_w) {
+            break;
+        }
+        unsigned olen = *rlet_ptr++;
+        const uint8_t *pix = rlet_ptr;
+        rlet_ptr += olen;
+
+        unsigned sx0 = sx;
+        unsigned sx1 = sx + olen;
+        sx = sx1;
+
+        unsigned dx0 = (sx0 == 0u) ? 0u : (sx0 * dst_w - half + src_w - 1u) / src_w;
+        unsigned dx1 = (sx1 * dst_w - half + src_w - 1u) / src_w;
+        if (dx1 > dst_w) {
+            dx1 = dst_w;
+        }
+        if (dx0 < start_dx) {
+            dx0 = start_dx;
+        }
+        if (dx1 > end_dx) {
+            dx1 = end_dx;
+        }
+        if (dx0 >= dx1) {
+            continue;
+        }
+
+        uint8_t *dst_ptr = dest_row + (dx0 - start_dx);
+        unsigned rem = dx1 - dx0;
+        if (gap == 0u) {
+            memcpy(dst_ptr, pix + (dx0 - sx0), rem);
+            continue;
+        }
+
+        unsigned num = dx0 * src_w + half;
+        unsigned cur_sx = num / dst_w;
+        unsigned acc = num % dst_w;
+        const uint8_t *src_ptr = pix + (cur_sx - sx0);
+
+        while (rem > 0u) {
+            if (acc >= gap) {
+                unsigned run = acc / gap;
+                if (run > rem) {
+                    run = rem;
+                }
+                memcpy(dst_ptr, src_ptr, run);
+                dst_ptr += run;
+                src_ptr += run;
+                acc -= run * gap;
+                rem -= run;
+            } else {
+                *dst_ptr++ = *src_ptr;
+                acc += src_w;
+                rem--;
+            }
+        }
+    }
+    return rlet_ptr;
+}
+
 bool assets_draw_sprite_scaled(uint16_t id, int center_x, int feet_y, unsigned int scale_permille)
 {
     const gfx_rletsprite_t *rle;
@@ -998,14 +1074,17 @@ bool assets_draw_sprite_scaled(uint16_t id, int center_x, int feet_y, unsigned i
     if (src_w <= 0 || src_h <= 0) {
         return true;
     }
+    if (scale_permille < 1000u) {
+        scale_permille = 1000u;
+    }
 
-    int dst_w = (int)(((uint32_t)src_w * scale_permille + 500) / 1000);
-    int dst_h = (int)(((uint32_t)src_h * scale_permille + 500) / 1000);
+    int dst_w = (int)(((unsigned)src_w * scale_permille + 500u) / 1000u);
+    int dst_h = (int)(((unsigned)src_h * scale_permille + 500u) / 1000u);
 
-    int zdx = (dx >= 0) ? (int)(((uint32_t)dx * scale_permille + 500) / 1000)
-                        : -(int)(((uint32_t)(-dx) * scale_permille + 500) / 1000);
-    int zdy = (dy >= 0) ? (int)(((uint32_t)dy * scale_permille + 500) / 1000)
-                        : -(int)(((uint32_t)(-dy) * scale_permille + 500) / 1000);
+    int zdx = (dx >= 0) ? (int)(((unsigned)dx * scale_permille + 500u) / 1000u)
+                        : -(int)(((unsigned)(-dx) * scale_permille + 500u) / 1000u);
+    int zdy = (dy >= 0) ? (int)(((unsigned)dy * scale_permille + 500u) / 1000u)
+                        : -(int)(((unsigned)(-dy) * scale_permille + 500u) / 1000u);
 
     int dst_x = center_x - dst_w / 2 + zdx;
     int dst_y = feet_y - dst_h + zdy;
@@ -1021,49 +1100,46 @@ bool assets_draw_sprite_scaled(uint16_t id, int center_x, int feet_y, unsigned i
     int y1 = (dst_y + dst_h) < sprite_clip_y1 ? (dst_y + dst_h) : sprite_clip_y1;
 
     if (x0 < x1 && y0 < y1) {
-        extern uint8_t render_row_scratch[SCREEN_W];
-        uint8_t *row_buf = render_row_scratch;
-        int vis_w = x1 - x0;
         int vis_h = y1 - y0;
-        int start_dx = x0 - dst_x;
-        int start_dy = y0 - dst_y;
+        unsigned start_dx = (unsigned)(x0 - dst_x);
+        unsigned end_dx = (unsigned)(x1 - dst_x);
+        unsigned start_dy = (unsigned)(y0 - dst_y);
 
-        uint32_t init_num_x = (uint32_t)start_dx * (uint32_t)src_w + (uint32_t)(dst_w / 2);
-        int start_sx = (int)(init_num_x / (uint32_t)dst_w);
-        uint32_t init_acc_x = init_num_x % (uint32_t)dst_w;
-
-        uint32_t init_num_y = (uint32_t)start_dy * (uint32_t)src_h + (uint32_t)(dst_h / 2);
-        int start_sy = (int)(init_num_y / (uint32_t)dst_h);
-        uint32_t acc_y = init_num_y % (uint32_t)dst_h;
+        unsigned init_num_y = start_dy * (unsigned)src_h + (unsigned)(dst_h / 2);
+        int start_sy = (int)(init_num_y / (unsigned)dst_h);
+        unsigned acc_y = init_num_y % (unsigned)dst_h;
         if (start_sy >= src_h) {
             start_sy = src_h - 1;
         }
 
-        const uint8_t *rlet_ptr = rle->data;
+        const uint8_t *cur_row_ptr = rle->data;
         if (start_sy > 0) {
-            rlet_ptr = fast_rlet_skip_rows(rlet_ptr, (size_t)start_sy, (uint8_t)src_w);
+            cur_row_ptr = fast_rlet_skip_rows(cur_row_ptr, (size_t)start_sy, (uint8_t)src_w);
         }
-        int next_sy = start_sy;
+        const uint8_t *next_row_ptr = cur_row_ptr;
         int cur_sy = start_sy;
-        int decoded_sy = -1;
-        uint8_t *dest_row = (uint8_t *)gfx_vbuffer + (size_t)y0 * SCREEN_W + x0;
+        int cached_sy = -1;
+        uint8_t *dest_row = (uint8_t *)gfx_vbuffer + (size_t)y0 * SCREEN_W + (size_t)x0;
 
         for (int y = 0; y < vis_h; y++) {
             int want_sy = cur_sy < src_h ? cur_sy : (src_h - 1);
-            if (want_sy != decoded_sy) {
-                if (want_sy > next_sy) {
-                    rlet_ptr = fast_rlet_skip_rows(rlet_ptr, (size_t)(want_sy - next_sy), (uint8_t)src_w);
+            if (want_sy != cached_sy) {
+                if (cached_sy >= 0) {
+                    cur_row_ptr = next_row_ptr;
+                    if (want_sy > cached_sy + 1) {
+                        cur_row_ptr = fast_rlet_skip_rows(
+                            cur_row_ptr, (size_t)(want_sy - cached_sy - 1), (uint8_t)src_w);
+                    }
                 }
-                rlet_ptr = fast_rlet_decode_row(row_buf, rlet_ptr, (uint8_t)src_w);
-                decoded_sy = want_sy;
-                next_sy = want_sy + 1;
+                cached_sy = want_sy;
             }
-            fast_scale_row_trans(dest_row, row_buf + start_sx, (size_t)vis_w, init_acc_x,
-                                 (unsigned int)src_w, (unsigned int)dst_w);
+            next_row_ptr = scale_rlet_row_spans(dest_row, cur_row_ptr,
+                                                (unsigned)src_w, (unsigned)dst_w,
+                                                start_dx, end_dx);
             dest_row += SCREEN_W;
-            acc_y += (uint32_t)src_h;
-            while (acc_y >= (uint32_t)dst_h) {
-                acc_y -= (uint32_t)dst_h;
+            acc_y += (unsigned)src_h;
+            while (acc_y >= (unsigned)dst_h) {
+                acc_y -= (unsigned)dst_h;
                 cur_sy++;
             }
         }
