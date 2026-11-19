@@ -19,7 +19,7 @@ class IntegratedTimed(unittest.TestCase):
 #include <stdlib.h>
 typedef unsigned long clock_t;
 #define CLOCKS_PER_SEC 32768UL
-typedef struct {uint8_t background;} vn_scene_t;
+typedef struct {uint8_t background;bool window_hidden;const char *text;} vn_scene_t;
 typedef struct {vn_scene_t scene;bool noise_enabled;} vn_vm_t;
 typedef struct {unsigned position;bool schedule;} fat_file_t;
 static uint8_t gfx_vbuffer[76800],front[76800],frame[58880],schedule[512];
@@ -63,7 +63,9 @@ static void render_scene(const vn_scene_t*s){
 static void render_scene_lazy(const vn_scene_t*s){if(!motion_calls)render_scene(s);}
 static bool have_drawn_once;
 static bool noise_begin(uint8_t id){(void)id;assert(restored);return true;}
+static void assets_sprite_cache_clear(void){}
 static void noise_frame_scene(unsigned age){(void)age;noise_calls++;noise_applied=true;gfx_vbuffer[0]^=255;}
+static void noise_frame(unsigned age){noise_frame_scene(age);}
 static void noise_end(void){}
 static void draw_dialogue_box(vn_vm_t*vm,const vn_scene_t*s,size_t visible){
  (void)vm;(void)s;(void)visible;assert(noise_applied);draw_calls++;
@@ -77,7 +79,7 @@ static void load(const char*p,void*b,unsigned n){FILE*f=fopen(p,"rb");assert(f);
 int main(int argc,char**argv){
  assert(argc==3);load(argv[1],frame,sizeof frame);load(argv[2],schedule,sizeof schedule);
  for(unsigned i=0;i<256;i++)original[i]=(uint16_t)i;
- vn_vm_t vm={{35},true};
+ vn_vm_t vm={{35,false,"x"},true};
  for(unsigned failure=0;failure<=3;failure++){
   for(unsigned ui_bad=0;ui_bad<=2;ui_bad++){
    load(argv[1],frame,sizeof frame);

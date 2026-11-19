@@ -410,6 +410,7 @@ static __attribute__((noinline)) void run_debug_poem_test(void)
     int16_t chapter = (sel == 1) ? 2 : 0;
 
     int16_t s = 0, n = 0, y = 0;
+    assets_sprite_cache_clear();
     uint8_t winner = poem_run(&s, &n, &y, playthrough, chapter, -1);
     char line[32];
 
@@ -1482,6 +1483,7 @@ static void noise_tick(vn_vm_t *vm, const vn_scene_t *scene, size_t visible) {
     /* USB frame is complete before palette commit; noise_begin remaps its
      * colors against whichever palette the successful/fallback path chose. */
     if (!render_timed_scene(scene)) render_scene_lazy(scene);
+    assets_sprite_cache_clear();
     if (noise_begin(scene->background)) {
         uint32_t ndt = (uint32_t)(now - noise_started);
 #ifdef __TICE__
@@ -1489,7 +1491,11 @@ static void noise_tick(vn_vm_t *vm, const vn_scene_t *scene, size_t visible) {
 #else
         unsigned nms = (unsigned)(((uint64_t)ndt * 1000ULL) / CLOCKS_PER_SEC);
 #endif
-        noise_frame_scene(nms);
+        if (scene->window_hidden || scene->text == NULL || scene->text[0] == '\0') {
+            noise_frame(nms);
+        } else {
+            noise_frame_scene(nms);
+        }
     }
     noise_end();
     draw_dialogue_box(vm, scene, visible);
@@ -2116,6 +2122,7 @@ static uint8_t host_minigame(void *ctx, int16_t *s, int16_t *n, int16_t *y)
             else if (strcmp(choice, "yuri") == 0) ch1_choice_char = 2;
         }
     }
+    assets_sprite_cache_clear();
     return poem_run(s, n, y, playthrough, chapter, ch1_choice_char);
 }
 
@@ -2149,6 +2156,7 @@ static void host_request_quit(void *ctx)
 static void host_show_poem(void *ctx, uint8_t poem_id)
 {
     (void)ctx;
+    assets_sprite_cache_clear();
     poem_view(poem_id);
 }
 
@@ -2156,6 +2164,7 @@ static void host_credits(void *ctx, uint8_t stage, bool clearall,
                          uint16_t clear_mask, const uint8_t *scenes)
 {
     (void)ctx;
+    assets_sprite_cache_clear();
     credits_run(stage, clearall, clear_mask, scenes, player_name);
 }
 

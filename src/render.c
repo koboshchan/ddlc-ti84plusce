@@ -727,6 +727,11 @@ static bool plate_capture(const vn_actor_t *a, int slot)
         free(plate);
         plate = malloc((size_t)rw * rh);
         if (plate == NULL) {
+            /* Free cached sprite arena if heap is tight, then retry once. */
+            assets_sprite_cache_clear();
+            plate = malloc((size_t)rw * rh);
+        }
+        if (plate == NULL) {
             plate_valid = false;
             plate_slot  = -1;
             return false;
@@ -813,7 +818,10 @@ static void apply_tear(const vn_scene_t *scene, unsigned t)
     }
 
     int16_t span = scene->tear_offset_max - scene->tear_offset_min;
-    int     rows_per_chunk = (SCENE_H + chunks - 1) / chunks;
+    int     active_h = (scene->window_hidden && assets_scene_fullscreen(scene->background))
+                     ? SCREEN_H : SCENE_H;
+    int     rows_per_chunk = (active_h + chunks - 1) / chunks;
+    uint8_t tear_scratch[SCREEN_W];
 
     for (uint8_t i = 0; i < chunks; i++) {
         if (t >= tear_reroll_at[i]) {
@@ -847,10 +855,9 @@ static void apply_tear(const vn_scene_t *scene, unsigned t)
          * part of the effect. */
         int y0 = i * rows_per_chunk;
         int y1 = y0 + rows_per_chunk;
-        if (y1 > SCENE_H) {
-            y1 = SCENE_H;
+        if (y1 > active_h) {
+            y1 = active_h;
         }
-        uint8_t *tear_scratch = (uint8_t *)gfx_vbuffer + (size_t)SCENE_H * SCREEN_W;
         for (int y = y0; y < y1; y++) {
             uint8_t *row = (uint8_t *)gfx_vbuffer + (size_t)y * SCREEN_W;
             if (off_wrapped == 0) {
@@ -908,6 +915,9 @@ static bool last_scene_used_motion;
 void render_scene(const vn_scene_t *scene)
 {
     noise_restore();
+    if (ch5_motion_active(scene->background)) {
+        assets_sprite_cache_clear();
+    }
     last_scene_used_motion = ch5_motion_draw(scene->background);
     if (last_scene_used_motion) perf_overlay_mark_rendered();
     else draw_background(scene->background);
@@ -1199,10 +1209,13 @@ void render_box(const vn_scene_t *scene, const char *speaker,
     }
 
     /* `window hide` or empty text -- DDLC uses this for beats with no text
-     * (e.g. splash screens, CGs, end screens, pauses). Only match the
-     * letterbox color to the bottom row when it is near-white (such as
-     * s_kill_early or white); darker pixels like splash_glitch fill black. */
+     * (e.g. splash screens, CGs, end screens, pauses). Full-height 240px
+     * scenes and full-screen noise already fill rows 180..239; 180px scenes
+     * letterbox the bottom bar to black (or near-white for light voids). */
     if (scene->window_hidden || text == NULL || text[0] == '\0') {
+        if (assets_scene_fullscreen(scene->background) || noise_is_fullscreen()) {
+            return;
+        }
         uint8_t bottom_color = ((uint8_t *)gfx_vbuffer)[(SCENE_H - 1) * SCREEN_W];
         uint8_t fill = palette_entry_is_near_white(bottom_color) ? bottom_color : COL_BLACK;
         gfx_SetColor(fill);

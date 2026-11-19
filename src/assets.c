@@ -118,6 +118,8 @@ static bool       title_palette_ok;
  * same reasoning as the title assets above. */
 static uint8_t   *cg_index_buf;
 static uint16_t   cg_index_count;
+static uint8_t   *scene_full_buf;   /* optional DSCNH: 1 byte per scene (1 = 240px) */
+static uint16_t   scene_full_count;
 static uint8_t   *cgpal_lut_buf;
 static const uint8_t *cgpal_lut;
 static uint16_t   cgpal_lut_count;
@@ -173,11 +175,10 @@ bool assets_load_chunk(uint8_t chunk_id)
     script_code_size = 0;
     string_count = 0;
 
-    /* Same reasoning, one step further: a cached scaled sprite is worth a
-     * few KB of redraw savings, and the chunk about to be read is worth the
-     * game continuing to run. Drop the cache here rather than risk the
-     * allocation below failing because of it -- the next zoomed draw simply
-     * rebuilds what it needs. */
+    /* Same reasoning, one step further: cached sprite data is worth redraw
+     * savings, and the chunk about to be read is worth continuing to run.
+     * Drop the sprite cache here so script_buf settles at low heap below it. */
+    assets_sprite_cache_clear();
     assets_zoom_cache_clear();
 
     char name[9];
@@ -356,6 +357,7 @@ assets_status_t assets_init(void)
     /* Per-CG palettes are optional too -- a bundle with no CGs baked ships
      * neither AppVar, and every scene just falls back to the game palette. */
     cg_index_buf = read_whole("DCGIDX", &cg_index_count);
+    scene_full_buf = read_whole("DSCNH", &scene_full_count);
     load_lut("DCGPLUT", &cgpal_lut_buf, &cgpal_lut, &cgpal_lut_count);
 
     /* Optional, same reasoning: a bundle with no CGs baked ships no DCGVER
@@ -590,9 +592,9 @@ static bool lut_lookup(const uint8_t *lut, uint16_t count, uint16_t id,
  * missing or doesn't cover this id -- see the DSPROFF load in
  * assets_init()). */
 static bool sprite_lookup(uint16_t id, uint8_t *appvar_out, uint16_t *offset_out,
-                          int16_t *dx_out, int16_t *dy_out)
+                          uint16_t *len_out, int16_t *dx_out, int16_t *dy_out)
 {
-    if (!lut_lookup(sprite_lut, sprite_lut_count, id, appvar_out, offset_out, NULL)) {
+    if (!lut_lookup(sprite_lut, sprite_lut_count, id, appvar_out, offset_out, len_out)) {
         return false;
     }
     *dx_out = 0;
@@ -605,21 +607,31 @@ static bool sprite_lookup(uint16_t id, uint8_t *appvar_out, uint16_t *offset_out
     return true;
 }
 
-/* Sprites ship uncompressed -- zx0 compression was tried (commit
- * 1656932) to help close an archive-budget overage, but that overage was
- * really the full-res CG art (fixed later by baking CGs at half resolution
- * instead -- see SCENE_CG_SRC_W/H below), not the sprites. Compression
- * forced every draw to decompress into a malloc()'d buffer and free() it
- * right after (a real decode on every single call, including every
- * hop/sink animation frame, since the sprite id doesn't change
- * mid-animation, only its position) -- and that per-draw allocate/free of a
- * *different* size every time, repeated thousands of times a session, is
- * exactly what fragments a small first-fit heap with no compaction.
- * Confirmed via live CEmu memory inspection at a real failure: 18119 bytes
- * genuinely free, just scattered across five leftover holes none big
- * enough. Reverted rather than chase that fragmentation further -- sprites
- * read straight off flash need no heap at all, so there's nothing left to
- * fragment. */
+/* Sprites ship ZX0-compressed per atom ([u16 raw_size][zx0 bitstream]) and
+ * decode on cache miss into a single contiguous LRU RAM arena instead of
+ * per-draw malloc/free pairs. Repeated frames during hop/sink/zoom/slide
+ * animations hit RAM in O(1) with zero flash opens, zero decompression, and
+ * zero heap fragmentation. */
+#define SPRITE_CACHE_ARENA_CAP 16384u
+#define SPRITE_CACHE_SLOTS     8u
+
+typedef struct {
+    uint16_t id;
+    uint16_t offset;
+    uint16_t size;
+    int16_t  dx;
+    int16_t  dy;
+    uint32_t last_use;
+} sprite_cache_slot_t;
+
+static uint8_t            *sprite_arena;
+static uint16_t            sprite_arena_cap;
+static uint16_t            sprite_arena_used;
+static sprite_cache_slot_t sprite_cache[SPRITE_CACHE_SLOTS];
+static uint8_t             sprite_cache_count;
+static uint32_t            sprite_lru_tick;
+static bool                sprite_cache_oversize;
+
 static uint8_t sprite_handle;
 static uint8_t sprite_handle_idx;
 
@@ -631,12 +643,112 @@ void assets_sprite_end(void)
     }
 }
 
+void assets_sprite_cache_clear(void)
+{
+    assets_sprite_end();
+    free(sprite_arena);
+    sprite_arena = NULL;
+    sprite_arena_cap = 0;
+    sprite_arena_used = 0;
+    sprite_cache_count = 0;
+    sprite_cache_oversize = false;
+}
+
+static bool sprite_cache_evict_lru(void)
+{
+    if (sprite_cache_count == 0) {
+        return false;
+    }
+    uint8_t victim = 0;
+    for (uint8_t i = 1; i < sprite_cache_count; i++) {
+        if (sprite_cache[i].last_use < sprite_cache[victim].last_use) {
+            victim = i;
+        }
+    }
+    uint16_t rm_off = sprite_cache[victim].offset;
+    uint16_t rm_sz = sprite_cache[victim].size;
+    uint16_t tail = sprite_arena_used - (uint16_t)(rm_off + rm_sz);
+    if (tail > 0) {
+        memmove(sprite_arena + rm_off, sprite_arena + rm_off + rm_sz, tail);
+    }
+    sprite_arena_used -= rm_sz;
+    for (uint8_t i = 0; i < sprite_cache_count; i++) {
+        if (sprite_cache[i].offset > rm_off) {
+            sprite_cache[i].offset -= rm_sz;
+        }
+    }
+    if (victim + 1 < sprite_cache_count) {
+        memmove(&sprite_cache[victim], &sprite_cache[victim + 1],
+                (size_t)(sprite_cache_count - victim - 1) * sizeof(sprite_cache[0]));
+    }
+    sprite_cache_count--;
+    return true;
+}
+
+static bool sprite_ensure_arena(uint16_t need)
+{
+    if (need > SPRITE_CACHE_ARENA_CAP) {
+        assets_sprite_cache_clear();
+        sprite_arena = malloc(need);
+        if (!sprite_arena) {
+            return false;
+        }
+        sprite_arena_cap = need;
+        sprite_cache_oversize = true;
+        return true;
+    }
+    if (sprite_cache_oversize || (sprite_arena && sprite_arena_cap < need)) {
+        assets_sprite_cache_clear();
+    }
+    if (!sprite_arena) {
+        static const uint16_t caps[] = { SPRITE_CACHE_ARENA_CAP, 12288u, 8192u };
+        for (size_t i = 0; i < sizeof(caps) / sizeof(caps[0]); i++) {
+            if (caps[i] < need) {
+                continue;
+            }
+            sprite_arena = malloc(caps[i]);
+            if (sprite_arena) {
+                sprite_arena_cap = caps[i];
+                break;
+            }
+        }
+        if (!sprite_arena) {
+            sprite_arena = malloc(need);
+            if (!sprite_arena) {
+                return false;
+            }
+            sprite_arena_cap = need;
+        }
+    }
+    while (sprite_cache_count >= SPRITE_CACHE_SLOTS ||
+           (uint16_t)(sprite_arena_cap - sprite_arena_used) < need) {
+        if (!sprite_cache_evict_lru()) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static bool sprite_open_rlet(uint16_t id, const gfx_rletsprite_t **rle_out,
                              int16_t *dx_out, int16_t *dy_out)
 {
+    for (uint8_t i = 0; i < sprite_cache_count; i++) {
+        if (sprite_cache[i].id == id) {
+            sprite_cache[i].last_use = ++sprite_lru_tick;
+            *dx_out = sprite_cache[i].dx;
+            *dy_out = sprite_cache[i].dy;
+            *rle_out = (const gfx_rletsprite_t *)(sprite_arena + sprite_cache[i].offset);
+            return true;
+        }
+    }
+
     uint8_t appvar_idx;
     uint16_t offset;
-    if (!sprite_lookup(id, &appvar_idx, &offset, dx_out, dy_out)) {
+    uint16_t entry_len = 0;
+    if (!sprite_lookup(id, &appvar_idx, &offset, &entry_len, dx_out, dy_out)) {
+        return false;
+    }
+    if (entry_len < 3) {
         return false;
     }
 
@@ -653,8 +765,29 @@ static bool sprite_open_rlet(uint16_t id, const gfx_rletsprite_t **rle_out,
         sprite_handle_idx = appvar_idx;
     }
 
-    const uint8_t *data = ti_GetDataPtr(sprite_handle);
-    *rle_out = (const gfx_rletsprite_t *)(data + offset);
+    const uint8_t *compressed = ti_GetDataPtr(sprite_handle) + offset;
+    uint16_t raw_size = read_u16le(compressed);
+    if (raw_size < 2) {
+        return false;
+    }
+
+    if (!sprite_ensure_arena(raw_size)) {
+        return false;
+    }
+
+    uint16_t dst_off = sprite_arena_used;
+    zx0_Decompress(sprite_arena + dst_off, compressed + 2);
+    sprite_arena_used += raw_size;
+
+    sprite_cache_slot_t *slot = &sprite_cache[sprite_cache_count++];
+    slot->id = id;
+    slot->offset = dst_off;
+    slot->size = raw_size;
+    slot->dx = *dx_out;
+    slot->dy = *dy_out;
+    slot->last_use = ++sprite_lru_tick;
+
+    *rle_out = (const gfx_rletsprite_t *)(sprite_arena + dst_off);
     return true;
 }
 
@@ -722,7 +855,7 @@ bool assets_zoom_prepare(uint16_t id)
     uint8_t appvar_idx;
     uint16_t offset;
     int16_t dx, dy;
-    return sprite_lookup(id, &appvar_idx, &offset, &dx, &dy);
+    return sprite_lookup(id, &appvar_idx, &offset, NULL, &dx, &dy);
 }
 
 bool assets_draw_sprite_scaled(uint16_t id, int center_x, int feet_y, unsigned int scale_permille)
@@ -1030,10 +1163,15 @@ bool assets_debug_is_cg(uint8_t id)
     return is_cg(id);
 }
 
+bool assets_scene_fullscreen(uint8_t id)
+{
+    return scene_full_buf && id < scene_full_count && scene_full_buf[id] != 0;
+}
+
 bool assets_scene(uint8_t id, uint8_t *dest)
 {
     assets_sprite_end();
-    if (is_cg(id) && cgpack_read_pixels(id, dest)) {
+    if (is_cg(id) && !assets_scene_fullscreen(id) && cgpack_read_pixels(id, dest)) {
         return true;
     }
 
@@ -1057,18 +1195,22 @@ bool assets_scene(uint8_t id, uint8_t *dest)
         return true;
     }
 
-    /* Each source pixel becomes a 2x2 block in @p dest. dest's own row
-     * stride is SCREEN_W (the real framebuffer's), not SCENE_CG_SRC_W*2 --
-     * every caller passes a pointer straight into gfx_vbuffer, matching a
-     * background's own direct-decompress contract exactly. */
-    /* All callers supply the full 320x240 framebuffer. Rows 180..224
-     * are outside the 320x180 output, so input and output never overlap.
-     * render_box overwrites these scratch pixels before presentation. */
+    /* Fullscreen (160x120 -> 320x240) and standard (160x90 -> 320x180) CGs
+     * both stage in dest + SCENE_BYTES: for 120 rows, rows 0..118 write
+     * at most dest[76159] before reading dest[76480], and row 119 copies
+     * cleanly through a 160-byte stack buffer so input never overlaps output. */
     uint8_t *cg_scratch = dest + SCENE_BYTES;
     zx0_Decompress(cg_scratch, data + offset);
     ti_Close(handle);
 
-    fast_cg_upscale_2x(dest, cg_scratch);
+    if (assets_scene_fullscreen(id)) {
+        uint8_t last_row[SCENE_CG_SRC_W];
+        memcpy(last_row, cg_scratch + (size_t)119u * SCENE_CG_SRC_W, SCENE_CG_SRC_W);
+        fast_cg_upscale_2x_rows(dest, cg_scratch, 119u);
+        fast_cg_upscale_2x_rows(dest + (size_t)238u * SCREEN_W, last_row, 1u);
+    } else {
+        fast_cg_upscale_2x(dest, cg_scratch);
+    }
     return true;
 }
 

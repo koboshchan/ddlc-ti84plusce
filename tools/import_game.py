@@ -37,6 +37,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import yaml
@@ -737,20 +738,24 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
     if poem_texts is not None:
         appvars.append(write_appvar(poem_texts, "DPOEMT", appvar_dir))
 
-    # Uncompressed, unlike DSCR chunks/DSCN scenes -- tried zx0 here once
-    # (to help close an archive-budget overage that turned out to really be
-    # the full-res CG art, since fixed by baking CGs at half resolution
-    # instead -- see SCENE_CG_SRC_W/H in src/assets.c), but that forced every
-    # sprite draw through a malloc()+decompress+free() cycle, and the
-    # per-draw allocate/free of a *different* size every time (a few hundred
-    # sprite draws per session, no two necessarily the same size) fragmented
-    # the small on-device heap badly enough to occasionally fail outright --
-    # confirmed via live memory inspection on a real failure. Reverted:
-    # src/assets.c's sprite draw calls point straight at the raw AppVar
-    # bytes again (ti_GetDataPtr(), zero-copy, zero heap use), same as
-    # DTXTBOX/DNAMEBOX/DTILBG already do.
+    # Sprites ship individually ZX0-compressed ([u16 raw_size][zx0 bitstream])
+    # and decode on cache miss into a single contiguous LRU RAM arena in
+    # src/assets.c, eliminating per-draw malloc/free fragmentation while keeping
+    # repeated animation/zoom draws in fast RAM.
     sprite_files = [bin_for(s["file"]) for s in manifest["sprites"]]
-    appvars += package_group(sprite_files, "DSPR", "DSPRLUT", build_dir, appvar_dir)
+    def _compress_sprite(raw_path: Path) -> Path:
+        zx0_path = raw_path.with_suffix(".zx0")
+        raw_bytes = raw_path.read_bytes()
+        if not zx0_path.exists() or zx0_path.stat().st_mtime_ns < raw_path.stat().st_mtime_ns:
+            zx0_path.write_bytes(zx0_compress(raw_bytes, appvar_dir))
+        return zx0_path
+
+    if sprite_files:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            compressed_sprite_files = list(pool.map(_compress_sprite, sprite_files))
+    else:
+        compressed_sprite_files = []
+    appvars += package_group(compressed_sprite_files, "DSPR", "DSPRLUT", build_dir, appvar_dir)
 
     # Per-sprite (dx, dy) draw-offset table, matching DSPRLUT's order --
     # nonzero only for a layered "expression" atom (image_resolve.py's
@@ -767,6 +772,9 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
     scene_files = [bin_for(s["file"]) for s in manifest["scenes"]]
     appvars += package_group(scene_files, "DSCN", "DSCNLUT", build_dir, appvar_dir,
                              alias_ids=None)
+    scene_heights = bytes(1 if s.get("h", 180) in (240, 120) else 0
+                          for s in manifest["scenes"])
+    appvars.append(write_appvar(scene_heights, "DSCNH", appvar_dir))
 
     appvars.append(write_appvar((gfx_dir / "pal_game.bin").read_bytes(), "DPALGAME", appvar_dir))
 
@@ -885,7 +893,7 @@ def optimize_flash_order(prog_8xp: Path, appvars: list[Path]) -> list[Path]:
         "dvlbl.8xv", "dvdef.8xv", "dsprlut.8xv", "dscnlut.8xv", "dtillut.8xv",
         "dtxtbox.8xv", "dnamebox.8xv", "dstkrs.8xv", "dcgplut.8xv", "dcgidx.8xv",
         "dcgver.8xv", "dchjmp.8xv", "dpslot.8xv", "dpoem.8xv", "dpoemt.8xv",
-        "dsproff.8xv", "dnfx.8xv",
+        "dsproff.8xv", "dnfx.8xv", "dscnh.8xv",
     }
 
     SECTOR_USABLE = 65400

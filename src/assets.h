@@ -212,13 +212,19 @@ bool assets_draw_sprite_scaled(uint16_t id, int center_x, int feet_y, unsigned i
  * of actor composition and on chunk/scene transitions.
  */
 void assets_sprite_end(void);
+void assets_sprite_cache_clear(void);
 void assets_zoom_cache_clear(void);
 
 /**
- * Copies background/CG @p id's raw 320x180 palette-index pixels directly
- * into @p dest, which must hold the whole 320x240 framebuffer: the unused
- * bottom 60 rows temporarily hold non-overlapping CG decode scratch. Returns false
- * if @p id is out of range or its AppVar is missing.
+ * Returns whether scene/CG @p id renders full-screen (320x240) instead of
+ * the default 320x180 scene viewport above the textbox.
+ */
+bool assets_scene_fullscreen(uint8_t id);
+
+/**
+ * Copies background/CG @p id's palette-index pixels directly into @p dest,
+ * which must hold the whole 320x240 framebuffer (rows 180..239 also double as
+ * CG decompress scratch). Returns false if @p id is out of range or missing.
  */
 bool assets_scene(uint8_t id, uint8_t *dest);
 

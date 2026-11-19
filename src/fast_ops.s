@@ -3,6 +3,9 @@
 	.global	_fast_cg_upscale_2x
 	.type	_fast_cg_upscale_2x, @function
 
+	.global	_fast_cg_upscale_2x_rows
+	.type	_fast_cg_upscale_2x_rows, @function
+
 	.global	_fast_rect_blit
 	.type	_fast_rect_blit, @function
 
@@ -37,6 +40,7 @@
 	.type	_fast_bayer_dissolve, @function
 
 ; ===========================================================================
+; void fast_cg_upscale_2x_rows(uint8_t *dest, const uint8_t *src, uint8_t rows)
 ; void fast_cg_upscale_2x(uint8_t *dest, const uint8_t *src)
 ; ===========================================================================
 	.section	.text._fast_cg_upscale_2x,"ax",@progbits
@@ -47,6 +51,21 @@ _fast_cg_upscale_2x:
 	ld	iy, 0
 	add	iy, sp
 
+	ld	a, 90
+	jr	.cg_common
+
+_fast_cg_upscale_2x_rows:
+	push	ix
+	push	iy
+
+	ld	iy, 0
+	add	iy, sp
+
+	ld	a, (iy + 15)		; rows
+	or	a
+	jr	z, .cg_done
+
+.cg_common:
 	ld	de, (iy + 9)		; DE = dest (row 0)
 	ld	hl, (iy + 12)		; HL = src
 
@@ -55,7 +74,7 @@ _fast_cg_upscale_2x:
 	pop	ix
 	add	ix, bc			; IX = dest + 320 (row 1)
 
-	ld	iyl, 90
+	ld	iyl, a
 
 .cg_row_loop:
 	ld	b, 160
@@ -83,6 +102,7 @@ _fast_cg_upscale_2x:
 	dec	iyl
 	jr	nz, .cg_row_loop
 
+.cg_done:
 	pop	iy
 	pop	ix
 	ret

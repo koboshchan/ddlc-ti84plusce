@@ -92,6 +92,9 @@ NAMEBOX_SIZE = (72, 17)
 # archive budget, and downscaling them wasn't asked for.
 CG_FULL_SIZE = (320, 180)
 CG_SIZE = (160, 90)
+BG_FULL_SIZE = (320, 240)
+CG_FULLSCREEN_FULL_SIZE = (320, 240)
+CG_FULLSCREEN_SIZE = (160, 120)
 
 # --- title screen ------------------------------------------------------------
 #
@@ -1679,6 +1682,30 @@ class ImageResolver:
                 "w": size[0], "h": size[1], "dx": dx, "dy": dy,
                 "_content_hash": content_hash}
 
+    def _use_fullscreen_height(self, imgname: tuple, defn, art: Optional[PILImage.Image], fit: bool) -> bool:
+        """Select scenes whose textbox is hidden and whose source aspect or
+        solid padding fills 320x240 cleanly without cropping 16:9 art."""
+        if not fit:
+            if defn.kind == "solid":
+                return True
+            if imgname in (("bg", "glitch"), ("bg", "eyes")):
+                return True
+            return False
+
+        name_joined = "_".join(str(x) for x in imgname).lower()
+        if "s_kill_early" in name_joined or (
+            isinstance(getattr(defn, "path", None), str) and "s_kill_early" in defn.path
+        ):
+            return True
+        if imgname == ("bsod",):
+            return True
+        if any(tag in name_joined for tag in ("end_glitch", "end-glitch")):
+            return True
+        if art is not None and (art.width / max(1, art.height)) < 1.5:
+            if "poem_special" in name_joined or "poem_end" in name_joined:
+                return True
+        return False
+
     def _bake_flat(self, imgname: tuple, size: tuple, fit: bool) -> Optional[dict]:
         defn = self.table.get(imgname)
         if defn is None:
@@ -1686,37 +1713,48 @@ class ImageResolver:
             return None
 
         full_cg = None
-        if defn.kind == "solid":
-            canvas = PILImage.new("RGBA", size, defn.color + (255,))
-        else:
+        art = None
+        if defn.kind != "solid":
             art = self._render_def(defn)
             if art is None:
                 self._log_unsupported(imgname, defn.reason or "could not render (missing or unresolvable referenced art)")
                 return None
-            if fit:
-                # Compose at full CG resolution first (see CG_FULL_SIZE's
-                # comment), then downscale for the on-calc bake -- so the
-                # cgpack export is a real fit, not a re-derivation of one.
-                if "s_kill_early" in str(imgname) or (isinstance(getattr(defn, "path", None), str) and "s_kill_early" in defn.path):
-                    # s_kill_early in DDLC: Sayori hanging on the left (xalign 0.25) in a white room with static noise
-                    canvas_bg = PILImage.new("RGBA", CG_FULL_SIZE, (255, 255, 255, 255))
-                    scale = CG_FULL_SIZE[1] / art.height
-                    scaled_w = round(art.width * scale)
-                    scaled_art = art.resize((scaled_w, CG_FULL_SIZE[1]), PILImage.LANCZOS)
-                    sayori_x = round(0.25 * (CG_FULL_SIZE[0] - scaled_w))
-                    canvas_bg.alpha_composite(scaled_art, (sayori_x, 0))
-                    noise_path = self.raw_dir / "images" / "bg" / "noise1.jpg"
-                    if noise_path.exists():
-                        noise_img = PILImage.open(noise_path).convert("RGBA").resize(CG_FULL_SIZE)
-                        noise_overlay = PILImage.blend(PILImage.new("RGBA", CG_FULL_SIZE, (0, 0, 0, 0)), noise_img, 0.18)
-                        full_cg = PILImage.alpha_composite(canvas_bg, noise_overlay)
-                    else:
-                        full_cg = canvas_bg
-                else:
-                    full_cg = _fit_and_center(art, CG_FULL_SIZE, (0, 0, 0, 255))
-                canvas = full_cg if size == CG_FULL_SIZE else full_cg.resize(size, PILImage.LANCZOS)
+
+        fullscreen = self._use_fullscreen_height(imgname, defn, art, fit)
+        if not fit:
+            size = BG_FULL_SIZE if fullscreen else size
+            if defn.kind == "solid":
+                canvas = PILImage.new("RGBA", size, defn.color + (255,))
+            elif fullscreen and imgname == ("bg", "eyes"):
+                canvas = _fit_and_center(art, size, (0, 0, 0, 255))
             else:
                 canvas = art.resize(size, PILImage.LANCZOS).convert("RGBA")
+        else:
+            full_target = CG_FULLSCREEN_FULL_SIZE if fullscreen else CG_FULL_SIZE
+            size = CG_FULLSCREEN_SIZE if fullscreen else size
+            if "s_kill_early" in str(imgname) or (isinstance(getattr(defn, "path", None), str) and "s_kill_early" in defn.path):
+                # s_kill_early in DDLC: Sayori hanging on the left (xalign 0.25) in a white room with static noise
+                canvas_bg = PILImage.new("RGBA", full_target, (255, 255, 255, 255))
+                scale = full_target[1] / art.height
+                scaled_w = round(art.width * scale)
+                scaled_art = art.resize((scaled_w, full_target[1]), PILImage.LANCZOS)
+                sayori_x = round(0.25 * (full_target[0] - scaled_w))
+                canvas_bg.alpha_composite(scaled_art, (sayori_x, 0))
+                noise_path = self.raw_dir / "images" / "bg" / "noise1.jpg"
+                if noise_path.exists():
+                    noise_img = PILImage.open(noise_path).convert("RGBA").resize(full_target)
+                    noise_overlay = PILImage.blend(PILImage.new("RGBA", full_target, (0, 0, 0, 0)), noise_img, 0.18)
+                    full_cg = PILImage.alpha_composite(canvas_bg, noise_overlay)
+                else:
+                    full_cg = canvas_bg
+            elif fullscreen and imgname == ("bsod",):
+                top = _fit_and_center(art, CG_FULL_SIZE, (31, 103, 179, 255))
+                bg_rgba = art.convert("RGBA").getpixel((0, art.height - 1))
+                full_cg = PILImage.new("RGBA", full_target, bg_rgba)
+                full_cg.paste(top, (0, 0))
+            else:
+                full_cg = _fit_and_center(art, full_target, (0, 0, 0, 255))
+            canvas = full_cg if size == full_target else full_cg.resize(size, PILImage.LANCZOS)
 
         # Several real Act 3 tags bake to pixel-identical content under this
         # engine's own simplifications -- confirmed real, not hypothetical:

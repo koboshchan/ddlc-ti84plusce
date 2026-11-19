@@ -27,6 +27,15 @@ extern "C" {
 void fast_cg_upscale_2x(uint8_t *dest, const uint8_t *src);
 
 /**
+ * Variable-height 2x Nearest-Neighbor CG Upscaler (160xN -> 320x(2N))
+ *
+ * @param dest Pointer to top-left of 320-wide destination area
+ * @param src  Pointer to 160x@p rows source pixels
+ * @param rows Number of source rows to upscale (1..255; 0 is a no-op)
+ */
+void fast_cg_upscale_2x_rows(uint8_t *dest, const uint8_t *src, uint8_t rows);
+
+/**
  * Fast 2D Rectangular Block Blit with Strides
  *
  * Copies a w * h rectangular block from src to dest using hardware LDIR.

@@ -146,3 +146,4 @@ static void noise_frame_rows(unsigned elapsed_ms,unsigned frame_rows) {
  * presentation. Restore remembers each frame's extent, even across API changes. */
 void noise_frame(unsigned elapsed_ms) { noise_frame_rows(elapsed_ms,240u); }
 void noise_frame_scene(unsigned elapsed_ms) { noise_frame_rows(elapsed_ms,180u); }
+bool noise_is_fullscreen(void) { return undo_size != 0 && undo_rows == 240u; }

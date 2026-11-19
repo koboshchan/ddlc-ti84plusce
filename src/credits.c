@@ -112,7 +112,9 @@ static void credits_hold_scene(uint8_t scene_id, unsigned duration_ms)
     credits_clear_both();
     render_apply_palette(assets_scene_palette(scene_id));
     assets_scene(scene_id, (uint8_t *)gfx_vbuffer);
-    credits_clear_bottom_bar();
+    if (!assets_scene_fullscreen(scene_id)) {
+        credits_clear_bottom_bar();
+    }
     gfx_SwapDraw();
 
     clock_t start = clock();
