@@ -717,21 +717,25 @@ static __attribute__((noinline)) bool resolve_actor_pose(const vn_actor_t *actor
     return resolve_actor_pose_at(actor, center_x, t, true, out);
 }
 
-static __attribute__((noinline)) bool pose_equals(const actor_pose_t *a,
-                                                  const actor_pose_t *b)
+static __attribute__((noinline)) bool pose_body_equals(const actor_pose_t *a,
+                                                       const actor_pose_t *b)
 {
-    if (a->active != b->active) {
+    if (!a->active || !b->active) {
         return false;
-    }
-    if (!a->active) {
-        return true;
     }
     return a->character == b->character &&
            a->sprite == b->sprite &&
-           a->overlay == b->overlay &&
            a->center_x == b->center_x &&
            a->feet_y == b->feet_y &&
            a->scale_permille == b->scale_permille;
+}
+
+static bool pose_equals(const actor_pose_t *a, const actor_pose_t *b)
+{
+    if (!a->active && !b->active) {
+        return true;
+    }
+    return pose_body_equals(a, b) && a->overlay == b->overlay;
 }
 
 static __attribute__((noinline)) bool draw_sprite_pose(uint16_t id, int center_x,
@@ -1049,17 +1053,33 @@ static __attribute__((noinline)) bool try_dirty_rect_scene(const vn_scene_t *sce
 {
     rect_t dirty = { 0, 0, 0, 0 };
     uint8_t changed_count = 0;
+    bool face_only = true;
+
     for (int i = 0; i < VN_MAX_CHARS; i++) {
-        if (!pose_equals(&composed_actors[i], &cur_poses[i])) {
+        const actor_pose_t *old_p = &composed_actors[i];
+        const actor_pose_t *new_p = &cur_poses[i];
+        if (!pose_equals(old_p, new_p)) {
             changed_count++;
-            if (composed_actors[i].active) {
-                rect_union(&dirty, &composed_actors[i].bounds);
-            }
-            if (cur_poses[i].active) {
-                rect_union(&dirty, &cur_poses[i].bounds);
+            if (pose_body_equals(old_p, new_p)) {
+                if (old_p->overlay != VN_NO_OVERLAY) {
+                    rect_union(&dirty, &old_p->face_rect);
+                }
+                if (new_p->overlay != VN_NO_OVERLAY) {
+                    rect_union(&dirty, &new_p->face_rect);
+                }
+            } else {
+                face_only = false;
+                if (old_p->active) {
+                    rect_union(&dirty, &old_p->bounds);
+                }
+                if (new_p->active) {
+                    rect_union(&dirty, &new_p->bounds);
+                }
             }
         }
     }
+
+    (void)face_only;
 
     if (changed_count == 0) {
         perf_overlay_set_mode("SKIP");
@@ -1077,7 +1097,7 @@ static __attribute__((noinline)) bool try_dirty_rect_scene(const vn_scene_t *sce
         return false;
     }
 
-    perf_overlay_set_mode("DRTY");
+    perf_overlay_set_mode(face_only ? "FACE" : "DRTY");
     last_scene_used_motion = false;
     perf_overlay_clear_sprites();
     composite_dirty_rect(scene->background, cur_poses, &dirty);

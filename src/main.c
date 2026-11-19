@@ -516,7 +516,6 @@ static __attribute__((noinline)) void run_debug_tags_test(vn_vm_t *vm)
 
     uint8_t cur = 0;
     input_t in;
-    char line[48];
 
     vn_scene_t *scene_p = calloc(1, sizeof(*scene_p));
     if (!scene_p) {
@@ -536,11 +535,10 @@ static __attribute__((noinline)) void run_debug_tags_test(vn_vm_t *vm)
 
         /* Diagnostic / test harness header */
         render_text("Dialogue Tag Substitution Test", 10, 8, COL_NAME);
-        sprintf(line, "Self-Test: %u/%u PASSED", self_test_passed, num_cases);
-        render_text(line, 10, 24, (self_test_passed == num_cases) ? COL_HIGHLIGHT : COL_WHITE);
-
-        sprintf(line, "Case [%u/%u]: %s", cur + 1, num_cases, tc->tag_label);
-        render_text(line, 10, 42, COL_WHITE);
+        dbg_printf(10, 24, (self_test_passed == num_cases) ? COL_HIGHLIGHT : COL_WHITE,
+                   "Self-Test: %u/%u PASSED", self_test_passed, num_cases);
+        dbg_printf(10, 42, COL_WHITE, "Case [%u/%u]: %s",
+                   cur + 1, num_cases, tc->tag_label);
 
         render_text("Raw template:", 10, 60, COL_BOX_EDGE);
         render_text(tc->raw_text, 10, 74, COL_BOX_EDGE);
@@ -918,7 +916,6 @@ static __attribute__((noinline)) void run_debug_asm_test(void)
         "3. Glitch Shift ",
     };
     input_t in;
-    char line[48];
     unsigned times[3];
     bool pass[3];
 
@@ -964,10 +961,10 @@ static __attribute__((noinline)) void run_debug_asm_test(void)
             render_backdrop(COL_BOX_FILL);
             render_text("eZ80 ASM Optimization Tests", 14, 8, COL_NAME);
             for (uint8_t i = 0; i < 3; i++) {
-                sprintf(line, "%s: %s (%u ms)", names[i],
-                        pass[i] ? "PASS" : "FAIL", times[i]);
-                render_text(line, 14, (uint16_t)(30u + i * 20u),
-                            pass[i] ? COL_WHITE : COL_HIGHLIGHT);
+                dbg_printf(14, (uint16_t)(30u + i * 20u),
+                           pass[i] ? COL_WHITE : COL_HIGHLIGHT,
+                           "%s: %s (%u ms)", names[i],
+                           pass[i] ? "PASS" : "FAIL", times[i]);
             }
             render_text("[2nd] Re-run   Mode/Clear: back", 14, SCREEN_H - 18, COL_BOX_EDGE);
             render_present(TRANS_CUT);
@@ -989,22 +986,18 @@ static __attribute__((noinline)) void run_debug_asm_test(void)
 static __attribute__((noinline)) void run_debug_scene_info(vn_vm_t *vm)
 {
     input_t in;
-    char line[40];
 
     render_backdrop(COL_BOX_FILL);
     render_text("Scene diagnostic", 14, 8, COL_NAME);
 
     uint8_t bg = vm->scene.background;
-    sprintf(line, "background id = %u", bg);
-    render_text(line, 14, 24, COL_WHITE);
-    sprintf(line, "is_cg = %s", assets_debug_is_cg(bg) ? "TRUE" : "false");
-    render_text(line, 14, 38, COL_WHITE);
+    dbg_printf(14, 24, COL_WHITE, "background id = %u", bg);
+    dbg_printf(14, 38, COL_WHITE, "is_cg = %s", assets_debug_is_cg(bg) ? "TRUE" : "false");
 
     const uint16_t *pal = assets_scene_palette(bg);
     int y = 52;
     for (int i = 0; i < 8; i++) {
-        sprintf(line, "pal[%d] = 0x%04X", i, pal[i]);
-        render_text(line, 14, y, COL_WHITE);
+        dbg_printf(14, y, COL_WHITE, "pal[%d] = 0x%04X", i, pal[i]);
         y += 10;
     }
 

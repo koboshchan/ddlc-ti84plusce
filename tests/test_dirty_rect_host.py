@@ -245,6 +245,8 @@ static fake_spr_t fake_sprs[NUM_SPRS];
 
 static unsigned stat_full_bg = 0;
 static unsigned stat_bg_rect = 0;
+static int      stat_last_bg_w = 0;
+static int      stat_last_bg_h = 0;
 static unsigned stat_spr_draws = 0;
 static unsigned stat_box_draws = 0;
 static unsigned stat_blit_screen = 0;
@@ -254,6 +256,8 @@ static void reset_stats(void)
 {
     stat_full_bg = 0;
     stat_bg_rect = 0;
+    stat_last_bg_w = 0;
+    stat_last_bg_h = 0;
     stat_spr_draws = 0;
     stat_box_draws = 0;
     stat_blit_screen = 0;
@@ -377,6 +381,8 @@ bool assets_scene_bg_rect(uint8_t id, int x, int y, int w, int h, uint8_t *dest)
         return false;
     }
     stat_bg_rect++;
+    stat_last_bg_w = w;
+    stat_last_bg_h = h;
     fast_rect_blit(dest + (size_t)y * SCREEN_W + (size_t)x, SCREEN_W,
                    fake_bgs[id] + (size_t)y * SCREEN_W + (size_t)x, SCREEN_W,
                    (size_t)w, (size_t)h);
@@ -612,18 +618,26 @@ int main(void)
     scene.actors[2].show_seq = 1;
     verify_step("3_enter_actor2_overlap", &scene, "Natsuki", "Seriously?", true, false);
 
-    /* 4. Actor 1 expression swap (face only, DIRTY) */
+    /* 4. Actor 1 expression swap (face sub-rect only!) */
     scene.actors[1].overlay = 7;
     verify_step("4_expr_swap_actor1", &scene, "Yuri", "I brought tea.", true, false);
+    assert(stat_last_bg_w <= 46 && stat_last_bg_h <= 50);
 
-    /* 5. Actor 0 expression swap while overlapped by Actor 1 (z-order test, DIRTY) */
+    /* 4b. Actor 2 expression swap to wider face (union of old+new face sub-rects!) */
+    scene.actors[2].overlay = 9;
+    verify_step("4b_expr_swap_actor2_wider", &scene, "Natsuki", "Hmph!", true, false);
+    assert(stat_last_bg_w <= 50 && stat_last_bg_h <= 48);
+
+    /* 5. Actor 0 expression swap while overlapped by Actor 1 (face sub-rect + z-order!) */
     scene.actors[0].overlay = 5;
     verify_step("5_expr_swap_actor0_behind", &scene, "Sayori", "Yay, tea!", true, false);
+    assert(stat_last_bg_w <= 46 && stat_last_bg_h <= 48);
 
-    /* 6. Actor 2 body + wider face change (DIRTY) */
+    /* 6. Actor 2 body + face pose change (full actor bounding box!) */
     scene.actors[2].sprite = 3;
-    scene.actors[2].overlay = 9;
+    scene.actors[2].overlay = 8;
     verify_step("6_pose_change_actor2", &scene, "Natsuki", "I made cupcakes!", true, false);
+    assert(stat_last_bg_w >= 88 && stat_last_bg_h >= 150);
 
     /* 7. Actor 1 hop animation across multiple ticks (SKIP at t=0, DIRTY on moving frames!) */
     scene.actors[1].flags = VN_FLAG_HOP;
@@ -644,6 +658,11 @@ int main(void)
     verify_step("8b_zoom_mid", &scene, "Sayori", "Let's read poems!", true, false);
     advance_ms(200);
     verify_step("8c_zoom_full", &scene, "Sayori", "Let's read poems!", true, false);
+
+    /* 8d. Expression swap while Actor 0 is zoomed 1.05x (scaled face sub-rect!) */
+    scene.actors[0].overlay = 4;
+    verify_step("8d_expr_swap_while_zoomed", &scene, "Sayori", "Yay!", true, false);
+    assert(stat_last_bg_w <= 50 && stat_last_bg_h <= 52);
 
     /* 9. Actor 2 sink animation down and back up */
     scene.actors[2].flags = VN_FLAG_SINK;
