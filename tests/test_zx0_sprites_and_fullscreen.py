@@ -151,6 +151,10 @@ static void fast_cg_upscale_2x_rows(uint8_t *dest, const uint8_t *src, uint8_t r
 static void fast_cg_upscale_2x(uint8_t *dest, const uint8_t *src) {
     fast_cg_upscale_2x_rows(dest, src, 90u);
 }
+
+static void fast_zx0_decompress(void *dst, const void *src) {
+    zx0_Decompress(dst, src);
+}
 """
 
 HOST_TESTS = r"""

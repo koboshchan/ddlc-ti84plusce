@@ -40,4 +40,18 @@ class OverlayTests(unittest.TestCase):
  def test_missing_overlay_is_error(self):
   r=self.fixture();r.table[("vignette",)]=ImageDef(("vignette",),"unsupported")
   with self.assertRaises(ValueError):r.ch5_overlay_scene(1,0,"vignette")
+ def test_s_kill_top_and_exception_bg_zorder(self):
+  r=self.fixture()
+  r.table[("exception_bg",)]=ImageDef(("exception_bg",),"solid",color=(218,218,218))
+  r.table[("s_kill",)]=ImageDef(("s_kill",),"solid",color=(200,80,80))
+  r.table[("s_kill2",)]=ImageDef(("s_kill2",),"solid",color=(180,40,40))
+  r.table[("vignette",)]=ImageDef(("vignette",),"solid",color=(0,0,0))
+  slot=r.ch5_alloc_overlay_slot("ch5_exception_bg")
+  r.ch5_overlay_scene(slot,0,"exception_bg",vignette_top=True,s_kill_top=True)
+  with Image.open(r.cgpack_src_dir/r.scenes[slot]["file"]) as im:
+   # Top-center pixel (yalign=0.05) should show composited s_kill (reddish) darkened by vignette
+   px=im.getpixel((160,20))
+   self.assertGreater(px[0],px[1]+10)
+  self.assertTrue(r.scenes[slot]["composition"]["s_kill_top"])
+  self.assertEqual(r.scenes[slot]["composition"]["semantic_z_order"],[2,3])
 if __name__=="__main__":unittest.main()

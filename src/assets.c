@@ -1190,7 +1190,11 @@ bool assets_scene(uint8_t id, uint8_t *dest)
     const uint8_t *data = ti_GetDataPtr(handle);
 
     if (!is_cg(id)) {
-        zx0_Decompress(dest, data + offset);
+        if (assets_scene_fullscreen(id)) {
+            fast_zx0_decompress(dest, data + offset);
+        } else {
+            zx0_Decompress(dest, data + offset);
+        }
         ti_Close(handle);
         return true;
     }

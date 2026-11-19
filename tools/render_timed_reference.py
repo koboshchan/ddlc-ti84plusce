@@ -63,7 +63,12 @@ def _pose(item: dict, ms: float, width: int, height: int) -> tuple[float, float,
     dy = 0.0
     alpha = float(item.get("alpha", 1.0))
 
-    if item["transform"] == "s_kill_bg_start":
+    if item.get("alias") == "s_kill_zoom_trans":
+        zoom = 2.0
+        xalign = 0.5
+        yalign = 0.05
+        alpha *= 0.5
+    elif item["transform"] == "s_kill_bg_start":
         zoom = 1.1 - 0.1 * min(ms / 4000.0, 1.0)
         xalign = yalign = 0.5
     elif item["transform"] == "s_kill_start":
@@ -80,8 +85,9 @@ def _pose(item: dict, ms: float, width: int, height: int) -> tuple[float, float,
     ox = (1280.0 - width * zoom) * xalign
     oy = (720.0 - height * zoom) * yalign + dy
 
-    if tag.endswith("_zoom"):
-        ddx, ddy = _dizzy(ms, bg)
+    if tag.endswith("_zoom") or item.get("alias") == "s_kill_zoom_trans":
+        dms = max(0.0, ms - 500.0) if item.get("alias") == "s_kill_zoom_trans" else ms
+        ddx, ddy = _dizzy(dms, bg)
         ox += ddx
         oy += ddy
 

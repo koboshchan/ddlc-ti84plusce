@@ -15,7 +15,7 @@ def generate_fg16_lut(
 
     rgb = [((v >> 10) & 31, (v >> 5) & 31, v & 31) for v in palette]
     counts = [0] * 255
-    for layer in (1, 3):
+    for layer in (1, 2, 3):
         for color in textures[layer]:
             if color != 255:
                 counts[color] += 1

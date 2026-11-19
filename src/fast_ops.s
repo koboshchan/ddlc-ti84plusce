@@ -39,6 +39,9 @@
 	.global	_fast_bayer_dissolve
 	.type	_fast_bayer_dissolve, @function
 
+	.global	_fast_zx0_decompress
+	.type	_fast_zx0_decompress, @function
+
 ; ===========================================================================
 ; void fast_cg_upscale_2x_rows(uint8_t *dest, const uint8_t *src, uint8_t rows)
 ; void fast_cg_upscale_2x(uint8_t *dest, const uint8_t *src)
@@ -877,4 +880,96 @@ _fast_bayer_dissolve:
 
 	pop	iy
 	pop	ix
+	ret
+
+; ===========================================================================
+; void fast_zx0_decompress(void *dst, const void *src)
+; Full 24-bit eZ80 standard ZX0 decompressor (handles runs >= 65,536 bytes).
+; ===========================================================================
+	.section	.text._fast_zx0_decompress,"ax",@progbits
+_fast_zx0_decompress:
+	push	ix
+	push	iy
+
+	ld	iy, 0
+	add	iy, sp
+	ld	de, (iy + 9)		; DE = dst
+	ld	hl, (iy + 12)		; HL = src
+
+	ld	iy, 0xFFFFFF		; IY = -1 (last_offset = 1)
+	ld	a, 0x80			; empty bit buffer with sentinel at bit 7
+
+.zx0_literals:
+	call	.zx0_elias24
+	ldir
+	call	.zx0_rbit
+	jr	c, .zx0_new_offset
+
+.zx0_last_offset:
+	call	.zx0_elias24
+
+.zx0_copy_match:
+	push	hl
+	lea	hl, iy + 0
+	add	hl, de
+	ldir
+	pop	hl
+	call	.zx0_rbit
+	jr	nc, .zx0_literals
+
+.zx0_new_offset:
+	ld	c, 0xFE
+.zx0_eoff_loop:
+	call	.zx0_rbit
+	jr	c, .zx0_eoff_done	; Carry = 1 on exit
+	call	.zx0_rbit		; Carry = data bit
+	rl	c
+	jr	.zx0_eoff_loop
+
+.zx0_eoff_done:
+	inc	c			; preserves Carry = 1; Z = 1 => EOF
+	jr	z, .zx0_done
+	ld	b, (hl)
+	inc	hl
+	rr	c			; sign-extend with Carry = 1
+	rr	b			; backtrack control bit -> Carry
+	ld	iyl, b
+	ld	iyh, c			; IYU remains 0xFF
+	ld	bc, 1
+	jr	c, .zx0_len_ready
+	ld	ix, 1
+	call	.zx0_e24_bit		; first control bit was 0 (backtrack)
+.zx0_len_ready:
+	inc	bc
+	jr	.zx0_copy_match
+
+.zx0_done:
+	pop	iy
+	pop	ix
+	ret
+
+; Read 1 bit from (HL) into Carry; A holds remaining bits + sentinel 1.
+.zx0_rbit:
+	add	a, a
+	ret	nz
+	ld	a, (hl)
+	inc	hl
+	rla
+	ret
+
+; Read interlaced Elias gamma into 24-bit BC (0 = continue + data bit, 1 = stop).
+.zx0_elias24:
+	ld	ix, 1
+.zx0_e24_loop:
+	call	.zx0_rbit
+	jr	c, .zx0_e24_done
+.zx0_e24_bit:
+	add	ix, ix
+	call	.zx0_rbit
+	jr	nc, .zx0_e24_loop
+	inc	ix
+	jr	.zx0_e24_loop
+.zx0_e24_done:
+	push	ix
+	pop	bc
 	ret

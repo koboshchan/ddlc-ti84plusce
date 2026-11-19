@@ -159,6 +159,16 @@ void fast_stretch_row(uint8_t *dst, const uint8_t *src, size_t dst_w, size_t src
  */
 void fast_bayer_dissolve(uint8_t *dst, const uint8_t *src, uint8_t step);
 
+/**
+ * Full 24-bit eZ80 ZX0 decompressor (handles match/literal runs > 65,535 bytes,
+ * such as solid 320x240 = 76,800-byte fullscreen scenes where CEdev's 16-bit
+ * zx0_Decompress overflows BC).
+ *
+ * @param dst Destination output buffer
+ * @param src ZX0-compressed input bitstream
+ */
+void fast_zx0_decompress(void *dst, const void *src);
+
 #ifdef __cplusplus
 }
 #endif

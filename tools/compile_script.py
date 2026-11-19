@@ -1257,6 +1257,7 @@ class Compiler:
             # Default calculator: omit vignette before scene registration,
             # preserving the live motion underlay and original source assets.
             if (fname == "script-ch5" or fname.endswith("script-ch5.rpyc")) and imgname[0] == "vignette":
+                self._ch5_vignette_active = True
                 return
 
             # Outside ch5/splash/credits, `noise` and `vignette` are live camera/mood
@@ -1303,27 +1304,49 @@ class Compiler:
                     self.visible_chars.clear()
                     self._flash_stack.clear()
                     return
-            if (fname == "script-ch5" or fname.endswith("script-ch5.rpyc")) and imgname[0].startswith("s_kill"):
+            is_ch5 = (fname == "script-ch5" or fname.endswith("script-ch5.rpyc"))
+            nxt_node = self._next_node()
+            nxt_kind = kind(nxt_node) if nxt_node is not None else None
+            nxt_tag = (
+                str(nxt_node.imspec[0][0])
+                if (nxt_kind in ("Show", "Hide") and getattr(nxt_node, "imspec", None) and nxt_node.imspec[0])
+                else ""
+            )
+
+            if is_ch5 and imgname[0].startswith("s_kill"):
                 layer_alias = alias or imgname[0]
                 at = node.imspec[3] if len(node.imspec) > 3 else []
-                transform = str(at[0]) if at else ""
                 layers = getattr(self, "_ch5_original_layers", [])
+                prev_layer = next((l for l in layers if l[1] == layer_alias), None)
+                transform = str(at[0]) if at else (prev_layer[2] if prev_layer is not None else "")
                 layers = [l for l in layers if l[1] != layer_alias]
-                # RenPy imspec slot5 is explicit zorder; equal-z displayables
+                # RenPy imspec slot5 is explicit zorder (default 0); equal-z displayables
                 # retain show ordering, not alphabetical alias ordering.
-                zorder = int(node.imspec[5]) if node.imspec[5] is not None else (1 if imgname[0].startswith("s_kill_bg") else 3)
+                zorder = int(node.imspec[5]) if node.imspec[5] is not None else 0
                 layers.append((imgname[0], layer_alias, transform, zorder, 1.0, False))
                 self._ch5_original_layers = layers
+                if nxt_kind in ("Show", "Hide") and nxt_tag.startswith("s_kill"):
+                    return
                 scene_id = self.resolver.ch5_original_layers(scene_id, layers)
-            # These ch5 shows are transparent layers, not new scenes.
-            # Preserve opcode count/scene ids while baking their lower layers.
-            if (fname == "script-ch5" or fname.endswith("script-ch5.rpyc")) and imgname[0] in (
-                    "vignette", "splash_glitch", "splash_glitch2", "splash_glitch_m", "splash_glitch_n", "splash_glitch_y"):
+            # These ch5 shows are zorder-2/3 layers over the live death scene.
+            # Composite active zorder-3 Sayori + vignette above zorder-2 layers.
+            if is_ch5 and imgname[0] in (
+                    "vignette", "splash_glitch", "splash_glitch2", "splash_glitch_m", "splash_glitch_n", "splash_glitch_y", "exception_bg"):
                 if self._current_bg is None:
                     raise ValueError("ch5 overlay has no base scene")
+                if imgname[0] == "exception_bg":
+                    scene_id = self.resolver.ch5_alloc_overlay_slot("ch5_exception_bg")
+                s_kill_top = any(
+                    (not l[5]) and l[0] == "s_kill_zoom"
+                    for l in getattr(self, "_ch5_original_layers", [])
+                )
+                vignette_top = bool(getattr(self, "_ch5_vignette_active", False)) or any(
+                    e.img_tag == "vignette" for e in self._flash_stack
+                )
                 scene_id = self.resolver.ch5_overlay_scene(
                     scene_id, self._current_bg, imgname[0],
-                    vignette_top=any(e.img_tag == "vignette" for e in self._flash_stack))
+                    vignette_top=vignette_top,
+                    s_kill_top=s_kill_top)
             # Full-screen overlays and flashes (white, black, s_kill, splash_glitch, etc.)
             # are tracked via _flash_stack. If this is the bottom overlay on the stack,
             # snapshot currently visible character sprites and positions so that when all
@@ -1349,9 +1372,15 @@ class Compiler:
                 prev_bg=prev_bg,
                 saved_chars=saved_chars,
             ))
-            if (fname == "script-ch5" or fname.endswith("script-ch5.rpyc")) and imgname[0].startswith("s_kill"):
+            defer_ch5_overlay = (
+                is_ch5
+                and imgname[0] in ("white", "splash_glitch2", "splash_glitch_m", "splash_glitch_n")
+                and nxt_kind == "Show"
+                and nxt_tag in ("splash_glitch", "splash_glitch2", "splash_glitch_m", "splash_glitch_n", "splash_glitch_y")
+            )
+            if is_ch5 and imgname[0].startswith("s_kill"):
                 self.asm.motion(scene_id)
-            else:
+            elif not defer_ch5_overlay:
                 self.asm.scene(scene_id, vnasm.TRANS_CUT)
                 if imgname == ("bg", "glitch"):
                     self.asm.overlay_fx(vnasm.VN_OVL_LIVE_TILE, 1)
@@ -1492,7 +1521,15 @@ class Compiler:
             if ovl_bit == vnasm.VN_OVL_ROOM_MASK and (not active):
                 self._ch30_room_mask_pending = False
             return
-        if (fname == "script-ch5" or fname.endswith("script-ch5.rpyc")) and tag == "vignette":
+        is_ch5 = (fname == "script-ch5" or fname.endswith("script-ch5.rpyc"))
+        nxt_kind = kind(nxt) if nxt is not None else None
+        nxt_tag = (
+            str(nxt.imspec[0][0])
+            if (nxt_kind in ("Show", "Hide") and getattr(nxt, "imspec", None) and nxt.imspec[0])
+            else ""
+        )
+        if is_ch5 and tag == "vignette":
+            self._ch5_vignette_active = False
             return
         if (tag == "noise"
                 and fname not in ("script-ch5", "splash", "credits")
@@ -1500,12 +1537,14 @@ class Compiler:
             self._flush_pending_scene(vnasm.TRANS_CUT)
             self.asm.noise(False)
             return
-        if fname in ("script-ch5", "script-ch5.rpyc") and tag is not None:
+        if is_ch5 and tag is not None:
             layers = getattr(self, "_ch5_original_layers", [])
             if any(l[1] == tag for l in layers):
                 self._flush_pending_scene(vnasm.TRANS_CUT)
-                layers = [tuple(l[:3]) + ((l[3], l[4], True) if len(l) == 6 else (1 if l[0].startswith("s_kill_bg") else 3, 1.0, True)) if l[1] == tag else l for l in layers]
+                layers = [tuple(l[:3]) + ((l[3], l[4], True) if len(l) == 6 else (0, 1.0, True)) if l[1] == tag else l for l in layers]
                 self._ch5_original_layers = layers
+                if nxt_kind in ("Show", "Hide") and nxt_tag.startswith("s_kill"):
+                    return
                 sid = self.resolver.ch5_original_layers(self._current_bg, layers)
                 self.asm.motion(sid)
                 self._current_bg = sid
@@ -1554,7 +1593,13 @@ class Compiler:
             if is_top:
                 if self._flash_stack:
                     next_top = self._flash_stack[-1]
-                    self.asm.scene(next_top.scene_id, vnasm.TRANS_CUT)
+                    suppress_ch5_pop = (
+                        is_ch5
+                        and nxt_kind == "Show"
+                        and nxt_tag in ("splash_glitch2", "exception_bg")
+                    )
+                    if not suppress_ch5_pop:
+                        self.asm.scene(next_top.scene_id, vnasm.TRANS_CUT)
                     self._current_bg = next_top.scene_id
                 else:
                     if entry.prev_bg is not None:
@@ -1596,6 +1641,9 @@ class Compiler:
         self._malpha_step = 0
         if (fname.endswith("script-ch5.rpyc") or fname == "script-ch5") and getattr(node, "linenumber", 0) == 309:
             self.asm.code.extend(bytes((0x1F, 0)))
+        if fname.endswith("script-ch5.rpyc") or fname == "script-ch5":
+            self._ch5_vignette_active = False
+            self._ch5_original_layers = []
         imgname = tuple(node.imspec[0]) if node.imspec and node.imspec[0] else None
         if not imgname:
             self._skip(node, fname, "Scene with empty imspec")

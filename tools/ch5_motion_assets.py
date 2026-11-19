@@ -183,7 +183,7 @@ def generate(
         layers = entry.get("original_layers", [])
         if not layers:
             continue
-        pairs: list[int] = []
+        layer_modes: list[tuple[int, int]] = []
         for item in sorted(layers, key=lambda a: a["zorder"]):
             if item.get("hidden"):
                 continue
@@ -191,7 +191,9 @@ def generate(
             base = tag.replace("_zoom", "")
             if base not in NAMES:
                 raise ValueError(f"unsupported dedicated motion tag {tag}")
-            if item["transform"] == "s_kill_bg_start":
+            if item.get("alias") == "s_kill_zoom_trans":
+                mode = 7
+            elif item["transform"] == "s_kill_bg_start":
                 mode = 1
             elif item["transform"] == "s_kill_start":
                 mode = 2
@@ -199,7 +201,12 @@ def generate(
                 mode = 0
             if tag.endswith("_zoom"):
                 mode = (3, 5, 4, 6)[NAMES.index(base)]
-            pairs.extend((NAMES.index(base), mode))
+            # An opaque full-screen background (mode 0, 1, or 3) completely covers
+            # every earlier lower/equal-z layer (e.g. preloaded s_kill_bg2/s_kill2).
+            if base in ("s_kill_bg", "s_kill_bg2") and mode in (0, 1, 3):
+                layer_modes.clear()
+            layer_modes.append((NAMES.index(base), mode))
+        pairs = [v for pair in layer_modes for v in pair]
         if len(pairs) > 16:
             raise ValueError("more than eight authored display instances")
         records.extend(bytes([sid, len(pairs) // 2] + pairs + [0] * (16 - len(pairs))))

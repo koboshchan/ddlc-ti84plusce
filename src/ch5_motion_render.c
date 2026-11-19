@@ -89,10 +89,11 @@ static bool draw_fused_bg(uint8_t *table, uint8_t *pages,
                           int16_t *xmap, int16_t *ymap,
                           const uint8_t *record, const uint8_t *qdata,
                           const uint8_t *quant_groups, uint8_t *first_layer) {
-    unsigned ms0 = ch5_ticks_to_ms(clock() - layer_start[1]);
-    unsigned ms1 = ch5_ticks_to_ms(clock() - layer_start[2]);
-    ch5_motion_t a = ch5_motion(ms0, record[5], 1280, 720);
-    ch5_motion_t b = ch5_motion(ms1, record[7], 1280, 720);
+    uint8_t bg_idx = *first_layer;
+    unsigned ms0 = ch5_ticks_to_ms(clock() - layer_start[bg_idx]);
+    unsigned ms1 = ch5_ticks_to_ms(clock() - layer_start[bg_idx + 1]);
+    ch5_motion_t a = ch5_motion(ms0, record[3 + bg_idx * 2], 1280, 720);
+    ch5_motion_t b = ch5_motion(ms1, record[3 + (bg_idx + 1) * 2], 1280, 720);
     bool eligible = a.alpha_q10 == 1024 && b.alpha_q10 > 0 && b.alpha_q10 < 1024 &&
                     a.zoom_q10 == 2000000u && b.zoom_q10 == 2000000u;
     if (!eligible) return true;
@@ -137,7 +138,7 @@ static bool draw_fused_bg(uint8_t *table, uint8_t *pages,
         if (!r0 || !r1) return false;
         kernel(dst, r0 + pair_x[0], r1 + xmap[0], pages, table);
     }
-    *first_layer = 3;
+    *first_layer = (uint8_t)(bg_idx + 2);
     return true;
 }
 
@@ -381,24 +382,35 @@ bool ch5_motion_draw(uint8_t scene) {
     }
 
     uint8_t first_layer = 0;
+    bool solid_bg_skip = false;
+    int bg_idx = -1;
+    if (record[1] > 0 && record[2] == 0 && record[3] == 3) {
+        bg_idx = 0;
+    } else if (record[1] > 1 && record[4] == 0 && record[5] == 3) {
+        bg_idx = 1;
+    }
     /* Authored bg_zoom has 2x coverage for every permitted phase. Never
      * skip for other modes or assets containing transparent pixels. */
-    if (record[1] > 1 && record[4] == 0 && record[5] == 3) {
+    if (bg_idx >= 0) {
         bool solid = true;
         for (uint8_t row = 26; row <= 116; row++) {
             const uint8_t *pixels = ch5_band_row(0, row);
             if (!pixels) goto motion_done;
             if (memchr(pixels + 31, 255, 161)) { solid = false; break; }
         }
-        if (solid) first_layer = 1;
+        if (solid) {
+            first_layer = (uint8_t)bg_idx;
+            solid_bg_skip = true;
+        }
     }
 
     /* Proven full-screen opaque mode-3 coverage overwrites every pixel. */
-    if (!first_layer) memset(gfx_vbuffer, 0, 320 * 180);
+    if (!solid_bg_skip) memset(gfx_vbuffer, 0, 320 * 180);
 
     /* Opt-in only for the actual adjacent background pair. Every other path
      * retains the existing compositor. Maps and transparency proved before writes. */
-    if (first_layer == 1 && record[1] >= 3 && record[4] == 0 && record[6] == 1) {
+    if (solid_bg_skip && record[1] >= first_layer + 2 &&
+        record[2 + first_layer * 2] == 0 && record[2 + (first_layer + 1) * 2] == 1) {
         if (!draw_fused_bg(table, pages, pair_x, pair_y, xmap, ymap,
                            record, qdata, quant_groups, &first_layer)) {
             goto motion_done;

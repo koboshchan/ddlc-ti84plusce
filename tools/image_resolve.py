@@ -1090,7 +1090,7 @@ class ImageResolver:
         normalized = []
         for l in layers:
             tag, alias, transform = l[:3]
-            zorder, alpha, hidden = l[3:] if len(l) == 6 else (1 if tag.startswith("s_kill_bg") else 3, 1.0, False)
+            zorder, alpha, hidden = l[3:] if len(l) == 6 else (0, 1.0, False)
             normalized.append((tag, alias, transform, int(zorder), float(alpha), bool(hidden)))
         layers = sorted(normalized, key=lambda l: l[3])
         cache = getattr(self, "_ch5_original_cache", {})
@@ -1114,7 +1114,10 @@ class ImageResolver:
                 raise ValueError("missing original layer " + tag)
             bg = tag.startswith("s_kill_bg")
             z, xa, ya, yo = 1.0, 0.0, 0.0, 0.0
-            if transform == "s_kill_bg_start":
+            if alias == "s_kill_zoom_trans":
+                z, xa, ya = 2.0, 0.5, 0.05
+                alpha = alpha * 0.5
+            elif transform == "s_kill_bg_start":
                 z = 1.1 - 0.1 * min(1.0, elapsed / 4.0)
                 xa = ya = 0.5
             elif transform == "s_kill_start":
@@ -1148,7 +1151,43 @@ class ImageResolver:
         entry["base_asset_hashes"] = before
         return idx
 
-    def ch5_overlay_scene(self, scene_id: int, base_id: int, tag: str, vignette_top: bool = False) -> int:
+    def ch5_alloc_overlay_slot(self, name: str) -> int:
+        """Allocate a dedicated CG-sized scene slot for a ch5-specific overlay."""
+        idx = len(self.scenes)
+        filename = f"cg_{idx:03d}_{name}.png"
+        entry = {
+            "imgname": [name],
+            "file": filename,
+            "w": CG_SIZE[0],
+            "h": CG_SIZE[1],
+            "palette": "own",
+            "cg_palette_index": self._own_scene_count,
+        }
+        self._own_scene_count += 1
+        self.scenes.append(entry)
+        return idx
+
+    def _composite_ch5_s_kill_top(self, canvas: PILImage.Image) -> None:
+        """Composite ch5's zorder-3 Sayori zoom stack above zorder-2 overlays."""
+        specs = (("s_kill", 1.0), ("s_kill2", 0.4), ("s_kill", 0.5))
+        for src_tag, alpha in specs:
+            defn = self.table.get((src_tag,))
+            if defn is None:
+                continue
+            art = self._render_def(defn)
+            if art is None:
+                continue
+            w = max(1, round(art.width * 2.0))
+            h = max(1, round(art.height * 2.0))
+            x = round((1280 - w) * 0.5)
+            y = round((720 - h) * 0.05)
+            layer = art.convert("RGBA").resize((w, h), PILImage.Resampling.NEAREST)
+            if alpha != 1.0:
+                layer.putalpha(layer.getchannel("A").point(lambda a: round(a * alpha)))
+            canvas.alpha_composite(layer, (x, y))
+
+    def ch5_overlay_scene(self, scene_id: int, base_id: int, tag: str,
+                          vignette_top: bool = False, s_kill_top: bool = False) -> int:
         """Bake ch5's static overlay approximation without losing lower layers.
 
         Reuse the just-registered scene slot so the VM instruction layout and
@@ -1170,7 +1209,7 @@ class ImageResolver:
         art = self._render_def(self.table[(tag,)])
         if art is None:
             raise ValueError(f"missing overlay art: {tag}")
-        if tag in ("splash_glitch", "splash_glitch2"):
+        if tag in ("splash_glitch", "splash_glitch2", "exception_bg"):
             canvas = art.convert("RGBA").resize((1280, 720), PILImage.Resampling.LANCZOS)
         elif tag == "vignette":
             self._ch5_underlays[scene_id] = canvas.copy()
@@ -1178,18 +1217,19 @@ class ImageResolver:
             art.putalpha(art.getchannel("A").point(lambda a: round(a * 0.75)))
             canvas.alpha_composite(art)
         else:
-            # First authored static pose, at the declared 0.5 zoom.
-            # Match the approved renderer's top-left coordinates, not a centered anchor.
-            x, y = {"splash_glitch_m": (0.5, 0.5),
-                    "splash_glitch_n": (0.0, 0.0),
+            # Menu-art glitch layers at 0.5 zoom using Ren'Py's default xanchor=0.5, yanchor=1.0.
+            x, y = {"splash_glitch_m": (0.3, 1.0),
+                    "splash_glitch_n": (0.2, 0.8),
                     "splash_glitch_y": (0.85, 1.3)}[tag]
             art = art.resize((max(1, round(art.width * 0.5)),
                               max(1, round(art.height * 0.5))),
                              PILImage.Resampling.LANCZOS)
-            canvas.alpha_composite(art, (round(x * 1280),
-                                        round(y * 720)))
+            canvas.alpha_composite(art, (round(x * 1280 - art.width * 0.5),
+                                         round(y * 720 - art.height)))
         if tag != "vignette":
             self._ch5_underlays[scene_id] = canvas.copy()
+            if s_kill_top:
+                self._composite_ch5_s_kill_top(canvas)
             if vignette_top:
                 top = self._render_def(self.table[("vignette",)])
                 if top is None:
@@ -1202,8 +1242,9 @@ class ImageResolver:
         full.resize(CG_SIZE, PILImage.Resampling.LANCZOS).save(self.img_dir / entry["file"])
         entry["composition"] = {"base_scene": base_id, "overlay": tag,
                                 "static_atl_approximation": True,
-                                "semantic_z_order": [2, 3] if vignette_top else [3] if tag == "vignette" else [2],
+                                "semantic_z_order": [2, 3] if (vignette_top or s_kill_top) else [3] if tag == "vignette" else [2],
                                 "vignette_top": vignette_top or tag == "vignette",
+                                "s_kill_top": s_kill_top,
                                 "reference_pose": "initial_top_left",
                                 "character_motion": "static_approximation"}
         return scene_id

@@ -66,6 +66,10 @@ int main(void){
   assert(p.alpha_q10==1024);
   for(unsigned i=0;i<320;i++)assert(x[i]>=31 && x[i]<=191);
   for(unsigned i=0;i<180;i++)assert(y[i]>=26 && y[i]<=116);
+  ch5_motion_t t0=ch5_motion(ms,7,286,1050);
+  assert(t0.zoom_q10==2000000u && t0.alpha_q10==512);
+  ch5_motion_t ref=ch5_motion(ms>=500?ms-500:0,4,286,1050);
+  assert(t0.x==ref.x && t0.y==ref.y);
  }
  return 0;
 }

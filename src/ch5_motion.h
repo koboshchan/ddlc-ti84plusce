@@ -56,14 +56,17 @@ static ch5_motion_t ch5_motion(unsigned ms, unsigned mode, unsigned width, unsig
 
     if (mode >= 3) {
         unsigned bg = (mode == 3 || mode == 5);
-        p.x += (bg ? ch5_x_bg : ch5_x_fg)[(t % 6000u) / 250u];
-        p.y += (bg ? ch5_y_bg : ch5_y_fg)[(t % 4000u) / 250u];
+        unsigned dt = (mode == 7) ? (t >= 500u ? t - 500u : 0u) : t;
+        p.x += (bg ? ch5_x_bg : ch5_x_fg)[(dt % 6000u) / 250u];
+        p.y += (bg ? ch5_y_bg : ch5_y_fg)[(dt % 4000u) / 250u];
     }
     if (mode == 5 || mode == 6) {
         unsigned at = ms % 2250u, seg = at / 250u, phase = at % 250u;
         const uint8_t *a = (mode == 5) ? bg_alpha : fg_alpha;
         uint32_t numerator = (uint32_t)a[seg] * (250u - phase) + (uint32_t)a[seg + 1] * phase;
         p.alpha_q10 = (uint16_t)((numerator * 1024UL + 12500UL) / 25000UL);
+    } else if (mode == 7) {
+        p.alpha_q10 = 512;
     }
     return p;
 }
