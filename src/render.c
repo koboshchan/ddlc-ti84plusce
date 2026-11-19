@@ -914,9 +914,11 @@ static bool last_scene_used_motion;
 
 void render_scene(const vn_scene_t *scene)
 {
-    noise_restore();
     if (ch5_motion_active(scene->background)) {
+        noise_release();
         assets_sprite_cache_clear();
+    } else {
+        noise_restore();
     }
     last_scene_used_motion = ch5_motion_draw(scene->background);
     if (last_scene_used_motion) perf_overlay_mark_rendered();
@@ -2151,6 +2153,18 @@ static void layer_viewport_shift(int dx, int dy)
         return;
     }
     uint8_t *fb = (uint8_t *)gfx_vbuffer;
+    if (dx == 0) {
+        if (dy > 0) {
+            memmove(fb + (size_t)dy * SCREEN_W, fb, (size_t)(SCENE_H - dy) * SCREEN_W);
+            memset(fb, COL_BLACK, (size_t)dy * SCREEN_W);
+        } else {
+            int sy_off = -dy;
+            int lim = SCENE_H + dy;
+            memmove(fb, fb + (size_t)sy_off * SCREEN_W, (size_t)lim * SCREEN_W);
+            memset(fb + (size_t)lim * SCREEN_W, COL_BLACK, (size_t)sy_off * SCREEN_W);
+        }
+        return;
+    }
     if (dy >= 0) {
         for (int y = SCENE_H - 1; y >= dy; y--) {
             copy_row_shifted(fb + (size_t)y * SCREEN_W,
@@ -2206,26 +2220,50 @@ static void layer_crop_stretch(int x0, int y0, int cw, int ch)
 
     uint8_t *fb = (uint8_t *)gfx_vbuffer;
     int y = 0;
+    int prev_sy = -1;
+    int sy = y0;
+    int acc = 0;
     while (y < SCENE_H) {
-        int sy = y0 + (y * ch) / SCENE_H;
         if (sy <= y) {
             break;
         }
-        layer_stretch_one(fb, y, sy, x0, cw);
+        if (sy == prev_sy && y > 0) {
+            memcpy(fb + (size_t)y * SCREEN_W, fb + (size_t)(y - 1) * SCREEN_W, SCREEN_W);
+        } else {
+            layer_stretch_one(fb, y, sy, x0, cw);
+            prev_sy = sy;
+        }
         y++;
+        acc += ch;
+        while (acc >= SCENE_H) {
+            acc -= SCENE_H;
+            sy++;
+        }
     }
     int y2 = SCENE_H - 1;
+    int prev_sy2 = -1;
+    int sy2 = y0 + (y2 * ch) / SCENE_H;
+    int acc2 = (y2 * ch) % SCENE_H;
     while (y2 >= y) {
-        int sy = y0 + (y2 * ch) / SCENE_H;
-        if (sy >= y2) {
+        if (sy2 >= y2) {
             break;
         }
-        layer_stretch_one(fb, y2, sy, x0, cw);
+        if (sy2 == prev_sy2 && y2 + 1 < SCENE_H) {
+            memcpy(fb + (size_t)y2 * SCREEN_W, fb + (size_t)(y2 + 1) * SCREEN_W, SCREEN_W);
+        } else {
+            layer_stretch_one(fb, y2, sy2, x0, cw);
+            prev_sy2 = sy2;
+        }
         y2--;
+        acc2 -= ch;
+        while (acc2 < 0) {
+            acc2 += SCENE_H;
+            sy2--;
+        }
     }
     for (int ym = y; ym <= y2; ym++) {
-        int sy = y0 + (ym * ch) / SCENE_H;
-        layer_stretch_one(fb, ym, sy, x0, cw);
+        int sym = y0 + (ym * ch) / SCENE_H;
+        layer_stretch_one(fb, ym, sym, x0, cw);
     }
 }
 

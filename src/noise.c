@@ -111,7 +111,12 @@ static void noise_frame_rows(unsigned elapsed_ms,unsigned frame_rows) {
      * once and the LFSR carries continuously across all 19200 blocks. */
     for(row=0;row<frame_rows;row+=20){
         const uint8_t *mask=meta+256+(row/20u)*16u;
-        for(unsigned band=0;band<16;band++)memset(mask_columns+band*10u,mask[band],10);
+        uint8_t *dst_mask=mask_columns;
+        for(unsigned band=0;band<16;band++,dst_mask+=10){
+            uint8_t mv=mask[band];
+            dst_mask[0]=mv;dst_mask[1]=mv;dst_mask[2]=mv;dst_mask[3]=mv;dst_mask[4]=mv;
+            dst_mask[5]=mv;dst_mask[6]=mv;dst_mask[7]=mv;dst_mask[8]=mv;dst_mask[9]=mv;
+        }
         ctx.fb=undo_buffer+row*320u;
         noise_draw_asm(&ctx);
     }

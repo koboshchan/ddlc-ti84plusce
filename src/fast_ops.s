@@ -317,7 +317,85 @@ _fast_scale_row_trans:
 
 ; Shared internal row scaler core (separate section referenced by both scalers).
 	.section	.text._fast_scale_row_core,"ax",@progbits
+.macro scale_px_fast n
+	ld	a, (hl)
+	or	a, a
+	jr	z, .sc_skip\n
+	ld	(de), a
+.sc_skip\n:
+	inc	de
+	exx
+	add	hl, bc
+	jr	nc, .sc_no\n
+	add	hl, de
+	exx
+	inc	hl
+	jr	.sc_next\n
+.sc_no\n:
+	exx
+.sc_next\n:
+.endm
+
 _fast_scale_row_core:
+	; Use 4x unrolled carry-wrap DDA when count < 1024, step_x <= div_x, and acc_x < div_x.
+	ld	a, b
+	cp	a, 4
+	jp	nc, .scale_slow
+	push	hl
+	exx
+	push	hl			; save acc_x
+	push	de
+	pop	hl			; HL' = div_x (preserve DE' = div_x!)
+	or	a, a
+	sbc	hl, bc			; div_x - step_x
+	pop	hl			; HL' = acc_x, DE' = div_x
+	jp	c, .scale_slow_pop
+	or	a, a
+	sbc	hl, de			; HL' = acc_x - div_x (< 0)
+	jp	nc, .scale_slow_fix
+	push	hl
+	ld	hl, 0
+	or	a, a
+	sbc	hl, de
+	ex	de, hl			; DE' = -div_x
+	pop	hl			; HL' = acc_x - div_x
+	exx
+	pop	hl			; HL = src_row
+
+	ld	a, c
+	and	a, 3
+	push	af
+	srl	b
+	rr	c
+	srl	b
+	rr	c
+	ld	a, c
+	or	a, a
+	jr	z, .sc_tail_chk
+	ld	b, a
+.sc_fast4:
+	scale_px_fast 0
+	scale_px_fast 1
+	scale_px_fast 2
+	scale_px_fast 3
+	djnz	.sc_fast4
+.sc_tail_chk:
+	pop	af
+	or	a, a
+	ret	z
+	ld	b, a
+.sc_fast_tail:
+	scale_px_fast t
+	djnz	.sc_fast_tail
+	ret
+
+.scale_slow_fix:
+	add	hl, de
+.scale_slow_pop:
+	exx
+	pop	hl
+
+.scale_slow:
 	ld	a, b
 	or	a, a
 	jr	z, .short_row
@@ -712,6 +790,22 @@ _fast_remap_bytes:
 ; Opaque nearest-neighbor horizontal stretch (dst_w <= 511, src_w >= 1).
 ; ===========================================================================
 	.section	.text._fast_stretch_row,"ax",@progbits
+.macro stretch_px_fast n
+	ld	a, (hl)
+	ld	(de), a
+	inc	de
+	exx
+	add	hl, bc
+	jr	nc, .st_no\n
+	add	hl, de
+	exx
+	inc	hl
+	jr	.st_next\n
+.st_no\n:
+	exx
+.st_next\n:
+.endm
+
 _fast_stretch_row:
 	push	ix
 	push	iy
@@ -723,13 +817,67 @@ _fast_stretch_row:
 	ld	hl, 0
 	or	a, a
 	sbc	hl, bc
-	jr	z, .stretch_done
+	jp	z, .stretch_done
 
-	ld	hl, (iy + 18)		; HL = src_w
-	ld	a, h
-	or	a, l
-	jr	z, .stretch_done
+	ld	de, (iy + 18)		; DE = src_w
+	ld	hl, 0
+	or	a, a
+	sbc	hl, de
+	jp	z, .stretch_done
 
+	; Fast 4x carry-wrap path when src_w <= dst_w and dst_w < 1024
+	ld	a, b
+	cp	a, 4
+	jp	nc, .stretch_slow
+	ld	hl, (iy + 15)
+	or	a, a
+	sbc	hl, de			; dst_w - src_w
+	jp	c, .stretch_slow
+
+	ld	hl, 0
+	or	a, a
+	sbc	hl, bc			; -dst_w
+	exx
+	ld	de, (iy + 15)		; tmp dst_w
+	ld	hl, 0
+	or	a, a
+	sbc	hl, de
+	ex	de, hl			; DE' = -dst_w
+	push	de
+	pop	hl			; HL' = -dst_w (acc = 0)
+	ld	bc, (iy + 18)		; BC' = src_w
+	exx
+
+	ld	de, (iy + 9)		; DE = dst
+	ld	hl, (iy + 12)		; HL = src
+	ld	a, c
+	and	a, 3
+	push	af
+	srl	b
+	rr	c
+	srl	b
+	rr	c
+	ld	a, c
+	or	a, a
+	jr	z, .st_tail_chk
+	ld	b, a
+.st_fast4:
+	stretch_px_fast 0
+	stretch_px_fast 1
+	stretch_px_fast 2
+	stretch_px_fast 3
+	djnz	.st_fast4
+.st_tail_chk:
+	pop	af
+	or	a, a
+	jr	z, .stretch_done
+	ld	b, a
+.st_fast_tail:
+	stretch_px_fast t
+	djnz	.st_fast_tail
+	jr	.stretch_done
+
+.stretch_slow:
 	ld	de, (iy + 9)		; DE = dst
 	ld	hl, (iy + 12)		; HL = src
 
@@ -884,7 +1032,7 @@ _fast_bayer_dissolve:
 
 ; ===========================================================================
 ; void fast_zx0_decompress(void *dst, const void *src)
-; Full 24-bit eZ80 standard ZX0 decompressor (handles runs >= 65,536 bytes).
+; Turbo eZ80 ZX0 decompressor with full 24-bit run-length support (>= 65,536 B).
 ; ===========================================================================
 	.section	.text._fast_zx0_decompress,"ax",@progbits
 _fast_zx0_decompress:
@@ -897,79 +1045,175 @@ _fast_zx0_decompress:
 	ld	hl, (iy + 12)		; HL = src
 
 	ld	iy, 0xFFFFFF		; IY = -1 (last_offset = 1)
-	ld	a, 0x80			; empty bit buffer with sentinel at bit 7
+	lea	bc, iy + 2		; BC = 1 (BCU = 0)
+	scf				; sentinel bit for first rla
+	jr	.zx0t_literals_start
 
-.zx0_literals:
-	call	.zx0_elias24
-	ldir
-	call	.zx0_rbit
-	jr	c, .zx0_new_offset
+.zx0t_new_offset:
+	dec	bc
+	dec	bc			; BC = 0xFFFFFE (C = 0xFE, B = 0xFF)
+	add	a, a
+	jr	nz, .zx0t_no_skip
+	ld	a, (hl)
+	inc	hl
+	rla
+.zx0t_no_skip:
+	call	nc, .zx0t_elias_off
+	inc	c
+	jr	z, .zx0t_done
+	ld	b, (hl)
+	inc	hl
+	rr	c
+	rr	b
+	ld	iyl, b
+	ld	iyh, c			; IY = -offset (IYU remains 0xFF)
+	ld	bc, 1			; BC = 1 (BCU = 0)
+	call	nc, .zx0t_elias_len
+	inc	bc
 
-.zx0_last_offset:
-	call	.zx0_elias24
-
-.zx0_copy_match:
+.zx0t_copy:
 	push	hl
 	lea	hl, iy + 0
 	add	hl, de
 	ldir
 	pop	hl
-	call	.zx0_rbit
-	jr	nc, .zx0_literals
+	add	a, a
+	jr	c, .zx0t_new_offset
 
-.zx0_new_offset:
-	ld	c, 0xFE
-.zx0_eoff_loop:
-	call	.zx0_rbit
-	jr	c, .zx0_eoff_done	; Carry = 1 on exit
-	call	.zx0_rbit		; Carry = data bit
-	rl	c
-	jr	.zx0_eoff_loop
-
-.zx0_eoff_done:
-	inc	c			; preserves Carry = 1; Z = 1 => EOF
-	jr	z, .zx0_done
-	ld	b, (hl)
+.zx0t_literals:
+	inc	c			; BC = 1 (BCU = 0)
+	add	a, a
+	jr	nz, .zx0t_lit_skip
+.zx0t_literals_start:
+	ld	a, (hl)
 	inc	hl
-	rr	c			; sign-extend with Carry = 1
-	rr	b			; backtrack control bit -> Carry
-	ld	iyl, b
-	ld	iyh, c			; IYU remains 0xFF
-	ld	bc, 1
-	jr	c, .zx0_len_ready
-	ld	ix, 1
-	call	.zx0_e24_bit		; first control bit was 0 (backtrack)
-.zx0_len_ready:
-	inc	bc
-	jr	.zx0_copy_match
+	rla
+.zx0t_lit_skip:
+	call	nc, .zx0t_elias_len
+	ldir
+	add	a, a
+	jr	c, .zx0t_new_offset
 
-.zx0_done:
+.zx0t_last_offset:
+	inc	c			; BC = 1 (BCU = 0)
+	add	a, a
+	jr	nz, .zx0t_lo_skip
+	ld	a, (hl)
+	inc	hl
+	rla
+.zx0t_lo_skip:
+	call	nc, .zx0t_elias_len
+	jr	.zx0t_copy
+
+.zx0t_done:
 	pop	iy
 	pop	ix
 	ret
 
-; Read 1 bit from (HL) into Carry; A holds remaining bits + sentinel 1.
-.zx0_rbit:
+; Fast 4-step Elias prefix for offsets (< 16 in C, then 16-bit loop).
+.zx0t_elias_off:
 	add	a, a
+	rl	c
+	add	a, a
+	jr	nc, .zx0t_elias_off
 	ret	nz
 	ld	a, (hl)
 	inc	hl
 	rla
+	ret	c
+	add	a, a
+	rl	c
+	add	a, a
+	ret	c
+	add	a, a
+	rl	c
+	add	a, a
+	ret	c
+	add	a, a
+	rl	c
+	add	a, a
+	ret	c
+.zx0t_eo_loop:
+	add	a, a
+	rl	c
+	rl	b
+	add	a, a
+	jr	nc, .zx0t_eo_loop
+	ret	nz
+	ld	a, (hl)
+	inc	hl
+	rla
+	jr	nc, .zx0t_eo_loop
 	ret
 
-; Read interlaced Elias gamma into 24-bit BC (0 = continue + data bit, 1 = stop).
-.zx0_elias24:
-	ld	ix, 1
-.zx0_e24_loop:
-	call	.zx0_rbit
-	jr	c, .zx0_e24_done
-.zx0_e24_bit:
+; Fast Elias length reader: C fast prefix (< 16), 16-bit (B,C), 24-bit IX on carry.
+.zx0t_elias_len:
+	add	a, a
+	rl	c
+	add	a, a
+	jr	nc, .zx0t_elias_len
+	ret	nz
+	ld	a, (hl)
+	inc	hl
+	rla
+	ret	c
+	add	a, a
+	rl	c
+	add	a, a
+	ret	c
+	add	a, a
+	rl	c
+	add	a, a
+	ret	c
+	add	a, a
+	rl	c
+	add	a, a
+	ret	c
+.zx0t_el_loop16:
+	add	a, a
+	jr	nz, .zx0t_el_d16
+	ld	a, (hl)
+	inc	hl
+	rla
+.zx0t_el_d16:
+	rl	c
+	rl	b
+	jr	c, .zx0t_elias_24
+	add	a, a
+	jr	nz, .zx0t_el_c16
+	ld	a, (hl)
+	inc	hl
+	rla
+.zx0t_el_c16:
+	jr	nc, .zx0t_el_loop16
+	ret
+
+.zx0t_elias_24:
+	push	hl
+	ld	hl, 0x010000
+	add	hl, bc
+	push	hl
+	pop	ix
+	pop	hl
+.zx0t_el24_ctl:
+	add	a, a
+	jr	nz, .zx0t_el24_have_ctl
+	ld	a, (hl)
+	inc	hl
+	rla
+.zx0t_el24_have_ctl:
+	jr	c, .zx0t_el24_done
 	add	ix, ix
-	call	.zx0_rbit
-	jr	nc, .zx0_e24_loop
+	add	a, a
+	jr	nz, .zx0t_el24_have_data
+	ld	a, (hl)
+	inc	hl
+	rla
+.zx0t_el24_have_data:
+	jr	nc, .zx0t_el24_ctl
 	inc	ix
-	jr	.zx0_e24_loop
-.zx0_e24_done:
+	jr	.zx0t_el24_ctl
+.zx0t_el24_done:
 	push	ix
 	pop	bc
 	ret

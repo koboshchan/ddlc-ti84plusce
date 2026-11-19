@@ -1,4 +1,7 @@
 #include "ch5_bands.h"
+#ifdef __TICE__
+#include "fast_ops.h"
+#endif
 #include <compression.h>
 #include <fileioc.h>
 #include <string.h>
@@ -82,7 +85,11 @@ const uint8_t *ch5_band_row(uint8_t layer,uint16_t row) {
     next=band+1<data[9]?u16(data+12+2*band):size;
     if(offset<10+2*data[9] || offset>=next || next>size)return 0;
     /* Trusted packaged ZX0 streams are checked by the asset generator/audit. */
+#ifdef __TICE__
+    fast_zx0_decompress(pixels,data+offset);
+#else
     zx0_Decompress(pixels,data+offset);
+#endif
     if(keep)ready[band]=1;else cached_band[layer]=band;
     return pixels+(row&7u)*width;
 }

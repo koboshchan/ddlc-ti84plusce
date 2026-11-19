@@ -1,6 +1,7 @@
 #ifndef CH5_MOTION_H
 #define CH5_MOTION_H
 #include <stdint.h>
+#include <string.h>
 /* Authored viewport pixels in Q8; source cgs.rpy 231-311.
  * Sampling quantized to 250ms (4fps), no accumulated delta or frame assets. */
 typedef struct { int32_t x, y; uint32_t zoom_q10; uint16_t alpha_q10; } ch5_motion_t;
@@ -97,7 +98,11 @@ static void ch5_axis_map(int16_t *map, unsigned count, int32_t origin,
     int32_t delta = step / (int32_t)den;
     int32_t delta_remainder = step % (int32_t)den;
     for (unsigned i = 0; i < count; i++) {
-        map[i] = (source < 0 || (uint32_t)source >= texture_extent) ? -1 : (int16_t)source;
+        if (source >= (int32_t)texture_extent) {
+            memset(map + i, 255, (count - i) * sizeof *map);
+            break;
+        }
+        map[i] = (source < 0) ? -1 : (int16_t)source;
         source += delta;
         remainder += delta_remainder;
         if (remainder >= (int32_t)den) {

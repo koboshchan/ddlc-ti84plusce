@@ -88,7 +88,8 @@ static bool draw_fused_bg(uint8_t *table, uint8_t *pages,
                           int16_t *pair_x, int16_t *pair_y,
                           int16_t *xmap, int16_t *ymap,
                           const uint8_t *record, const uint8_t *qdata,
-                          const uint8_t *quant_groups, uint8_t *first_layer) {
+                          const uint8_t *quant_groups, uint8_t *first_layer,
+                          bool solid_bg0_window) {
     uint8_t bg_idx = *first_layer;
     unsigned ms0 = ch5_ticks_to_ms(clock() - layer_start[bg_idx]);
     unsigned ms1 = ch5_ticks_to_ms(clock() - layer_start[bg_idx + 1]);
@@ -109,15 +110,64 @@ static bool draw_fused_bg(uint8_t *table, uint8_t *pages,
         if (pair_y[k] < 0 || ymap[k] < 0) return true;
     }
 
-    /* Preflight both source windows. No partial fusion before fallback. */
-    for (unsigned k = 0; k < 180; k++) {
-        if (k && pair_y[k] == pair_y[k - 1] && ymap[k] == ymap[k - 1]) continue;
-        const uint8_t *r0 = ch5_band_row(0, pair_y[k]);
-        const uint8_t *r1 = ch5_band_row(1, ymap[k]);
-        if (!r0 || !r1) return false;
-        if (memchr(r0 + pair_x[0], 255, (size_t)(pair_x[319] - pair_x[0] + 1)) ||
-            memchr(r1 + xmap[0], 255, (size_t)(xmap[319] - xmap[0] + 1))) {
-            return true;
+    int16_t x0_min = pair_x[0], x0_max = pair_x[319];
+    int16_t x1_min = xmap[0], x1_max = xmap[319];
+    int16_t y0_min = pair_y[0], y0_max = pair_y[179];
+    int16_t y1_min = ymap[0], y1_max = ymap[179];
+    unsigned w0 = (unsigned)(x0_max - x0_min + 1);
+    unsigned w1 = (unsigned)(x1_max - x1_min + 1);
+    unsigned h0 = (unsigned)(y0_max - y0_min + 1);
+    unsigned h1 = (unsigned)(y1_max - y1_min + 1);
+
+    /* Pack bg0 & bg1 active crops inside resident (30720 B) when safe so neither
+     * DMOT0 nor DMOT1 band cache thrashes or double-decodes between preflight and draw.
+     * y0_min >= 25 guarantees packed dst ends strictly before resident source row offset. */
+    bool packed = resident != NULL &&
+                  y0_min >= 25 && y0_max < 120 && y0_min <= y0_max &&
+                  y1_min <= y1_max &&
+                  (size_t)h0 * w0 + (size_t)h1 * w1 <= 30720u;
+    bool skip_r0_scan = solid_bg0_window &&
+                        y0_min >= 26 && y0_max <= 116 &&
+                        x0_min >= 31 && x0_max <= 191;
+
+    if (packed) {
+        for (int16_t r0 = y0_min; r0 <= y0_max; r0++) {
+            const uint8_t *src = ch5_band_row(0, (uint16_t)r0);
+            if (!src) {
+                ch5_band_invalidate();
+                return false;
+            }
+            if (!skip_r0_scan && memchr(src + x0_min, 255, w0)) {
+                ch5_band_invalidate();
+                return true;
+            }
+            memmove(resident + (size_t)(r0 - y0_min) * w0, src + x0_min, w0);
+        }
+        uint8_t *dst1 = resident + (size_t)h0 * w0;
+        for (int16_t r1 = y1_min; r1 <= y1_max; r1++) {
+            const uint8_t *src = ch5_band_row(1, (uint16_t)r1);
+            if (!src) {
+                ch5_band_invalidate();
+                return false;
+            }
+            if (memchr(src + x1_min, 255, w1)) {
+                ch5_band_invalidate();
+                return true;
+            }
+            memcpy(dst1 + (size_t)(r1 - y1_min) * w1, src + x1_min, w1);
+        }
+        ch5_band_invalidate();
+    } else {
+        /* Preflight both source windows. No partial fusion before fallback. */
+        for (unsigned k = 0; k < 180; k++) {
+            if (k && pair_y[k] == pair_y[k - 1] && ymap[k] == ymap[k - 1]) continue;
+            const uint8_t *r0 = ch5_band_row(0, pair_y[k]);
+            const uint8_t *r1 = ch5_band_row(1, ymap[k]);
+            if (!r0 || !r1) return false;
+            if ((!skip_r0_scan && memchr(r0 + x0_min, 255, w0)) ||
+                memchr(r1 + x1_min, 255, w1)) {
+                return true;
+            }
         }
     }
 
@@ -127,16 +177,26 @@ static bool draw_fused_bg(uint8_t *table, uint8_t *pages,
         phase == 0 ? ch5_fused_bg_0 :
         phase == 1 ? ch5_fused_bg_1 :
         phase == 2 ? ch5_fused_bg_2 : ch5_fused_bg_3;
+    const uint8_t *base1 = resident + (size_t)h0 * w0;
     for (unsigned k = 0; k < 180; k++) {
         uint8_t *dst = (uint8_t *)gfx_vbuffer + k * 320;
         if (k && pair_y[k] == pair_y[k - 1] && ymap[k] == ymap[k - 1]) {
             memcpy(dst, dst - 320, 320);
             continue;
         }
-        const uint8_t *r0 = ch5_band_row(0, pair_y[k]);
-        const uint8_t *r1 = ch5_band_row(1, ymap[k]);
-        if (!r0 || !r1) return false;
-        kernel(dst, r0 + pair_x[0], r1 + xmap[0], pages, table);
+        const uint8_t *r0;
+        const uint8_t *r1;
+        if (packed) {
+            r0 = resident + (size_t)(pair_y[k] - y0_min) * w0;
+            r1 = base1 + (size_t)(ymap[k] - y1_min) * w1;
+        } else {
+            const uint8_t *p0 = ch5_band_row(0, pair_y[k]);
+            const uint8_t *p1 = ch5_band_row(1, ymap[k]);
+            if (!p0 || !p1) return false;
+            r0 = p0 + x0_min;
+            r1 = p1 + x1_min;
+        }
+        kernel(dst, r0, r1, pages, table);
     }
     *first_layer = (uint8_t)(bg_idx + 2);
     return true;
@@ -145,7 +205,8 @@ static bool draw_fused_bg(uint8_t *table, uint8_t *pages,
 static bool draw_motion_layer(uint8_t layer, uint8_t mode, uint8_t i_slot,
                               uint8_t *ramlut, uint8_t *pages,
                               int16_t *xmap, int16_t *ymap,
-                              const uint8_t *qdata, const uint8_t *quant_groups) {
+                              const uint8_t *qdata, const uint8_t *quant_groups,
+                              uint8_t fg_cache_layer, uint8_t *fg_row_bits) {
     unsigned tw = layer < 2 ? 320 : 72;
     unsigned th = layer < 2 ? 180 : 263;
     unsigned layer_ms = ch5_ticks_to_ms(clock() - layer_start[i_slot]);
@@ -172,29 +233,56 @@ static bool draw_motion_layer(uint8_t layer, uint8_t mode, uint8_t i_slot,
         doubled = xmap[first + (span > 1)] == xmap[first];
         odd_doubled = !doubled;
     } else {
-        for (unsigned k = 0; k < span; k++) {
-            if (xmap[first + k] != xmap[first] + (int16_t)k) linear = false;
-            if (xmap[first + k] != xmap[first] + (int16_t)(k / 2)) doubled = false;
-            if (xmap[first + k] != xmap[first] + (int16_t)((k + 1) / 2)) odd_doubled = false;
+        int16_t dx = xmap[first + span - 1] - xmap[first];
+        if (dx != (int16_t)(span - 1)) linear = false;
+        if (dx != (int16_t)((span - 1) / 2)) doubled = false;
+        if (dx != (int16_t)(span / 2)) odd_doubled = false;
+        for (unsigned k = 0; k < span && (linear || doubled || odd_doubled); k++) {
+            if (linear && xmap[first + k] != xmap[first] + (int16_t)k) linear = false;
+            if (doubled && xmap[first + k] != xmap[first] + (int16_t)(k / 2)) doubled = false;
+            if (odd_doubled && xmap[first + k] != xmap[first] + (int16_t)((k + 1) / 2)) odd_doubled = false;
         }
     }
 
     int16_t prior_source = -1;
+    int16_t prior_drawn_source = -1;
     const uint8_t *prior_row = NULL;
     bool prior_solid = false;
     for (uint8_t y = 0; y < 180; y++) {
-        if (ymap[y] < 0) continue;
-        const uint8_t *row = ymap[y] == prior_source ? prior_row : ch5_band_row(layer, ymap[y]);
-        if (!row) return false;
+        if (ymap[y] < 0) {
+            prior_drawn_source = -1;
+            continue;
+        }
+        const uint8_t *row;
+        if (ymap[y] == prior_source) {
+            row = prior_row;
+        } else if (layer == fg_cache_layer &&
+                   ((fg_row_bits[(unsigned)ymap[y] >> 3] >> ((unsigned)ymap[y] & 7u)) & 1u)) {
+            row = resident + (size_t)ymap[y] * 72u;
+        } else {
+            row = ch5_band_row(layer, ymap[y]);
+            if (!row) return false;
+            if (layer == fg_cache_layer) {
+                memcpy(resident + (size_t)ymap[y] * 72u, row, 72u);
+                fg_row_bits[(unsigned)ymap[y] >> 3] |= (uint8_t)(1u << ((unsigned)ymap[y] & 7u));
+            }
+        }
         if (ymap[y] != prior_source) prior_solid = layer < 2 && !memchr(row,255,tw);
         prior_source = ymap[y];
         prior_row = row;
         uint8_t *dst = (uint8_t *)gfx_vbuffer + y * 320;
         /* Never assume packaged backgrounds are opaque. Scan the decoded row;
          * unusual transparent assets retain the original guarded kernels. */
-        if (opaque && prior_solid && linear) {
-            memcpy(dst + first, row + xmap[first], span);
-            continue;
+        if (opaque && prior_solid) {
+            if (y > 0 && ymap[y] == prior_drawn_source) {
+                memcpy(dst + first, dst - 320 + first, span);
+                continue;
+            }
+            if (linear) {
+                memcpy(dst + first, row + xmap[first], span);
+                prior_drawn_source = ymap[y];
+                continue;
+            }
         }
         void (*copy1)(uint8_t *, const uint8_t *, unsigned) = ch5_motion_opaque_direct1;
         void (*copy2)(uint8_t *, const uint8_t *, unsigned) =
@@ -231,6 +319,7 @@ static bool draw_motion_layer(uint8_t layer, uint8_t mode, uint8_t i_slot,
             if (opaque) ch5_motion_opaque_fast(dst + first, row, xmap + first, span);
             else ch5_motion_quant_fast(dst + first, row, xmap + first, span, pages, ramlut);
         }
+        prior_drawn_source = (opaque && prior_solid) ? ymap[y] : -1;
     }
     return true;
 }
@@ -376,9 +465,16 @@ bool ch5_motion_draw(uint8_t scene) {
     resident = malloc(30720);
     ch5_band_begin();
 
-    /* Validate each stream before modifying frame. Existing scene is fallback. */
+    /* Validate each distinct stream before modifying frame. Existing scene is fallback. */
+    uint8_t seen_layers = 0;
     for (i = 0; i < record[1]; i++) {
-        if (!ch5_band_row(record[2 + i * 2], 0)) goto motion_done;
+        uint8_t l = record[2 + i * 2];
+        if (l < 8) {
+            uint8_t bit = (uint8_t)(1u << l);
+            if (seen_layers & bit) continue;
+            seen_layers |= bit;
+        }
+        if (!ch5_band_row(l, 0)) goto motion_done;
     }
 
     uint8_t first_layer = 0;
@@ -412,14 +508,39 @@ bool ch5_motion_draw(uint8_t scene) {
     if (solid_bg_skip && record[1] >= first_layer + 2 &&
         record[2 + first_layer * 2] == 0 && record[2 + (first_layer + 1) * 2] == 1) {
         if (!draw_fused_bg(table, pages, pair_x, pair_y, xmap, ymap,
-                           record, qdata, quant_groups, &first_layer)) {
+                           record, qdata, quant_groups, &first_layer, solid_bg_skip)) {
             goto motion_done;
+        }
+    }
+
+    uint8_t fg_cache_layer = 255;
+    uint8_t fg_row_bits[33];
+    if (resident != NULL) {
+        bool has_layer0 = false;
+        uint8_t fg_seen = 0;
+        for (i = first_layer; i < record[1]; i++) {
+            uint8_t l = record[2 + i * 2];
+            if (l == 0) has_layer0 = true;
+            else if (l >= 2 && l < 8) {
+                uint8_t bit = (uint8_t)(1u << l);
+                if (fg_seen & bit) {
+                    if (fg_cache_layer == 255) fg_cache_layer = l;
+                } else {
+                    fg_seen |= bit;
+                }
+            }
+        }
+        if (has_layer0) fg_cache_layer = 255;
+        if (fg_cache_layer != 255) {
+            ch5_band_invalidate();
+            memset(fg_row_bits, 0, sizeof(fg_row_bits));
         }
     }
 
     for (i = first_layer; i < record[1]; i++) {
         if (!draw_motion_layer(record[2 + i * 2], record[3 + i * 2], i,
-                               table, pages, xmap, ymap, qdata, quant_groups)) {
+                               table, pages, xmap, ymap, qdata, quant_groups,
+                               fg_cache_layer, fg_row_bits)) {
             goto motion_done;
         }
     }

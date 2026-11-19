@@ -612,8 +612,13 @@ static bool sprite_lookup(uint16_t id, uint8_t *appvar_out, uint16_t *offset_out
  * per-draw malloc/free pairs. Repeated frames during hop/sink/zoom/slide
  * animations hit RAM in O(1) with zero flash opens, zero decompression, and
  * zero heap fragmentation. */
+#ifdef __TICE__
+#define SPRITE_CACHE_ARENA_CAP 36864u
+#define SPRITE_CACHE_SLOTS     12u
+#else
 #define SPRITE_CACHE_ARENA_CAP 16384u
 #define SPRITE_CACHE_SLOTS     8u
+#endif
 
 typedef struct {
     uint16_t id;
@@ -701,7 +706,11 @@ static bool sprite_ensure_arena(uint16_t need)
         assets_sprite_cache_clear();
     }
     if (!sprite_arena) {
+#ifdef __TICE__
+        static const uint16_t caps[] = { SPRITE_CACHE_ARENA_CAP, 34816u, 32768u, 30720u, 28672u, 24576u, 20480u, 16384u, 12288u, 8192u };
+#else
         static const uint16_t caps[] = { SPRITE_CACHE_ARENA_CAP, 12288u, 8192u };
+#endif
         for (size_t i = 0; i < sizeof(caps) / sizeof(caps[0]); i++) {
             if (caps[i] < need) {
                 continue;
@@ -1057,7 +1066,7 @@ bool assets_poem_bg(uint8_t *dest)
 {
     uint8_t compressed = ti_Open("DPOEMBG", "r");
     if (compressed) {
-        zx0_Decompress(dest, ti_GetDataPtr(compressed));
+        fast_zx0_decompress(dest, ti_GetDataPtr(compressed));
         ti_Close(compressed);
         return true;
     }

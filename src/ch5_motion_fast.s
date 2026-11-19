@@ -5,181 +5,184 @@
 ; Exact indexed scanline, already clipped by the caller.
 ; void ch5_motion_opaque_fast(dst, src, xmap, count)
 ; Every xmap entry is a nonnegative uint16 source offset.
+.macro opfast_px k
+	or	a, a
+	sbc	hl, hl
+	ld	l, (ix + 2*\k)
+	ld	h, (ix + 2*\k + 1)
+	add	hl, bc
+	ld	a, (hl)
+	cp	a, 255
+	jr	z, .opf_sk\k
+	ld	(de), a
+.opf_sk\k:
+	inc	de
+.endm
+
 _ch5_motion_opaque_fast:
-	push ix
-	push iy
-	ld ix,0
-	add ix,sp
-	ld de,(ix+9)
-	ld bc,(ix+12)
-	ld iy,(ix+18)
-	ld ix,(ix+15)
-	ld a,iyl
-	or a,iyh
-	jr z,.done
+	push	ix
+	push	iy
+	ld	ix, 0
+	add	ix, sp
+	ld	de, (ix + 9)		; DE = dst
+	ld	bc, (ix + 12)		; BC = src
+	ld	iy, (ix + 18)		; IY = count
+	ld	ix, (ix + 15)		; IX = xmap
+	ld	a, iyl
+	and	a, 7
+	push	af			; save tail (0..7)
+	push	iy
+	pop	hl
+	srl	h
+	rr	l
+	srl	h
+	rr	l
+	srl	h
+	rr	l			; HL = count >> 3 (assume < 65536)
+	ld	a, h
+	or	a, l
+	jp	z, .opf_tail_setup
+	push	hl
+	pop	iy			; IY = groups of 8
+.opf_loop8:
+	opfast_px 0
+	opfast_px 1
+	opfast_px 2
+	opfast_px 3
+	opfast_px 4
+	opfast_px 5
+	opfast_px 6
+	opfast_px 7
+	lea	ix, ix + 16
+	dec	iy
+	ld	a, iyl
+	or	a, iyh
+	jp	nz, .opf_loop8
+.opf_tail_setup:
+	pop	af
+	or	a, a
+	jr	z, .done
+	ld	iyl, a
 .loop:
-	ld hl,0
-	ld l,(ix+0)
-	ld h,(ix+1)
-	add hl,bc
-	ld a,(hl)
-	cp a,255
-	jr z,.transparent
-	ld (de),a
+	or	a, a
+	sbc	hl, hl
+	ld	l, (ix + 0)
+	ld	h, (ix + 1)
+	add	hl, bc
+	ld	a, (hl)
+	cp	a, 255
+	jr	z, .transparent
+	ld	(de), a
 .transparent:
-	inc de
-	lea ix,ix+2
-	dec iy
-	ld a,iyl
-	or a,iyh
-	jr nz,.loop
+	inc	de
+	lea	ix, ix + 2
+	dec	iyl
+	jr	nz, .loop
 .done:
-	pop iy
-	pop ix
+	pop	iy
+	pop	ix
 	ret
 
+
+.macro qfast_px k
+	or	a, a
+	sbc	hl, hl
+	ld	l, (ix + 2*\k)
+	ld	h, (ix + 2*\k + 1)
+	add	hl, bc
+	ld	a, (hl)
+	cp	a, 255
+	jr	z, .qf_sk\k
+	exx
+	ld	l, a
+	ld	a, (hl)
+	exx
+	ld	iyh, a
+	ld	a, (de)
+	ld	iyl, a
+	ld	a, (iy)
+	ld	(de), a
+.qf_sk\k:
+	inc	de
+.endm
 
  .global _ch5_motion_quant_fast
  .type _ch5_motion_quant_fast,@function
 _ch5_motion_quant_fast:
  push ix
  push iy
- ld iy,0
- add iy,sp
- ld de,(iy+9)
- ld bc,(iy+12)
- ld ix,(iy+15)
- ld hl,(iy+18)
- push hl
-.aligned_blocks:
- ld hl,(iy-3)
- ld a,h
- or a,a
- jr nz,.four
+ ld ix,0
+ add ix,sp
+ ld hl,(ix+18)
  ld a,l
- cp a,4
- jp c,.tail
-.four:
-
- ld hl,0
- ld l,(ix+0)
- ld h,(ix+1)
- add hl,bc
- ld a,(hl)
- cp a,255
- jr z,.advance0
- ld hl,(iy+21)
- ld l,a
- ld a,(hl)
- ld hl,(iy+24)
- ld h,a
- ld a,(de)
- ld l,a
- ld a,(hl)
- ld (de),a
-.advance0:
- inc de
- lea ix,ix+2
-
- ld hl,0
- ld l,(ix+0)
- ld h,(ix+1)
- add hl,bc
- ld a,(hl)
- cp a,255
- jr z,.advance1
- ld hl,(iy+21)
- ld l,a
- ld a,(hl)
- ld hl,(iy+24)
- ld h,a
- ld a,(de)
- ld l,a
- ld a,(hl)
- ld (de),a
-.advance1:
- inc de
- lea ix,ix+2
-
- ld hl,0
- ld l,(ix+0)
- ld h,(ix+1)
- add hl,bc
- ld a,(hl)
- cp a,255
- jr z,.advance2
- ld hl,(iy+21)
- ld l,a
- ld a,(hl)
- ld hl,(iy+24)
- ld h,a
- ld a,(de)
- ld l,a
- ld a,(hl)
- ld (de),a
-.advance2:
- inc de
- lea ix,ix+2
-
- ld hl,0
- ld l,(ix+0)
- ld h,(ix+1)
- add hl,bc
- ld a,(hl)
- cp a,255
- jr z,.advance3
- ld hl,(iy+21)
- ld l,a
- ld a,(hl)
- ld hl,(iy+24)
- ld h,a
- ld a,(de)
- ld l,a
- ld a,(hl)
- ld (de),a
-.advance3:
- inc de
- lea ix,ix+2
-
- ld hl,(iy-3)
- dec hl
- dec hl
- dec hl
- dec hl
- ld (iy-3),hl
- jp .aligned_blocks
-.tail:
- ld hl,(iy-3)
- ld a,h
- or a,l
- jr z,.aligned_done
-
- ld hl,0
- ld l,(ix+0)
- ld h,(ix+1)
- add hl,bc
- ld a,(hl)
- cp a,255
- jr z,.advance_tail
- ld hl,(iy+21)
- ld l,a
- ld a,(hl)
- ld hl,(iy+24)
- ld h,a
- ld a,(de)
- ld l,a
- ld a,(hl)
- ld (de),a
-.advance_tail:
- inc de
- lea ix,ix+2
-
- ld hl,(iy-3)
- dec hl
- ld (iy-3),hl
- jp .tail
-.aligned_done:
+ and a,7
+ push af
+ srl h
+ rr l
+ srl h
+ rr l
+ srl h
+ rr l
+ ld de,(ix+21)
+ push de
+ push hl
+ exx
+ pop bc
  pop hl
+ ld a,b
+ or a,c
+ exx
+ ld de,(ix+9)
+ ld bc,(ix+12)
+ ld iy,(ix+24)
+ ld ix,(ix+15)
+ jp z,.qf_tail
+.qf_loop8:
+ qfast_px 0
+ qfast_px 1
+ qfast_px 2
+ qfast_px 3
+ qfast_px 4
+ qfast_px 5
+ qfast_px 6
+ qfast_px 7
+ lea ix,ix+16
+ exx
+ dec bc
+ ld a,b
+ or a,c
+ exx
+ jp nz,.qf_loop8
+.qf_tail:
+ pop af
+ or a,a
+ jr z,.qf_done
+.qf_tloop:
+ ex af,af'
+ or a,a
+ sbc hl,hl
+ ld l,(ix+0)
+ ld h,(ix+1)
+ add hl,bc
+ ld a,(hl)
+ cp a,255
+ jr z,.qf_tsk
+ exx
+ ld l,a
+ ld a,(hl)
+ exx
+ ld iyh,a
+ ld a,(de)
+ ld iyl,a
+ ld a,(iy)
+ ld (de),a
+.qf_tsk:
+ inc de
+ lea ix,ix+2
+ ex af,af'
+ dec a
+ jr nz,.qf_tloop
+.qf_done:
  pop iy
  pop ix
  ret
@@ -1340,10 +1343,9 @@ _ch5_fused_bg_0:
  ld de,(ix+15)
  ld iy,(ix+21)
  ld ix,(ix+18)
- push hl
- ld hl,80
- ex (sp),hl
+ ld a,80
 .ch5_fused_bg_0_loop:
+ ex af,af'
  ld a,(de)
  ld ixl,a
  ld a,(ix)
@@ -1371,13 +1373,9 @@ _ch5_fused_bg_0:
  inc bc
  inc hl
  inc de
- ex (sp),hl
- dec hl
- ld a,h
- or a,l
- ex (sp),hl
+ ex af,af'
+ dec a
  jp nz,.ch5_fused_bg_0_loop
- pop hl
  pop iy
  pop ix
  ret
@@ -1394,10 +1392,9 @@ _ch5_fused_bg_1:
  ld de,(ix+15)
  ld iy,(ix+21)
  ld ix,(ix+18)
- push hl
- ld hl,80
- ex (sp),hl
+ ld a,80
 .ch5_fused_bg_1_loop:
+ ex af,af'
  ld a,(de)
  ld ixl,a
  ld a,(ix)
@@ -1408,10 +1405,6 @@ _ch5_fused_bg_1:
  ld (bc),a
  inc bc
  inc hl
- ld a,(de)
- ld ixl,a
- ld a,(ix)
- ld iyh,a
  ld a,(hl)
  ld iyl,a
  ld a,(iy)
@@ -1429,23 +1422,15 @@ _ch5_fused_bg_1:
  ld (bc),a
  inc bc
  inc hl
- ld a,(de)
- ld ixl,a
- ld a,(ix)
- ld iyh,a
  ld a,(hl)
  ld iyl,a
  ld a,(iy)
  ld (bc),a
  inc bc
  inc de
- ex (sp),hl
- dec hl
- ld a,h
- or a,l
- ex (sp),hl
+ ex af,af'
+ dec a
  jp nz,.ch5_fused_bg_1_loop
- pop hl
  pop iy
  pop ix
  ret
@@ -1462,10 +1447,9 @@ _ch5_fused_bg_2:
  ld de,(ix+15)
  ld iy,(ix+21)
  ld ix,(ix+18)
- push hl
- ld hl,80
- ex (sp),hl
+ ld a,80
 .ch5_fused_bg_2_loop:
+ ex af,af'
  ld a,(de)
  ld ixl,a
  ld a,(ix)
@@ -1480,8 +1464,6 @@ _ch5_fused_bg_2:
  ld ixl,a
  ld a,(ix)
  ld iyh,a
- ld a,(hl)
- ld iyl,a
  ld a,(iy)
  ld (bc),a
  inc bc
@@ -1501,19 +1483,13 @@ _ch5_fused_bg_2:
  ld ixl,a
  ld a,(ix)
  ld iyh,a
- ld a,(hl)
- ld iyl,a
  ld a,(iy)
  ld (bc),a
  inc bc
  inc hl
- ex (sp),hl
- dec hl
- ld a,h
- or a,l
- ex (sp),hl
+ ex af,af'
+ dec a
  jp nz,.ch5_fused_bg_2_loop
- pop hl
  pop iy
  pop ix
  ret
@@ -1530,10 +1506,9 @@ _ch5_fused_bg_3:
  ld de,(ix+15)
  ld iy,(ix+21)
  ld ix,(ix+18)
- push hl
- ld hl,80
- ex (sp),hl
+ ld a,80
 .ch5_fused_bg_3_loop:
+ ex af,af'
  ld a,(de)
  ld ixl,a
  ld a,(ix)
@@ -1575,13 +1550,9 @@ _ch5_fused_bg_3:
  ld a,(iy)
  ld (bc),a
  inc bc
- ex (sp),hl
- dec hl
- ld a,h
- or a,l
- ex (sp),hl
+ ex af,af'
+ dec a
  jp nz,.ch5_fused_bg_3_loop
- pop hl
  pop iy
  pop ix
  ret

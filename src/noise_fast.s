@@ -119,7 +119,9 @@ _noise_draw_asm:
  ld iy,(iy+9)
  ld (.draw_context),iy
  ld hl,(iy+15)
- ld (.draw_colors),hl
+ ld de,.draw_colors_buf
+ ld bc,32
+ ldir
  ld hl,(iy+12)
  ld (.draw_mask_start),hl
  ld ix,(iy+0)
@@ -180,21 +182,16 @@ _noise_draw_asm:
  ld a,(iy+2*\n+1)
  ld (de),a
  inc de
- push hl
- push bc
- ld a,b
- and 1
- rlca
- rlca
- rlca
- rlca
- add a,(hl)
- ld bc,0
- ld c,a
- ld hl,(.draw_colors)
- add hl,bc
  ld a,(hl)
- pop bc
+ bit 0,b
+ jr z,.draw_c0_\n
+ add a,16
+.draw_c0_\n:
+ push hl
+ ld hl,.draw_colors_buf
+ add a,l
+ ld l,a
+ ld a,(hl)
  pop hl
  ld (ix+2*\n),a
  ld (ix+2*\n+1),a
@@ -240,9 +237,10 @@ _noise_draw_asm:
  pop ix
  ret
 	.section .data,"aw",@progbits
+.p2align 5
+.draw_colors_buf: .space 32
 .draw_rows: .byte 0
 .draw_groups: .byte 0
 
 .draw_context: .long 0
-.draw_colors: .long 0
 .draw_mask_start: .long 0
