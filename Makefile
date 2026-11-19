@@ -52,8 +52,18 @@ PYTHON       ?= python3
 BUNDLE_DIR   ?= build
 IMPORT_FLAGS ?=
 
-.PHONY: bundle
+.PHONY: bundle ddebug
 bundle: $(BINDIR)/$(TARGET)
 	$(if $(GAME_DIR),,$(error GAME_DIR is required, e.g. make bundle GAME_DIR=/path/to/DDLC-1.1.1-pc/game))
 	$(PYTHON) tools/import_game.py "$(GAME_DIR)" --build-dir $(BUNDLE_DIR) \
 		--prog $(BINDIR)/$(TARGET) $(IMPORT_FLAGS)
+
+# Build standalone DDEBUG.8xv separately from production game assets.
+# Sending build/DDEBUG.8xv onto a calculator causes DDLC.8xp to auto-load it.
+DDEBUG_FLAGS ?= PERF_OVERLAY=1
+DDEBUG_OUT   ?= $(BUNDLE_DIR)/DDEBUG.8xv
+
+ddebug:
+	$(MAKE) $(DDEBUG_FLAGS) OBJDIR=obj/ddebug BINDIR=bin/ddebug
+	$(PYTHON) tools/build_ddebug.py --elf bin/ddebug/$(NAME).obj \
+		--out $(DDEBUG_OUT) --report $(BUNDLE_DIR)/ddebug-build.json
