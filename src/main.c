@@ -381,6 +381,17 @@ static const char *speaker_display_name(const vn_vm_t *vm, uint8_t speaker);
 static const char *substitute_dialogue_tags(const vn_vm_t *vm, const char *s);
 
 #ifdef DDLC_DEBUG_MENU
+static __attribute__((noinline)) void dbg_printf(int x, int y, uint8_t color,
+                                                 const char *fmt, ...)
+{
+    char buf[64];
+    va_list ap;
+    va_start(ap, fmt);
+    mini_vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    render_text(buf, x, y, color);
+}
+
 /** Runs the real poem minigame screen (the same src/poem.c code a `call
  * poem` site drives) and shows its result -- winner plus every character's
  * cumulative appeal total, the same values a chapter-indexed `call poem`
@@ -420,18 +431,13 @@ static __attribute__((noinline)) void run_debug_poem_test(void)
     int16_t s = 0, n = 0, y = 0;
     assets_sprite_cache_clear();
     uint8_t winner = poem_run(&s, &n, &y, playthrough, chapter, -1);
-    char line[32];
 
     render_backdrop(COL_BOX_FILL);
     render_text("Poem minigame result", 14, 12, COL_NAME);
-    sprintf(line, "Winner: %s", winner < 3 ? names[winner] : "?");
-    render_text(line, 14, 40, COL_WHITE);
-    sprintf(line, "Sayori appeal:  %d", s);
-    render_text(line, 14, 56, COL_WHITE);
-    sprintf(line, "Natsuki appeal: %d", n);
-    render_text(line, 14, 70, COL_WHITE);
-    sprintf(line, "Yuri appeal:    %d", y);
-    render_text(line, 14, 84, COL_WHITE);
+    dbg_printf(14, 40, COL_WHITE, "Winner: %s", winner < 3 ? names[winner] : "?");
+    dbg_printf(14, 56, COL_WHITE, "Sayori appeal:  %d", s);
+    dbg_printf(14, 70, COL_WHITE, "Natsuki appeal: %d", n);
+    dbg_printf(14, 84, COL_WHITE, "Yuri appeal:    %d", y);
     render_text("2nd / Enter to return", 14, SCREEN_H - 20, COL_BOX_EDGE);
     render_present(TRANS_CUT);
     gfx_Wait();
@@ -512,10 +518,14 @@ static __attribute__((noinline)) void run_debug_tags_test(vn_vm_t *vm)
     input_t in;
     char line[48];
 
-    vn_scene_t scene;
-    memset(&scene, 0, sizeof(scene));
-    scene.background = VN_NO_SPRITE;
-    scene.window_hidden = false;
+    vn_scene_t *scene_p = calloc(1, sizeof(*scene_p));
+    if (!scene_p) {
+        free(fallback_vm);
+        return;
+    }
+    scene_p->background = VN_NO_SPRITE;
+    scene_p->window_hidden = false;
+#define scene (*scene_p)
 
     for (;;) {
         const tag_test_t *tc = &test_cases[cur];
@@ -559,6 +569,8 @@ static __attribute__((noinline)) void run_debug_tags_test(vn_vm_t *vm)
     }
 
     free(fallback_vm);
+    free(scene_p);
+#undef scene
     if (vm && saved_glitch[0]) {
         strncpy(vm->glitch_buf, saved_glitch, sizeof(vm->glitch_buf));
     }
@@ -598,16 +610,18 @@ static __attribute__((noinline)) void run_debug_anim_test(void)
     static const char *const anim_names[3] = {
         "ZOOM (speaking pop)", "HOP (one-shot bounce)", "SINK (drift + hold)",
     };
-    vn_scene_t scene;
+    vn_scene_t *scene_p = calloc(1, sizeof(*scene_p));
+    if (!scene_p) {
+        return;
+    }
+#define scene (*scene_p)
     uint16_t   sprite     = 0;
     uint8_t    anim       = 0;
     bool       is_active  = false;
     uint8_t    zoom_mode  = 0; /* 0: REST, 1: ZOOMED, 2: AUTO-PULSE */
     clock_t    last_pulse = 0;
     input_t in;
-    char line[48];
 
-    memset(&scene, 0, sizeof(scene));
     for (int i = 0; i < VN_MAX_CHARS; i++) {
         scene.actors[i].character = VN_NO_SPRITE;
     }
@@ -639,21 +653,21 @@ static __attribute__((noinline)) void run_debug_anim_test(void)
         render_backdrop(COL_BOX_FILL);
         render_scene_lazy(&scene);
 
-        sprintf(line, "Sprite id: %u | %s", sprite, anim_names[anim]);
-        render_text(line, 8, 4, COL_WHITE);
+        dbg_printf(8, 4, COL_WHITE, "Sprite id: %u | %s", sprite, anim_names[anim]);
 
         if (anim == 0) {
             static const char *const z_labels[3] = {
                 "1.00x REST", "1.05x ZOOMED", "AUTO-PULSE (60 FPS)"
             };
-            sprintf(line, "State: %s (press 2nd to cycle)", z_labels[zoom_mode]);
-            render_text(line, 8, 20, zoom_mode > 0 ? COL_HIGHLIGHT : COL_NAME);
-            render_text("eZ80 fast_scale_row_trans + plate blit", 8, 34, COL_BOX_EDGE);
+            dbg_printf(8, 20, zoom_mode > 0 ? COL_HIGHLIGHT : COL_NAME,
+                       "State: %s (press 2nd to cycle)", z_labels[zoom_mode]);
+            render_text("eZ80 fast_scale_row_trans + dirty rect", 8, 34, COL_BOX_EDGE);
         } else if (anim == 1) {
             render_text("Press 2nd to trigger HOP bounce", 8, 20, COL_HIGHLIGHT);
         } else {
-            sprintf(line, "State: %s (press 2nd to toggle)", is_active ? "SUNK (1.06)" : "NORMAL");
-            render_text(line, 8, 20, is_active ? COL_HIGHLIGHT : COL_NAME);
+            dbg_printf(8, 20, is_active ? COL_HIGHLIGHT : COL_NAME,
+                       "State: %s (press 2nd to toggle)",
+                       is_active ? "SUNK (1.06)" : "NORMAL");
         }
 
         render_text("Up/Dn: anim  L/R: sprite  2nd: trigger  Mode: back",
@@ -703,6 +717,8 @@ static __attribute__((noinline)) void run_debug_anim_test(void)
      * force the next real render_scene_lazy() (the story's own idle/
      * typewriter loop) to do a genuine full redraw instead of trusting
      * whatever this left the draw buffer holding. */
+    free(scene_p);
+#undef scene
     render_invalidate_scene();
 }
 
@@ -719,17 +735,15 @@ static __attribute__((noinline)) void run_debug_cg_test(void)
     };
     uint8_t bg = 0;
     input_t in;
-    char line[48];
 
     for (;;) {
         cgpack_poll(); /* pick up a drive plugged/unplugged mid-test */
 
         render_apply_palette(assets_scene_palette(bg));
         render_debug_bg_preview(bg);
-        sprintf(line, "bg id: %u   is_cg: %s", bg, assets_debug_is_cg(bg) ? "yes" : "no");
-        render_text(line, 8, 4, COL_WHITE);
-        sprintf(line, "cgpack: %s", status_names[cgpack_status()]);
-        render_text(line, 8, 18, COL_WHITE);
+        dbg_printf(8, 4, COL_WHITE, "bg id: %u   is_cg: %s", bg,
+                   assets_debug_is_cg(bg) ? "yes" : "no");
+        dbg_printf(8, 18, COL_WHITE, "cgpack: %s", status_names[cgpack_status()]);
         render_text("Left/Right: bg id   Mode: back", 8, SCREEN_H - 18, COL_BOX_EDGE);
         render_present(TRANS_CUT);
         gfx_Wait();
@@ -774,7 +788,6 @@ static __attribute__((noinline)) void run_debug_layered_cg_test(void)
     const uint8_t count = (uint8_t)(sizeof(cgs) / sizeof(cgs[0]));
     uint8_t cur = 0;
     input_t in;
-    char line[48];
 
     for (;;) {
         const layered_cg_t *entry = &cgs[cur];
@@ -784,14 +797,9 @@ static __attribute__((noinline)) void run_debug_layered_cg_test(void)
         render_debug_bg_preview(id);
 
         /* CG info drawn in the lower letterbox area */
-        sprintf(line, "Layered CG [%u/%u] (ID %u)", cur + 1, count, id);
-        render_text(line, 8, SCENE_H + 4, COL_NAME);
-
-        sprintf(line, "%s: %s", entry->family, entry->desc);
-        render_text(line, 8, SCENE_H + 18, COL_WHITE);
-
-        sprintf(line, "Layers: %s", entry->layers);
-        render_text(line, 8, SCENE_H + 32, COL_HIGHLIGHT);
+        dbg_printf(8, SCENE_H + 4, COL_NAME, "Layered CG [%u/%u] (ID %u)", cur + 1, count, id);
+        dbg_printf(8, SCENE_H + 18, COL_WHITE, "%s: %s", entry->family, entry->desc);
+        dbg_printf(8, SCENE_H + 32, COL_HIGHLIGHT, "Layers: %s", entry->layers);
 
         render_text("Left/Right: browse  Mode: back", 8, SCREEN_H - 12, COL_BOX_EDGE);
 
@@ -822,25 +830,25 @@ static __attribute__((noinline)) void run_debug_layered_cg_test(void)
  * render_scene(). */
 static __attribute__((noinline)) void run_debug_glitch_test(void)
 {
-    vn_vm_t glitch_vm;
+    vn_vm_t *glitch_vm = calloc(1, sizeof(*glitch_vm));
+    if (!glitch_vm) {
+        return;
+    }
     uint8_t hi = 20;
     input_t in;
-    char line[24];
 
-    memset(&glitch_vm, 0, sizeof(glitch_vm));
-    glitch_vm.rng_state = (uint32_t)clock() | 1;
+    glitch_vm->rng_state = (uint32_t)clock() | 1;
 
     for (;;) {
-        vn_debug_glitchtext(&glitch_vm, hi, hi);
+        vn_debug_glitchtext(glitch_vm, hi, hi);
 
         render_backdrop(COL_BOX_FILL);
         render_text("Glitch text render test", 14, 8, COL_NAME);
-        sprintf(line, "length: %u", hi);
-        render_text(line, 14, 26, COL_WHITE);
+        dbg_printf(14, 26, COL_WHITE, "length: %u", hi);
         /* Not wrapped -- a length past what one line holds just runs off
          * the right edge, which is fine for a debug tool checking the
          * character set/PRNG, not layout. */
-        render_text(glitch_vm.glitch_buf, 14, 44, COL_WHITE);
+        render_text(glitch_vm->glitch_buf, 14, 44, COL_WHITE);
         render_text("Left/Right: length   2nd: reroll   Mode: back",
                     14, SCREEN_H - 18, COL_BOX_EDGE);
         render_present(TRANS_CUT);
@@ -848,6 +856,7 @@ static __attribute__((noinline)) void run_debug_glitch_test(void)
 
         input_poll(&in);
         if (quit_requested || in.pause) {
+            free(glitch_vm);
             return;
         }
         if (in.left && hi > 0) {
@@ -856,8 +865,6 @@ static __attribute__((noinline)) void run_debug_glitch_test(void)
         if (in.right && hi < VN_GLITCH_MAX) {
             hi++;
         }
-        /* in.advance just loops back around to a fresh reroll above --
-         * no explicit handling needed. */
     }
 }
 

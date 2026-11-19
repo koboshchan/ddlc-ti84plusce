@@ -941,6 +941,37 @@ bool assets_sprite_bounds(uint16_t id, int *w, int *h, int *dx, int *dy)
  * save a redraw that is merely nice to have.
  */
 
+static int sprite_clip_x0 = 0;
+static int sprite_clip_y0 = 0;
+static int sprite_clip_x1 = SCREEN_W;
+static int sprite_clip_y1 = SCREEN_H;
+
+void assets_set_clip_rect(int x0, int y0, int x1, int y1)
+{
+    if (x0 < 0) {
+        x0 = 0;
+    }
+    if (y0 < 0) {
+        y0 = 0;
+    }
+    if (x1 > SCREEN_W) {
+        x1 = SCREEN_W;
+    }
+    if (y1 > SCREEN_H) {
+        y1 = SCREEN_H;
+    }
+    sprite_clip_x0 = x0;
+    sprite_clip_y0 = y0;
+    sprite_clip_x1 = x1;
+    sprite_clip_y1 = y1;
+    gfx_SetClipRegion(x0, y0, x1, y1);
+}
+
+void assets_reset_clip_rect(void)
+{
+    assets_set_clip_rect(0, 0, SCREEN_W, SCREEN_H);
+}
+
 void assets_zoom_cache_clear(void)
 {
     assets_sprite_end();
@@ -984,10 +1015,10 @@ bool assets_draw_sprite_scaled(uint16_t id, int center_x, int feet_y, unsigned i
         return true;
     }
 
-    int x0 = dst_x > 0 ? dst_x : 0;
-    int x1 = (dst_x + dst_w) < SCREEN_W ? (dst_x + dst_w) : SCREEN_W;
-    int y0 = dst_y > 0 ? dst_y : 0;
-    int y1 = (dst_y + dst_h) < SCREEN_H ? (dst_y + dst_h) : SCREEN_H;
+    int x0 = dst_x > sprite_clip_x0 ? dst_x : sprite_clip_x0;
+    int x1 = (dst_x + dst_w) < sprite_clip_x1 ? (dst_x + dst_w) : sprite_clip_x1;
+    int y0 = dst_y > sprite_clip_y0 ? dst_y : sprite_clip_y0;
+    int y1 = (dst_y + dst_h) < sprite_clip_y1 ? (dst_y + dst_h) : sprite_clip_y1;
 
     if (x0 < x1 && y0 < y1) {
         extern uint8_t render_row_scratch[SCREEN_W];
@@ -1422,21 +1453,26 @@ bool assets_scene(uint8_t id, uint8_t *dest)
     return true;
 }
 
+static __attribute__((noinline)) bool scene_lookup_raw(uint8_t id,
+                                                     uint8_t *vol_out,
+                                                     uint16_t *off_out)
+{
+    if (is_cg(id) || assets_scene_fullscreen(id)) {
+        return false;
+    }
+    uint16_t entry_len = 0;
+    return lut_lookup(scene_lut, scene_lut_count, id, vol_out, off_out, &entry_len) &&
+           entry_len == SCENE_BYTES;
+}
+
 bool assets_scene_has_bg_rect(uint8_t id)
 {
     if (id == VN_NO_SPRITE) {
         return true;
     }
-    if (is_cg(id) || assets_scene_fullscreen(id)) {
-        return false;
-    }
-    uint8_t appvar_idx;
-    uint16_t offset;
-    uint16_t entry_len = 0;
-    if (!lut_lookup(scene_lut, scene_lut_count, id, &appvar_idx, &offset, &entry_len)) {
-        return false;
-    }
-    return entry_len == SCENE_BYTES;
+    uint8_t vol;
+    uint16_t off;
+    return scene_lookup_raw(id, &vol, &off);
 }
 
 bool assets_scene_bg_rect(uint8_t id, int x, int y, int w, int h, uint8_t *dest)
@@ -1459,22 +1495,17 @@ bool assets_scene_bg_rect(uint8_t id, int x, int y, int w, int h, uint8_t *dest)
         return true;
     }
 
+    uint8_t *dst = dest + (size_t)y * SCREEN_W + (size_t)x;
     if (id == VN_NO_SPRITE) {
         for (int row = 0; row < h; row++) {
-            memset(dest + (size_t)(y + row) * SCREEN_W + (size_t)x, COL_BLACK, (size_t)w);
+            memset(dst + (size_t)row * SCREEN_W, COL_BLACK, (size_t)w);
         }
         return true;
     }
 
-    if (is_cg(id) || assets_scene_fullscreen(id)) {
-        return false;
-    }
-
     uint8_t appvar_idx;
     uint16_t offset;
-    uint16_t entry_len = 0;
-    if (!lut_lookup(scene_lut, scene_lut_count, id, &appvar_idx, &offset, &entry_len) ||
-        entry_len != SCENE_BYTES) {
+    if (!scene_lookup_raw(id, &appvar_idx, &offset)) {
         return false;
     }
 
@@ -1486,15 +1517,13 @@ bool assets_scene_bg_rect(uint8_t id, int x, int y, int w, int h, uint8_t *dest)
     if (!handle) {
         return false;
     }
-    uint32_t vol_sz = ti_GetSize(handle);
-    if ((uint32_t)offset + SCENE_BYTES > vol_sz) {
+    if ((uint32_t)offset + SCENE_BYTES > ti_GetSize(handle)) {
         ti_Close(handle);
         return false;
     }
 
     const uint8_t *src = (const uint8_t *)ti_GetDataPtr(handle) + offset +
                          (size_t)y * SCREEN_W + (size_t)x;
-    uint8_t *dst = dest + (size_t)y * SCREEN_W + (size_t)x;
     fast_rect_blit(dst, SCREEN_W, src, SCREEN_W, (size_t)w, (size_t)h);
     ti_Close(handle);
     return true;

@@ -216,6 +216,15 @@ void assets_sprite_cache_clear(void);
 void assets_zoom_cache_clear(void);
 
 /**
+ * Restricts subsequent assets_draw_sprite() and assets_draw_sprite_scaled()
+ * writes to [@p x0, @p x1) x [@p y0, @p y1). Updates graphx's clip region as
+ * well so gfx_RLETSprite() clips identically. Call assets_reset_clip_rect()
+ * immediately after dirty-rect composition.
+ */
+void assets_set_clip_rect(int x0, int y0, int x1, int y1);
+void assets_reset_clip_rect(void);
+
+/**
  * Returns whether scene/CG @p id renders full-screen (320x240) instead of
  * the default 320x180 scene viewport above the textbox.
  */

@@ -105,7 +105,7 @@ static uint8_t last_paper = COL_BLACK;
 static uint8_t ink = COL_WHITE;
 static uint8_t *ov_fb;
 
-static unsigned stage_ticks_ms(unsigned ticks)
+static __attribute__((noinline)) unsigned stage_ticks_ms(unsigned ticks)
 {
     return ((ticks >> 15) * 1000u) +
            (((ticks & 0x7FFFu) * 125u + 2048u) >> 12);

@@ -535,55 +535,249 @@ static __attribute__((noinline)) void record_actor_sprite(uint8_t slot, bool is_
 }
 #endif
 
-static void draw_actor_at(const vn_actor_t *actor, uint8_t slot, int center_x, unsigned t)
-{
-    bool zoom_wanted = (actor->flags & VN_FLAG_ZOOM) != 0;
+typedef struct {
+    int x0;
+    int y0;
+    int x1;
+    int y1;
+} rect_t;
 
-    /* Continuous scale (1000..1050 permille) eased over SPEAK_POP_MS */
+typedef struct {
+    bool     active;
+    uint8_t  character;
+    uint16_t sprite;
+    uint16_t overlay;
+    int      center_x;
+    int      feet_y;
+    unsigned scale_permille;
+    rect_t   body_rect;
+    rect_t   face_rect;
+    rect_t   bounds;
+} actor_pose_t;
+
+static bool rect_empty(const rect_t *r)
+{
+    return r->x0 >= r->x1 || r->y0 >= r->y1;
+}
+
+static __attribute__((noinline)) void rect_union(rect_t *dst, const rect_t *src)
+{
+    if (rect_empty(src)) {
+        return;
+    }
+    if (rect_empty(dst)) {
+        *dst = *src;
+        return;
+    }
+    if (src->x0 < dst->x0) {
+        dst->x0 = src->x0;
+    }
+    if (src->y0 < dst->y0) {
+        dst->y0 = src->y0;
+    }
+    if (src->x1 > dst->x1) {
+        dst->x1 = src->x1;
+    }
+    if (src->y1 > dst->y1) {
+        dst->y1 = src->y1;
+    }
+}
+
+static __attribute__((noinline)) bool rect_overlaps(const rect_t *a, const rect_t *b)
+{
+    if (rect_empty(a) || rect_empty(b)) {
+        return false;
+    }
+    return a->x0 < b->x1 && b->x0 < a->x1 &&
+           a->y0 < b->y1 && b->y0 < a->y1;
+}
+
+static __attribute__((noinline)) int scale_val(int v, unsigned scale_permille)
+{
+    if (scale_permille <= 1000u || v == 0) {
+        return v;
+    }
+    bool neg = v < 0;
+    unsigned av = (unsigned)(neg ? -v : v);
+    unsigned sv = (av * scale_permille + 500u) / 1000u;
+    return neg ? -(int)sv : (int)sv;
+}
+
+static __attribute__((noinline)) bool sprite_screen_rect(uint16_t id, int center_x,
+                                                         int feet_y,
+                                                         unsigned scale_permille,
+                                                         rect_t *out)
+{
+    int w;
+    int h;
+    int dx;
+    int dy;
+    if (!assets_sprite_bounds(id, &w, &h, &dx, &dy)) {
+        return false;
+    }
+
+    int dst_w = scale_val(w, scale_permille);
+    int dst_h = scale_val(h, scale_permille);
+    int zdx = scale_val(dx, scale_permille);
+    int zdy = scale_val(dy, scale_permille);
+
+    int x0 = center_x - dst_w / 2 + zdx;
+    int y0 = feet_y - dst_h + zdy;
+    int x1 = x0 + dst_w;
+    int y1 = y0 + dst_h;
+    if (x0 < 0) {
+        x0 = 0;
+    }
+    if (y0 < 0) {
+        y0 = 0;
+    }
+    if (x1 > SCREEN_W) {
+        x1 = SCREEN_W;
+    }
+    if (y1 > SCENE_H) {
+        y1 = SCENE_H;
+    }
+
+    if (x0 >= x1 || y0 >= y1) {
+        out->x0 = 0;
+        out->y0 = 0;
+        out->x1 = 0;
+        out->y1 = 0;
+    } else {
+        out->x0 = x0;
+        out->y0 = y0;
+        out->x1 = x1;
+        out->y1 = y1;
+    }
+    return true;
+}
+
+static __attribute__((noinline)) bool resolve_actor_pose_at(const vn_actor_t *actor,
+                                                            int center_x, unsigned t,
+                                                            bool with_bounds,
+                                                            actor_pose_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (actor->character == VN_NO_SPRITE) {
+        return true;
+    }
+
+    bool zoom_wanted = (actor->flags & VN_FLAG_ZOOM) != 0;
     unsigned scale_permille = zoom_scale_permille(actor->character, zoom_wanted, t);
     int fallback_off = zoom_fallback_offset(actor->character, zoom_wanted, t);
 
-    /* The resting baseline, plus any one-shot hop/dip bounce and persistent sink drift. */
     int feet_y = ACTOR_BASELINE;
     if (actor->flags & (VN_FLAG_HOP | VN_FLAG_DIP)) {
         feet_y += pulse_y_offset(actor->character, actor->show_seq, actor->flags, t);
     }
     feet_y += sink_offset(actor->character, (actor->flags & VN_FLAG_SINK) != 0, t);
 
-    /* Check if uncompressed sprites can be cached in RAM for smooth scaling */
     bool can_zoom = assets_zoom_prepare(actor->sprite) &&
                     (actor->overlay == VN_NO_OVERLAY ||
                      assets_zoom_prepare(actor->overlay));
 
-    bool body_drawn = false;
-    if (can_zoom && scale_permille > 1000) {
-        body_drawn = assets_draw_sprite_scaled(actor->sprite, center_x, feet_y, scale_permille);
-    }
-    if (!body_drawn) {
-        int y_off = can_zoom ? 0 : fallback_off;
-        body_drawn = assets_draw_sprite(actor->sprite, center_x, feet_y + y_off);
-    }
-#ifdef DDLC_PERF_OVERLAY
-    if (body_drawn) record_actor_sprite(slot, false, actor->sprite);
-#endif
+    out->active = true;
+    out->character = actor->character;
+    out->sprite = actor->sprite;
+    out->overlay = actor->overlay;
+    out->center_x = center_x;
+    out->scale_permille = (can_zoom && scale_permille > 1000u)
+                        ? scale_permille
+                        : 1000u;
+    out->feet_y = feet_y + ((!can_zoom) ? fallback_off : 0);
 
-    /* Most actors are one flattened sprite (overlay == VN_NO_OVERLAY); a
-     * layered one draws its expression atom second, at the same anchor */
-    if (body_drawn && actor->overlay != VN_NO_OVERLAY) {
-        int ov_x = center_x;
-        bool ov_drawn = false;
-        if (can_zoom && scale_permille > 1000) {
-            ov_drawn = assets_draw_sprite_scaled(actor->overlay, ov_x, feet_y, scale_permille);
-        }
-        if (!ov_drawn) {
-            int y_off = can_zoom ? 0 : fallback_off;
-            ov_drawn = assets_draw_sprite(actor->overlay, ov_x, feet_y + y_off);
-        }
-#ifdef DDLC_PERF_OVERLAY
-        if (ov_drawn) record_actor_sprite(slot, true, actor->overlay);
-#endif
+    if (!with_bounds) {
+        return true;
     }
+    if (!sprite_screen_rect(out->sprite, out->center_x, out->feet_y,
+                            out->scale_permille, &out->body_rect)) {
+        return false;
+    }
+    out->bounds = out->body_rect;
+    if (out->overlay != VN_NO_OVERLAY) {
+        if (!sprite_screen_rect(out->overlay, out->center_x, out->feet_y,
+                                out->scale_permille, &out->face_rect)) {
+            return false;
+        }
+        rect_union(&out->bounds, &out->face_rect);
+    }
+    return true;
+}
+
+static __attribute__((noinline)) bool resolve_actor_pose(const vn_actor_t *actor,
+                                                         unsigned t,
+                                                         actor_pose_t *out)
+{
+    if (actor->character == VN_NO_SPRITE) {
+        memset(out, 0, sizeof(*out));
+        return true;
+    }
+    int center_x = slide_x_pos(actor->character, actor->show_seq,
+                               pos_center(actor->pos), actor->flags, t);
+    return resolve_actor_pose_at(actor, center_x, t, true, out);
+}
+
+static __attribute__((noinline)) bool pose_equals(const actor_pose_t *a,
+                                                  const actor_pose_t *b)
+{
+    if (a->active != b->active) {
+        return false;
+    }
+    if (!a->active) {
+        return true;
+    }
+    return a->character == b->character &&
+           a->sprite == b->sprite &&
+           a->overlay == b->overlay &&
+           a->center_x == b->center_x &&
+           a->feet_y == b->feet_y &&
+           a->scale_permille == b->scale_permille;
+}
+
+static __attribute__((noinline)) bool draw_sprite_pose(uint16_t id, int center_x,
+                                                       int feet_y,
+                                                       unsigned scale_permille,
+                                                       uint8_t slot, bool is_face)
+{
+    bool drawn = false;
+    if (scale_permille > 1000u) {
+        drawn = assets_draw_sprite_scaled(id, center_x, feet_y, scale_permille);
+    }
+    if (!drawn) {
+        drawn = assets_draw_sprite(id, center_x, feet_y);
+    }
+#ifdef DDLC_PERF_OVERLAY
+    if (drawn) {
+        record_actor_sprite(slot, is_face, id);
+    }
+#else
     (void)slot;
+    (void)is_face;
+#endif
+    return drawn;
+}
+
+static __attribute__((noinline)) void draw_actor_pose(const actor_pose_t *p,
+                                                      uint8_t slot)
+{
+    if (!p->active) {
+        return;
+    }
+    if (draw_sprite_pose(p->sprite, p->center_x, p->feet_y,
+                         p->scale_permille, slot, false) &&
+        p->overlay != VN_NO_OVERLAY) {
+        draw_sprite_pose(p->overlay, p->center_x, p->feet_y,
+                         p->scale_permille, slot, true);
+    }
+}
+
+static __attribute__((noinline)) void draw_actor_at(const vn_actor_t *actor,
+                                                    uint8_t slot, int center_x,
+                                                    unsigned t)
+{
+    static actor_pose_t tmp_pose;
+    resolve_actor_pose_at(actor, center_x, t, false, &tmp_pose);
+    draw_actor_pose(&tmp_pose, slot);
 }
 
 static void draw_actor(const vn_actor_t *actor, uint8_t slot, unsigned t)
@@ -624,91 +818,10 @@ static void draw_actor(const vn_actor_t *actor, uint8_t slot, unsigned t)
  * on every pixel of movement.
  * ------------------------------------------------------------------------- */
 
-#define PLATE_SLACK 16  /* pixels of margin beyond resting sprite bounds */
-
-static uint8_t *plate;
-static int      plate_x, plate_y, plate_w, plate_h;
-static int      plate_slot = -1;  /* which actor slot owns `plate` */
-static bool     plate_valid;
-
+/* Legacy single-actor plate API retained as a no-op for render_timed_cg();
+ * superseded by the general dirty-rect compositor in render_scene(). */
 static void plate_free(void)
 {
-    free(plate);
-    plate       = NULL;
-    plate_valid = false;
-    plate_slot  = -1;
-}
-
-static bool actor_rect(const vn_actor_t *a, int *rx, int *ry, int *rw, int *rh)
-{
-    int center_x = (int)a->pos * 2;
-    int x0 = SCREEN_W, y0 = SCENE_H, x1 = 0, y1 = 0;
-    uint16_t ids[2] = { a->sprite, a->overlay };
-
-    for (int i = 0; i < 2; i++) {
-        if (i == 1 && a->overlay == VN_NO_OVERLAY) {
-            continue;
-        }
-        int w, h, dx, dy;
-        if (!assets_sprite_bounds(ids[i], &w, &h, &dx, &dy)) {
-            return false;
-        }
-        /* plain draw */
-        int px = center_x - w / 2 + dx, py = ACTOR_BASELINE - h + dy;
-        if (px < x0) x0 = px;
-        if (py < y0) y0 = py;
-        if (px + w > x1) x1 = px + w;
-        if (py + h > y1) y1 = py + h;
-        /* 1.05x draw -- assets.c's zoom_scale_dim/zoom_scale_off, inlined
-         * here as the same 21:20 ratio rather than exported, since this only
-         * needs a bound and not the exact pixel. */
-        int zw = (w * 21 + 10) / 20, zh = (h * 21 + 10) / 20;
-        int zdx = (dx >= 0) ? (dx * 21 + 10) / 20 : -((-dx * 21 + 10) / 20);
-        int zdy = (dy >= 0) ? (dy * 21 + 10) / 20 : -((-dy * 21 + 10) / 20);
-        px = center_x - zw / 2 + zdx;
-        py = ACTOR_BASELINE - zh + zdy;
-        if (px < x0) x0 = px;
-        if (py < y0) y0 = py;
-        if (px + zw > x1) x1 = px + zw;
-        if (py + zh > y1) y1 = py + zh;
-    }
-
-    if (a->character == CHAR_YURI && a->overlay != VN_NO_OVERLAY) {
-        x0 -= 120;
-        y1 += 80;
-    }
-
-    y0 -= PLATE_SLACK;
-    y1 += PLATE_SLACK;
-
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x1 > SCREEN_W) x1 = SCREEN_W;
-    /* Nothing below the scene area needs saving: render_box() repaints all
-     * of y >= BOX_Y opaquely every frame regardless. */
-    if (y1 > SCENE_H) y1 = SCENE_H;
-
-    if (x1 <= x0 || y1 <= y0) {
-        return false;
-    }
-    *rx = x0;
-    *ry = y0;
-    *rw = x1 - x0;
-    *rh = y1 - y0;
-    return true;
-}
-
-static void plate_blit(bool save)
-{
-    if (save) {
-        fast_rect_blit(plate, (size_t)plate_w,
-                       (uint8_t *)gfx_vbuffer + (size_t)plate_y * SCREEN_W + plate_x, SCREEN_W,
-                       (size_t)plate_w, (size_t)plate_h);
-    } else {
-        fast_rect_blit((uint8_t *)gfx_vbuffer + (size_t)plate_y * SCREEN_W + plate_x, SCREEN_W,
-                       plate, (size_t)plate_w,
-                       (size_t)plate_w, (size_t)plate_h);
-    }
 }
 
 static bool     exit_active;
@@ -726,42 +839,6 @@ static __attribute__((noinline)) void render_overlay_fx(const vn_scene_t *scene)
 static bool layer_fx_active_pending(void);
 static bool layer_fx_scene_pending(const vn_scene_t *scene, unsigned now_ms);
 static __attribute__((noinline)) void apply_layer_fx(const vn_scene_t *scene, unsigned t);
-
-/* Captures the plate for actor @p a, sizing (or resizing) the buffer to fit.
- * Call with the background and every rearward actor already drawn. */
-static bool plate_capture(const vn_actor_t *a, int slot)
-{
-    if (exit_active || ovl_pixel_active ||
-        a->character >= VN_MAX_CHARS || x_dur_ms[a->character] > 0) {
-        return false;
-    }
-    int rx, ry, rw, rh;
-    if (!actor_rect(a, &rx, &ry, &rw, &rh)) {
-        return false;
-    }
-
-    if (plate == NULL || rw != plate_w || rh != plate_h) {
-        free(plate);
-        plate = malloc((size_t)rw * rh);
-        if (plate == NULL) {
-            /* Free cached sprite arena if heap is tight, then retry once. */
-            assets_sprite_cache_clear();
-            plate = malloc((size_t)rw * rh);
-        }
-        if (plate == NULL) {
-            plate_valid = false;
-            plate_slot  = -1;
-            return false;
-        }
-    }
-    plate_x = rx;
-    plate_y = ry;
-    plate_w = rw;
-    plate_h = rh;
-    plate_slot = slot;
-    plate_blit(true);
-    return true;
-}
 
 /* ---------------------------------------------------------------------------
  * The tear glitch overlay (OP_TEAR_SHOW/OP_TEAR_HIDE)
@@ -896,27 +973,63 @@ static __attribute__((noinline)) void apply_tear(const vn_scene_t *scene, unsign
 static bool scene_settled;
 static bool have_drawn_once;
 static bool buffers_synced;
+static bool dirty_sync_ok;
+static int  dirty_y0 = SCREEN_H;
+static int  dirty_y1 = 0;
 static bool console_active;
 
-/* Which actor slot moved during the last full redraw, or -1 if none did --
- * or if more than one did. The plate reconstructs exactly one moving actor,
- * so a second mover disables it and everything falls back to full redraws;
- * replaying Act 1 through host_sim finds no scene state where that happens
- * (at most one actor ever carries a zoom/hop/sink flag), but correctness
- * shouldn't rest on that holding for Acts 2 and 3 as well. */
-static int mover_slot = -1;
+/* Dirty-rect scene composition tracker. */
+static bool         composed_valid;
+static uint8_t      composed_bg = VN_NO_SPRITE;
+static bool         prev_exit_active;
+static actor_pose_t composed_actors[VN_MAX_CHARS];
+static actor_pose_t cur_poses[VN_MAX_CHARS];
 
-/* Anything that paints over the composed scene -- a choice menu, the pause
- * overlay, a full-screen backdrop -- leaves the draw buffer no longer
- * showing the scene, so neither of render_scene_lazy()'s shortcuts is valid
- * afterwards: skipping would strand the overlay on screen, and the plate
- * would repair only one actor's rectangle of it.
- *
- * The overlay routines call this themselves rather than their callers doing
- * it, so a new one can't forget. It matters because the lazy path's other
- * gate is "has the scene settled?", and a player pauses or is offered a
- * choice precisely when it has -- an earlier version gated on wall-clock
- * time instead and papered over this by redrawing for 500ms regardless. */
+static __attribute__((noinline)) void mark_dirty_y(int y0, int y1)
+{
+    if (y0 < 0) {
+        y0 = 0;
+    }
+    if (y1 > SCREEN_H) {
+        y1 = SCREEN_H;
+    }
+    if (y0 >= y1) {
+        return;
+    }
+    if (y0 < dirty_y0) {
+        dirty_y0 = y0;
+    }
+    if (y1 > dirty_y1) {
+        dirty_y1 = y1;
+    }
+}
+
+static __attribute__((noinline)) void composite_dirty_rect(uint8_t bg,
+                                                           const actor_pose_t *poses,
+                                                           const rect_t *clip)
+{
+    if (rect_empty(clip)) {
+        return;
+    }
+    perf_overlay_stage_begin(PERF_STAGE_BG);
+    assets_scene_bg_rect(bg, clip->x0, clip->y0,
+                         clip->x1 - clip->x0, clip->y1 - clip->y0,
+                         (uint8_t *)gfx_vbuffer);
+    perf_overlay_stage_end(PERF_STAGE_BG);
+
+    assets_set_clip_rect(clip->x0, clip->y0, clip->x1, clip->y1);
+    for (int i = 0; i < VN_MAX_CHARS; i++) {
+        if (poses[i].active && rect_overlaps(&poses[i].bounds, clip)) {
+            perf_overlay_stage_begin((uint8_t)(PERF_STAGE_ACT0 + i));
+            draw_actor_pose(&poses[i], (uint8_t)i);
+            perf_overlay_stage_end((uint8_t)(PERF_STAGE_ACT0 + i));
+        }
+    }
+    assets_reset_clip_rect();
+    assets_sprite_end();
+    mark_dirty_y(clip->y0, clip->y1);
+}
+
 static void scene_obscured(void);
 
 static __attribute__((noinline)) unsigned ticks_to_ms(clock_t ticks)
@@ -932,48 +1045,73 @@ static __attribute__((noinline)) unsigned ticks_to_ms(clock_t ticks)
 
 static bool last_scene_used_motion;
 
+static __attribute__((noinline)) bool try_dirty_rect_scene(const vn_scene_t *scene)
+{
+    rect_t dirty = { 0, 0, 0, 0 };
+    uint8_t changed_count = 0;
+    for (int i = 0; i < VN_MAX_CHARS; i++) {
+        if (!pose_equals(&composed_actors[i], &cur_poses[i])) {
+            changed_count++;
+            if (composed_actors[i].active) {
+                rect_union(&dirty, &composed_actors[i].bounds);
+            }
+            if (cur_poses[i].active) {
+                rect_union(&dirty, &cur_poses[i].bounds);
+            }
+        }
+    }
+
+    if (changed_count == 0) {
+        perf_overlay_set_mode("SKIP");
+        assets_sprite_end();
+        scene_settled = !anim_moving;
+        have_drawn_once = true;
+        dirty_sync_ok = buffers_synced;
+        return true;
+    }
+
+    unsigned dirty_area = rect_empty(&dirty)
+                        ? 0u
+                        : (unsigned)(dirty.x1 - dirty.x0) * (unsigned)(dirty.y1 - dirty.y0);
+    if (changed_count != 1 && dirty_area >= 49000u) {
+        return false;
+    }
+
+    perf_overlay_set_mode("DRTY");
+    last_scene_used_motion = false;
+    perf_overlay_clear_sprites();
+    composite_dirty_rect(scene->background, cur_poses, &dirty);
+
+    memcpy(composed_actors, cur_poses, sizeof(composed_actors));
+    composed_bg = scene->background;
+    composed_valid = true;
+    prev_exit_active = false;
+    dirty_sync_ok = buffers_synced;
+    scene_settled = !anim_moving;
+    have_drawn_once = true;
+    return true;
+}
+
 void render_scene(const vn_scene_t *scene)
 {
     perf_overlay_frame_start();
-    buffers_synced = false;
     assets_box_end();
-    if (ch5_motion_active(scene->background)) {
+    bool is_motion = ch5_motion_active(scene->background);
+    if (is_motion) {
         noise_release();
         assets_sprite_cache_clear();
     } else {
         noise_restore();
     }
-    perf_overlay_stage_begin(PERF_STAGE_BG);
-    last_scene_used_motion = ch5_motion_draw(scene->background);
-    if (last_scene_used_motion) {
-        perf_overlay_mark_rendered();
-        perf_overlay_set_mode("MOT");
-    } else {
-        draw_background(scene->background);
-        perf_overlay_set_mode("FULL");
-    }
-    ovl_pixel_active = (scene->overlay_fx_mask & VN_OVL_PIXEL_MASK) != 0;
-    if (scene->overlay_fx_mask & VN_OVL_LIVE_TILE) {
-        render_live_tile_bg();
-    }
-    perf_overlay_stage_end(PERF_STAGE_BG);
-    anim_moving = false;
 
-    /* Real elapsed time, not a frame count -- render_scene() is called from
-     * many different loops (the typewriter reveal, idle waits, the pause
-     * menu overlay) rather than one central per-frame driver like the title
-     * screen has, so zoom_fallback_offset()/hop_offset() sample the clock
-     * themselves here rather than threading a @p t parameter through every
-     * one of those call sites. */
+    ovl_pixel_active = (scene->overlay_fx_mask & VN_OVL_PIXEL_MASK) != 0;
+    anim_moving = false;
     unsigned t = ticks_to_ms(clock());
 
-    /* Capturing the plate needs the actor's rear neighbours already drawn
-     * and the actor itself not yet -- so it happens mid-loop, at the slot
-     * that moved last time. That the target comes from the *previous* full
-     * redraw is why an animation's first frame or two are still full ones:
-     * nothing knows who is moving until someone has moved. */
     static uint8_t prev_bg = VN_NO_SPRITE;
-    static uint8_t slot_char[VN_MAX_CHARS] = { VN_NO_SPRITE, VN_NO_SPRITE, VN_NO_SPRITE, VN_NO_SPRITE };
+    static uint8_t slot_char[VN_MAX_CHARS] = {
+        VN_NO_SPRITE, VN_NO_SPRITE, VN_NO_SPRITE, VN_NO_SPRITE
+    };
     bool bg_changed = (scene->background != prev_bg);
     prev_bg = scene->background;
     if (bg_changed) {
@@ -999,31 +1137,69 @@ void render_scene(const vn_scene_t *scene)
         slot_char[i] = cur;
     }
 
-    int  capture_at = mover_slot;
-    int  movers = 0;
-    int  first_mover = -1;
-    bool captured = false;
+    /* Resolve every actor's exact frame pose and bounding boxes first so all
+     * animation timers advance identically whether we take the dirty-rect
+     * fast path or fall back to a full redraw. */
+    bool bounds_ok = true;
+    for (int i = 0; i < VN_MAX_CHARS; i++) {
+        if (!resolve_actor_pose(&scene->actors[i], t, &cur_poses[i])) {
+            bounds_ok = false;
+        }
+    }
 
+    bool fullscreen = assets_scene_fullscreen(scene->background);
+    bool can_dirty = composed_valid &&
+                     !bg_changed &&
+                     scene->background == composed_bg &&
+                     !is_motion &&
+                     !ovl_pixel_active &&
+                     !scene->tear_on &&
+                     scene->layer_fx == VN_LAYER_NONE &&
+                     !exit_active &&
+                     !prev_exit_active &&
+                     !fullscreen &&
+                     bounds_ok &&
+                     assets_scene_has_bg_rect(scene->background);
+
+    if (can_dirty && try_dirty_rect_scene(scene)) {
+        return;
+    }
+
+    /* Full redraw path (BG change, transition, CG, Ch5 motion, tear/FX). */
+    buffers_synced = false;
+    dirty_sync_ok = false;
+
+    perf_overlay_stage_begin(PERF_STAGE_BG);
+    last_scene_used_motion = ch5_motion_draw(scene->background);
+    if (last_scene_used_motion) {
+        perf_overlay_mark_rendered();
+        perf_overlay_set_mode("MOT");
+    } else {
+        draw_background(scene->background);
+        perf_overlay_set_mode("FULL");
+    }
+    if (scene->overlay_fx_mask & VN_OVL_LIVE_TILE) {
+        render_live_tile_bg();
+    }
+    perf_overlay_stage_end(PERF_STAGE_BG);
+
+    if (!fullscreen) {
+        assets_set_clip_rect(0, 0, SCREEN_W, SCENE_H);
+    }
     perf_overlay_clear_sprites();
     for (int i = 0; i < VN_MAX_CHARS; i++) {
         const vn_actor_t *actor = &scene->actors[i];
         if (actor->character == VN_NO_SPRITE) {
             continue;
         }
-        if (i == capture_at) {
-            captured = plate_capture(actor, i);
-        }
 
-        bool was_moving = anim_moving;
         perf_overlay_stage_begin((uint8_t)(PERF_STAGE_ACT0 + i));
-        draw_actor(actor, (uint8_t)i, t);
-        perf_overlay_stage_end((uint8_t)(PERF_STAGE_ACT0 + i));
-        if (!was_moving && anim_moving) {
-            movers++;
-            if (first_mover < 0) {
-                first_mover = i;
-            }
+        if (cur_poses[i].active) {
+            draw_actor_pose(&cur_poses[i], (uint8_t)i);
+        } else {
+            draw_actor(actor, (uint8_t)i, t);
         }
+        perf_overlay_stage_end((uint8_t)(PERF_STAGE_ACT0 + i));
     }
     if (exit_active) {
         unsigned elapsed = t - exit_started_at;
@@ -1038,34 +1214,33 @@ void render_scene(const vn_scene_t *scene)
             anim_moving = true;
         }
     }
+    if (!fullscreen) {
+        assets_reset_clip_rect();
+    }
     assets_sprite_end();
-
-    mover_slot  = (movers == 1 && !exit_active && !ovl_pixel_active) ? first_mover : -1;
-    plate_valid = captured && movers == 1 && first_mover == capture_at &&
-                  !exit_active && !ovl_pixel_active;
 
     if (ovl_pixel_active) {
         render_overlay_fx(scene);
     }
     apply_tear(scene, t);
     apply_layer_fx(scene, t);
-    if (scene->tear_on || scene->layer_fx != VN_LAYER_NONE) {
-        /* tear touches the whole scene area; layer_fx transforms the whole
-         * composed viewport. Neither can use a single-actor plate repair. */
-        if (scene->tear_on) {
-            anim_moving = true;
-        }
-        plate_valid = false;
+    if (scene->tear_on) {
+        anim_moving = true;
+    }
+
+    prev_exit_active = exit_active;
+    if (!last_scene_used_motion && !ovl_pixel_active &&
+        !scene->tear_on && scene->layer_fx == VN_LAYER_NONE &&
+        !exit_active && !fullscreen && bounds_ok) {
+        memcpy(composed_actors, cur_poses, sizeof(composed_actors));
+        composed_bg = scene->background;
+        composed_valid = true;
+    } else {
+        composed_valid = false;
     }
 
     scene_settled   = !anim_moving;
     have_drawn_once = true;
-    if (scene_settled) {
-        /* Reading, not animating -- give the memory back. The next
-         * animation re-captures, and a chunk load in between (the largest
-         * allocation this program makes) gets the room. */
-        plate_free();
-    }
 }
 
 /* Transactional composition entrypoint. Scheduling caller supplies validated
@@ -1126,53 +1301,22 @@ bool render_timed_scene(const vn_scene_t *scene) {
     return false;
 }
 
-/* The fast path: paste the plate back and redraw only from the moving actor
- * forward. Everything outside that rectangle is already correct in the draw
- * buffer, which render_present() keeps in step with the screen. */
-static void render_scene_moving(const vn_scene_t *scene)
-{
-    perf_overlay_frame_start();
-    buffers_synced = false;
-    noise_restore();
-    if (plate == NULL || plate_slot < 0) {   /* can't happen; cheap insurance */
-        render_scene(scene);
-        return;
-    }
-    perf_overlay_set_mode("PLAT");
-    perf_overlay_stage_begin(PERF_STAGE_BG);
-    plate_blit(false);
-    perf_overlay_stage_end(PERF_STAGE_BG);
-
-    unsigned t = ticks_to_ms(clock());
-    anim_moving = false;
-
-    for (int i = plate_slot; i < VN_MAX_CHARS; i++) {
-        const vn_actor_t *actor = &scene->actors[i];
-        if (actor->character != VN_NO_SPRITE) {
-            perf_overlay_stage_begin((uint8_t)(PERF_STAGE_ACT0 + i));
-            draw_actor(actor, (uint8_t)i, t);
-            perf_overlay_stage_end((uint8_t)(PERF_STAGE_ACT0 + i));
-        }
-    }
-    assets_sprite_end();
-
-    scene_settled = !anim_moving;
-    if (scene_settled) {
-        plate_free();
-    }
-}
-
+/* The fast path: dirty-rect composition lives in render_scene(); this marker
+ * separates render_timed_scene() from scene lifecycle helpers. */
 static void scene_obscured(void)
 {
     have_drawn_once = false;
     buffers_synced = false;
-    plate_free();
+    dirty_sync_ok = false;
+    composed_valid = false;
 }
 
 void render_invalidate_scene(void)
 {
     have_drawn_once = false;
     buffers_synced = false;
+    dirty_sync_ok = false;
+    composed_valid = false;
 }
 
 bool render_scene_used_motion(void)
@@ -1206,11 +1350,7 @@ void render_scene_lazy(const vn_scene_t *scene)
         return;
     }
     if (!have_drawn_once || !scene_settled) {
-        if (plate_valid) {
-            render_scene_moving(scene);
-        } else {
-            render_scene(scene);
-        }
+        render_scene(scene);
         return;
     }
 
@@ -1247,7 +1387,15 @@ void render_box(const vn_scene_t *scene, const char *speaker,
      * as temporary scratch, so a late redraw would erase the new box. */
     if (had_namebox && (speaker == NULL || scene->window_hidden ||
                         text == NULL || text[0] == '\0')) {
-        render_scene(scene);
+        if (composed_valid &&
+            !ch5_motion_active(scene->background) &&
+            assets_scene_has_bg_rect(scene->background)) {
+            rect_t nb = { 6, BOX_Y - NAMEBOX_H + 4, 6 + NAMEBOX_W, SCENE_H };
+            composite_dirty_rect(scene->background, composed_actors, &nb);
+        } else {
+            render_invalidate_scene();
+            render_scene(scene);
+        }
         had_namebox = false;
     }
 
@@ -1266,6 +1414,7 @@ void render_box(const vn_scene_t *scene, const char *speaker,
         uint8_t fill = palette_entry_is_near_white(bottom_color) ? bottom_color : COL_BLACK;
         gfx_SetColor(fill);
         gfx_FillRectangle_NoClip(0, BOX_Y, SCREEN_W, BOX_H);
+        mark_dirty_y(BOX_Y, SCREEN_H);
         perf_overlay_stage_end(PERF_STAGE_BOX);
         return;
     }
@@ -1372,6 +1521,7 @@ void render_box(const vn_scene_t *scene, const char *speaker,
         gfx_Rectangle(4, 4, 82, 14);
         render_text("Skipping >>", 9, 6, COL_WHITE);
     }
+    mark_dirty_y(speaker != NULL ? (BOX_Y - NAMEBOX_H + 4) : BOX_Y, SCREEN_H);
     perf_overlay_stage_end(PERF_STAGE_BOX);
 }
 
@@ -1534,19 +1684,26 @@ static bool palette_staged;
 
 void render_present(uint8_t trans)
 {
-    /* TRANS_FADE is accepted but still presents as a cut; a real fade needs
-     * the palette-ramp pass that lands with the asset pipeline. */
-    (void)trans;
-
     perf_overlay_end();
     perf_overlay_present_begin();
     perf_overlay_vram_begin();
     gfx_SwapDraw();
     render_commit_palette();
-    gfx_BlitScreen();
+    if (trans == TRANS_CUT && buffers_synced && dirty_sync_ok &&
+        !console_active && !fade_active) {
+        if (dirty_y0 < dirty_y1) {
+            gfx_BlitLines(gfx_screen, (uint8_t)dirty_y0,
+                          (uint8_t)(dirty_y1 - dirty_y0));
+        }
+    } else {
+        gfx_BlitScreen();
+    }
     perf_overlay_vram_end();
     perf_overlay_present_end();
     buffers_synced = true;
+    dirty_sync_ok = false;
+    dirty_y0 = SCREEN_H;
+    dirty_y1 = 0;
 }
 
 void render_present_box(const vn_scene_t *scene)
@@ -1566,6 +1723,9 @@ void render_present_box(const vn_scene_t *scene)
         gfx_BlitLines(gfx_screen, SYNC_Y, SCREEN_H - SYNC_Y);
         perf_overlay_vram_end();
         perf_overlay_present_end();
+        dirty_sync_ok = false;
+        dirty_y0 = SCREEN_H;
+        dirty_y1 = 0;
         return;
     }
     render_present(TRANS_CUT);
@@ -1588,6 +1748,7 @@ void render_text(const char *s, int x, int y, uint8_t color)
     if (!active_font || !s || x < 0 || x >= SCREEN_W || y < 0 || y >= SCREEN_H) {
         return;
     }
+    dirty_sync_ok = false;
     fontlib_SetForegroundColor(color);
     fontlib_SetCursorPosition((unsigned int)x, (uint8_t)y);
     fontlib_DrawString(s);
