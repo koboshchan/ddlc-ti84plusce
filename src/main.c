@@ -1140,6 +1140,11 @@ static __attribute__((noinline)) bool run_debug_chapter_menu(vn_vm_t *vm)
  * window/deleted-character toggles, and the chapter jump below) are simply
  * omitted from the list in that case rather than touching uninitialized
  * state; everything else (the poem test, save erasure) works either way. */
+static __attribute__((noinline)) const char *dbg_on_off(bool on)
+{
+    return on ? "ON" : "OFF";
+}
+
 static __attribute__((noinline)) void run_debug_menu(vn_vm_t *vm)
 {
     enum {
@@ -1150,10 +1155,10 @@ static __attribute__((noinline)) void run_debug_menu(vn_vm_t *vm)
         DBG_ERASE, DBG_CLOSE, DBG_ACTION_MAX,
     };
     static const char *const cnames[4] = { "Sayori", "Natsuki", "Yuri", "Monika" };
+    static uint8_t actions[DBG_ACTION_MAX];
+    static const char *labels[DBG_ACTION_MAX];
     extern uint8_t render_row_scratch[SCREEN_W];
     char (*dyn)[28] = (char (*)[28])render_row_scratch;
-    uint8_t actions[DBG_ACTION_MAX];
-    const char *labels[DBG_ACTION_MAX];
     uint8_t count, selected = 0, top = 0;
     input_t in;
 
@@ -1181,8 +1186,7 @@ static __attribute__((noinline)) void run_debug_menu(vn_vm_t *vm)
 
 #ifdef DDLC_PERF_OVERLAY
         actions[count] = DBG_PERF;
-        sprintf(dyn[d], "Performance overlay: %s",
-                perf_overlay_enabled() ? "ON" : "OFF");
+        sprintf(dyn[d], "Performance overlay: %s", dbg_on_off(perf_overlay_enabled()));
         labels[count++] = dyn[d++];
 #endif
         if (vm) {
@@ -1190,11 +1194,11 @@ static __attribute__((noinline)) void run_debug_menu(vn_vm_t *vm)
             labels[count++] = "Scene diagnostic";
 
             actions[count] = DBG_TEAR;
-            sprintf(dyn[d], "Tear glitch: %s", vm->scene.tear_on ? "ON" : "OFF");
+            sprintf(dyn[d], "Tear glitch: %s", dbg_on_off(vm->scene.tear_on));
             labels[count++] = dyn[d++];
 
             actions[count] = DBG_WINDOW;
-            sprintf(dyn[d], "Window hidden: %s", vm->scene.window_hidden ? "ON" : "OFF");
+            sprintf(dyn[d], "Window hidden: %s", dbg_on_off(vm->scene.window_hidden));
             labels[count++] = dyn[d++];
 
             if (assets_debug_chapter_count() > 0) {
@@ -1205,7 +1209,7 @@ static __attribute__((noinline)) void run_debug_menu(vn_vm_t *vm)
             for (uint8_t ch = 0; ch < 4; ch++) {
                 actions[count] = (uint8_t)(DBG_DEL_SAYORI + ch);
                 sprintf(dyn[d], "Deleted %s: %s", cnames[ch],
-                        vm->vars[VN_DELETED_VAR(ch)] ? "ON" : "OFF");
+                        dbg_on_off(vm->vars[VN_DELETED_VAR(ch)] != 0));
                 labels[count++] = dyn[d++];
             }
         }
@@ -1230,14 +1234,9 @@ static __attribute__((noinline)) void run_debug_menu(vn_vm_t *vm)
         if (visible > DBG_MENU_ROWS) {
             visible = DBG_MENU_ROWS;
         }
-        const char *vis_items[DBG_MENU_ROWS];
-        for (uint8_t i = 0; i < visible; i++) {
-            vis_items[i] = labels[top + i];
-        }
-
         render_backdrop(COL_BOX_FILL);
         render_text("Debug Menu", 14, 10, COL_NAME);
-        render_list_menu(vis_items, visible, (uint8_t)(selected - top), 14, 30, COL_WHITE, COL_HIGHLIGHT);
+        render_list_menu(labels + top, visible, (uint8_t)(selected - top), 14, 30, COL_WHITE, COL_HIGHLIGHT);
         render_text("2nd: choose   Mode: close", 14, SCREEN_H - 18, COL_BOX_EDGE);
         render_present(TRANS_CUT);
         gfx_Wait();

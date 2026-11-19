@@ -989,6 +989,49 @@ static bool         prev_exit_active;
 static actor_pose_t composed_actors[VN_MAX_CHARS];
 static actor_pose_t cur_poses[VN_MAX_CHARS];
 
+/* Textbox skip cache: tracks the last painted dialogue box so actor-only
+ * updates and animations skip redrawing rows 180..239 when unchanged. */
+static bool    box_valid;
+static bool    box_namebox_dirty;
+static bool    box_used_namebox_art;
+static bool    box_last_hidden;
+static uint8_t box_last_fill;
+static bool    box_last_edited;
+static bool    box_last_had_speaker;
+static char    box_last_speaker[24];
+static size_t  box_last_visible;
+
+static __attribute__((noinline)) void mark_dirty_y(int y0, int y1);
+static __attribute__((noinline)) bool draw_namebox_art(const char *speaker);
+
+static __attribute__((noinline)) bool try_skip_visible_box(const vn_scene_t *scene,
+                                                           const char *speaker,
+                                                           bool text_same,
+                                                           size_t eff_visible)
+{
+    bool fake_skip = (scene->overlay_fx_mask & VN_OVL_FAKE_SKIP) != 0;
+    if (!box_valid || box_last_hidden || fake_skip ||
+        !text_same || eff_visible != box_last_visible ||
+        scene->text_edited != box_last_edited ||
+        ((speaker != NULL) != box_last_had_speaker) ||
+        (speaker != NULL && strcmp(speaker, box_last_speaker) != 0)) {
+        return false;
+    }
+    if (!box_namebox_dirty) {
+        return true;
+    }
+    if (speaker == NULL) {
+        box_namebox_dirty = false;
+        return true;
+    }
+    if (box_used_namebox_art && draw_namebox_art(speaker)) {
+        box_namebox_dirty = false;
+        mark_dirty_y(BOX_Y - NAMEBOX_H + 4, BOX_Y + 4);
+        return true;
+    }
+    return false;
+}
+
 static __attribute__((noinline)) void mark_dirty_y(int y0, int y1)
 {
     if (y0 < 0) {
@@ -1032,6 +1075,13 @@ static __attribute__((noinline)) void composite_dirty_rect(uint8_t bg,
     assets_reset_clip_rect();
     assets_sprite_end();
     mark_dirty_y(clip->y0, clip->y1);
+
+    /* If this dirty rect overlapped the namebox sliver above BOX_Y, flag
+     * the namebox for repaint without invalidating the textbox below. */
+    static const rect_t nb_sliver = { 6, BOX_Y - NAMEBOX_H + 4, 6 + NAMEBOX_W, SCENE_H };
+    if (rect_overlaps(clip, &nb_sliver)) {
+        box_namebox_dirty = true;
+    }
 }
 
 static void scene_obscured(void);
@@ -1188,6 +1238,8 @@ void render_scene(const vn_scene_t *scene)
     /* Full redraw path (BG change, transition, CG, Ch5 motion, tear/FX). */
     buffers_synced = false;
     dirty_sync_ok = false;
+    box_valid = false;
+    box_namebox_dirty = false;
 
     perf_overlay_stage_begin(PERF_STAGE_BG);
     last_scene_used_motion = ch5_motion_draw(scene->background);
@@ -1325,10 +1377,7 @@ bool render_timed_scene(const vn_scene_t *scene) {
  * separates render_timed_scene() from scene lifecycle helpers. */
 static void scene_obscured(void)
 {
-    have_drawn_once = false;
-    buffers_synced = false;
-    dirty_sync_ok = false;
-    composed_valid = false;
+    render_invalidate_scene();
 }
 
 void render_invalidate_scene(void)
@@ -1337,6 +1386,8 @@ void render_invalidate_scene(void)
     buffers_synced = false;
     dirty_sync_ok = false;
     composed_valid = false;
+    box_valid = false;
+    box_namebox_dirty = false;
 }
 
 bool render_scene_used_motion(void)
@@ -1398,15 +1449,35 @@ void render_scene_lazy(const vn_scene_t *scene)
      * on the next frame in that case. */
 }
 
+static __attribute__((noinline)) bool draw_namebox_art(const char *speaker)
+{
+    const int nb_x = 6;
+    const int nb_y = BOX_Y - NAMEBOX_H + 4;
+    if (!assets_draw_box(true, (uint8_t *)gfx_vbuffer + nb_y * SCREEN_W + nb_x)) {
+        return false;
+    }
+    set_font(FONT_NAME);
+    int name_w = (int)string_width(speaker);
+    int name_x = nb_x + (NAMEBOX_W - name_w) / 2;
+    if (name_x < nb_x + 2) {
+        name_x = nb_x + 2;
+    }
+    print_slice_outlined(speaker, strlen(speaker), name_x, nb_y + 2,
+                         COL_WHITE, COL_BOX_FILL);
+    set_font(FONT_DEFAULT);
+    return true;
+}
+
 void render_box(const vn_scene_t *scene, const char *speaker,
                 const char *text, size_t visible)
 {
     perf_overlay_frame_start();
     static bool had_namebox;
+    bool cur_hidden = scene->window_hidden || text == NULL || text[0] == '\0';
+
     /* Restore scene before filling the textbox: motion uses its lower rows
      * as temporary scratch, so a late redraw would erase the new box. */
-    if (had_namebox && (speaker == NULL || scene->window_hidden ||
-                        text == NULL || text[0] == '\0')) {
+    if (had_namebox && (speaker == NULL || cur_hidden)) {
         if (composed_valid &&
             !ch5_motion_active(scene->background) &&
             assets_scene_has_bg_rect(scene->background)) {
@@ -1417,6 +1488,7 @@ void render_box(const vn_scene_t *scene, const char *speaker,
             render_scene(scene);
         }
         had_namebox = false;
+        box_namebox_dirty = false;
     }
 
     perf_overlay_stage_begin(PERF_STAGE_BOX);
@@ -1425,21 +1497,47 @@ void render_box(const vn_scene_t *scene, const char *speaker,
      * (e.g. splash screens, CGs, end screens, pauses). Full-height 240px
      * scenes and full-screen noise already fill rows 180..239; 180px scenes
      * letterbox the bottom bar to black (or near-white for light voids). */
-    if (scene->window_hidden || text == NULL || text[0] == '\0') {
+    if (cur_hidden) {
         if (assets_scene_fullscreen(scene->background) || noise_is_fullscreen()) {
+            box_valid = false;
             perf_overlay_stage_end(PERF_STAGE_BOX);
             return;
         }
         uint8_t bottom_color = ((uint8_t *)gfx_vbuffer)[(SCENE_H - 1) * SCREEN_W];
         uint8_t fill = palette_entry_is_near_white(bottom_color) ? bottom_color : COL_BLACK;
+        if (box_valid && box_last_hidden && box_last_fill == fill) {
+            perf_overlay_stage_end(PERF_STAGE_BOX);
+            return;
+        }
         gfx_SetColor(fill);
         gfx_FillRectangle_NoClip(0, BOX_Y, SCREEN_W, BOX_H);
         mark_dirty_y(BOX_Y, SCREEN_H);
+        box_valid = true;
+        box_namebox_dirty = false;
+        box_last_hidden = true;
+        box_last_fill = fill;
         perf_overlay_stage_end(PERF_STAGE_BOX);
         return;
     }
 
+    /* Update wrapped-line cache before comparing visible counts. */
     const int pad = 6;
+    static char          cached_copy[256];
+    static text_layout_t cached_full;
+    bool text_same = (strcmp(text, cached_copy) == 0);
+    if (!text_same) {
+        strncpy(cached_copy, text, sizeof(cached_copy) - 1);
+        cached_copy[sizeof(cached_copy) - 1] = '\0';
+        text_wrap(&cached_full, cached_copy, SCREEN_W - 2 * pad, measure, NULL);
+    }
+
+    size_t eff_visible = (visible >= cached_full.total) ? cached_full.total : visible;
+    bool fake_skip = (scene->overlay_fx_mask & VN_OVL_FAKE_SKIP) != 0;
+
+    if (try_skip_visible_box(scene, speaker, text_same, eff_visible)) {
+        perf_overlay_stage_end(PERF_STAGE_BOX);
+        return;
+    }
 
     if (assets_draw_box(false, (uint8_t *)gfx_vbuffer + BOX_Y * SCREEN_W)) {
         /* Already copied directly from archive. */
@@ -1451,64 +1549,20 @@ void render_box(const vn_scene_t *scene, const char *speaker,
     }
 
     int y = BOX_Y + 4;
+    box_used_namebox_art = false;
 
-    /* Whether the *previous* render_box() call drew a namebox -- narration
-     * (speaker == NULL) draws nothing in the block below, so a line right
-     * after a real speaker's line would otherwise leave that speaker's
-     * namebox art (and name) stuck on screen: it pokes into the scene
-     * area above BOX_Y, and render_scene_lazy()'s "already correct, skip"
-     * fast path has no reason to know that rectangle needs fixing, since
-     * nothing about the actors/background actually changed. */
     if (speaker != NULL) {
-        /* Pokes up above BOX_Y into the scene area, matching the real
-         * game's namebox -- safe despite render_scene_lazy()'s "plate"
-         * redraw-avoidance machinery assuming only actors touch y <
-         * SCENE_H: render_box() (this function) still runs unconditionally
-         * every single frame, right after render_scene()/render_scene_lazy()
-         * in every call site, and repaints this exact rectangle every time
-         * regardless of which path the scene took -- so whatever stale
-         * pixels the plate mechanism captured or restored underneath it
-         * are always immediately painted over again before the frame is
-         * presented. */
-        /* The one place that switches away from the default font -- see
-         * set_font()'s own comment: RifficFree-Bold here, Aller_Rg
-         * everywhere else, matching gui.rpy's own name_font/default_font
-         * split exactly. Switched back immediately after so every other
-         * caller can keep assuming the default font is active without
-         * having to set it itself. */
-        set_font(FONT_NAME);
-        const int nb_x = pad, nb_y = BOX_Y - NAMEBOX_H + 4;
-        if (assets_draw_box(true, (uint8_t *)gfx_vbuffer + nb_y * SCREEN_W + nb_x)) {
-            int name_w = (int)string_width(speaker);
-            int name_x = nb_x + (NAMEBOX_W - name_w) / 2;
-            if (name_x < nb_x + 2) {
-                name_x = nb_x + 2;
-            }
-            print_slice_outlined(speaker, strlen(speaker), name_x, nb_y + 2,
-                                 COL_WHITE, COL_BOX_FILL);
-            y = nb_y + NAMEBOX_H + 2;
+        if (draw_namebox_art(speaker)) {
+            box_used_namebox_art = true;
+            y = (BOX_Y - NAMEBOX_H + 4) + NAMEBOX_H + 2;
         } else {
+            set_font(FONT_NAME);
             print_slice_outlined(speaker, strlen(speaker), pad, y,
                                  COL_WHITE, COL_BOX_FILL);
+            set_font(FONT_DEFAULT);
             y += 11;
         }
-        set_font(FONT_DEFAULT);
         had_namebox = true;
-    }
-
-    /* text_wrap() re-measures every character-width prefix of every line it
-     * builds -- real work, not free, and this used to run in full on every
-     * single typewriter tick even though only @p visible had changed since
-     * the last call. Caching the wrap by text content comparison turns that
-     * into a one-time cost per line, while staying immune to pointer aliasing
-     * when consecutive lines reuse a shared static buffer (&buf[0]). Copy into
-     * cached_copy FIRST so cached_full.lines[].start points into stable storage. */
-    static char          cached_copy[256];
-    static text_layout_t cached_full;
-    if (strcmp(text, cached_copy) != 0) {
-        strncpy(cached_copy, text, sizeof(cached_copy) - 1);
-        cached_copy[sizeof(cached_copy) - 1] = '\0';
-        text_wrap(&cached_full, cached_copy, SCREEN_W - 2 * pad, measure, NULL);
     }
 
     text_layout_t shown;
@@ -1534,13 +1588,27 @@ void render_box(const vn_scene_t *scene, const char *speaker,
         y += 10;
     }
 
-    if (scene->overlay_fx_mask & VN_OVL_FAKE_SKIP) {
+    if (fake_skip) {
         gfx_SetColor(COL_BOX_FILL);
         gfx_FillRectangle_NoClip(4, 4, 82, 14);
         gfx_SetColor(COL_BOX_EDGE);
         gfx_Rectangle(4, 4, 82, 14);
         render_text("Skipping >>", 9, 6, COL_WHITE);
     }
+
+    box_valid = !fake_skip;
+    box_namebox_dirty = false;
+    box_last_hidden = false;
+    box_last_edited = scene->text_edited;
+    box_last_visible = eff_visible;
+    box_last_had_speaker = (speaker != NULL);
+    if (speaker != NULL) {
+        strncpy(box_last_speaker, speaker, sizeof(box_last_speaker) - 1);
+        box_last_speaker[sizeof(box_last_speaker) - 1] = '\0';
+    } else {
+        box_last_speaker[0] = '\0';
+    }
+
     mark_dirty_y(speaker != NULL ? (BOX_Y - NAMEBOX_H + 4) : BOX_Y, SCREEN_H);
     perf_overlay_stage_end(PERF_STAGE_BOX);
 }
@@ -1556,52 +1624,43 @@ void render_debug_text_test(void)
 {
     render_backdrop(COL_BOX_FILL);
 
-    static const char *const s1 = "Then that makes it official!";
-    static const char *const s2 =
-        "I think with that, we can officially end today's meeting on a good note.";
+    static const char *const samples[2] = {
+        "Then that makes it official!",
+        "I think with that, we can officially end today's meeting on a good note."
+    };
     const int pad = 6;
     int y = 12;
 
     text_layout_t layout;
-    text_wrap(&layout, s1, SCREEN_W - 2 * pad, measure, NULL);
-    for (uint8_t i = 0; i < layout.count; i++) {
-        print_slice_outlined(layout.lines[i].start, layout.lines[i].len, pad, y,
-                             COL_WHITE, COL_BLACK);
-        y += 10;
-    }
-    y += 6;
-
-    text_wrap(&layout, s2, SCREEN_W - 2 * pad, measure, NULL);
-    for (uint8_t i = 0; i < layout.count; i++) {
-        print_slice_outlined(layout.lines[i].start, layout.lines[i].len, pad, y,
-                             COL_WHITE, COL_BLACK);
-        y += 10;
+    for (int s = 0; s < 2; s++) {
+        text_wrap(&layout, samples[s], SCREEN_W - 2 * pad, measure, NULL);
+        for (uint8_t i = 0; i < layout.count; i++) {
+            print_slice_outlined(layout.lines[i].start, layout.lines[i].len, pad, y,
+                                 COL_WHITE, COL_BLACK);
+            y += 10;
+        }
+        y += 6;
     }
 }
 
-/* Debug menu's text-font test -- draws a sample line in each real font this
- * engine ships (see docs/FORMAT.md's "Text rendering"): DDLC's real
- * Aller_Rg (FONT_DEFAULT, everything but the namebox) and RifficFree-Bold
- * (FONT_NAME, namebox + a few menu labels), labeled, so a font-pack rebuild
- * (tools/convert_fonts.py) or a fontlib regression shows up here directly. */
 void render_debug_font_test(void)
 {
     render_backdrop(COL_BOX_FILL);
 
     static const char *const sample = "The quick brown fox jumps 0123456789";
+    static const char *const labels[2] = {
+        "Aller_Rg (default, FONT_DEFAULT)",
+        "RifficFree-Bold (namebox, FONT_NAME)"
+    };
     int y = 20;
 
-    set_font(FONT_DEFAULT);
-    render_text("Aller_Rg (default, FONT_DEFAULT)", 6, y, COL_NAME);
-    y += 14;
-    print_slice_outlined(sample, strlen(sample), 6, y, COL_WHITE, COL_BLACK);
-    y += 26;
-
-    set_font(FONT_NAME);
-    render_text("RifficFree-Bold (namebox, FONT_NAME)", 6, y, COL_NAME);
-    y += 14;
-    print_slice_outlined(sample, strlen(sample), 6, y, COL_WHITE, COL_BLACK);
-
+    for (uint8_t f = 0; f < 2; f++) {
+        set_font(f);
+        render_text(labels[f], 6, y, COL_NAME);
+        y += 14;
+        print_slice_outlined(sample, strlen(sample), 6, y, COL_WHITE, COL_BLACK);
+        y += 26;
+    }
     set_font(FONT_DEFAULT);
 }
 
@@ -1732,21 +1791,7 @@ void render_present_box(const vn_scene_t *scene)
         !console_active && !palette_staged && !fade_active &&
         scene && scene->overlay_mask == 0 &&
         !(scene->overlay_fx_mask & VN_OVL_FAKE_SKIP)) {
-        perf_overlay_end();
-        perf_overlay_present_begin();
-        perf_overlay_vram_begin();
-        gfx_SwapDraw();
-        /* Rows 0..166 are already identical in both framebuffers; sync only
-         * the namebox + dialogue box band (73 lines = 23,360 B instead of
-         * 76,800 B), saving 53,440 B of VRAM copy per typewriter frame. */
-        enum { SYNC_Y = BOX_Y - NAMEBOX_H + 4 };
-        gfx_BlitLines(gfx_screen, SYNC_Y, SCREEN_H - SYNC_Y);
-        perf_overlay_vram_end();
-        perf_overlay_present_end();
-        dirty_sync_ok = false;
-        dirty_y0 = SCREEN_H;
-        dirty_y1 = 0;
-        return;
+        dirty_sync_ok = true;
     }
     render_present(TRANS_CUT);
 }

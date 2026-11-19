@@ -551,6 +551,9 @@ static void verify_step(const char *label, const vn_scene_t *scene,
     }
 
     /* Snapshot visible + back buffer and assert both framebuffers stayed in sync */
+    unsigned saved_box_draws = stat_box_draws;
+    int saved_bg_w = stat_last_bg_w;
+    int saved_bg_h = stat_last_bg_h;
     memcpy(snap_dirty, fb_buf[draw_idx ^ 1u], sizeof(snap_dirty));
     if (memcmp(fb_buf[0], fb_buf[1], sizeof(snap_dirty)) != 0) {
         fprintf(stderr, "FAIL %s: front and back buffers out of sync after present!\n", label);
@@ -563,6 +566,10 @@ static void verify_step(const char *label, const vn_scene_t *scene,
     render_scene(scene);
     render_box(scene, speaker, dialogue, SIZE_MAX);
     render_present(TRANS_CUT);
+
+    stat_box_draws = saved_box_draws;
+    stat_last_bg_w = saved_bg_w;
+    stat_last_bg_h = saved_bg_h;
 
     if (memcmp(snap_dirty, fb_buf[draw_idx ^ 1u], sizeof(snap_dirty)) != 0) {
         for (size_t i = 0; i < SCREEN_W * SCREEN_H; i++) {
@@ -639,30 +646,43 @@ int main(void)
     verify_step("6_pose_change_actor2", &scene, "Natsuki", "I made cupcakes!", true, false);
     assert(stat_last_bg_w >= 88 && stat_last_bg_h >= 150);
 
-    /* 7. Actor 1 hop animation across multiple ticks (SKIP at t=0, DIRTY on moving frames!) */
+    /* 7. Actor 1 hop animation across multiple ticks (SKIP at t=0, DIRTY on moving frames!
+     * Actor 1 does not overlap namebox [6..78), so unchanged textbox is completely skipped!) */
     scene.actors[1].flags = VN_FLAG_HOP;
     scene.actors[1].show_seq = 2;
     verify_step("7a_hop_t0", &scene, "Yuri", "Oh!", false, true);
     advance_ms(60);
     verify_step("7b_hop_t60", &scene, "Yuri", "Oh!", true, false);
+    assert(stat_box_draws == 0);
     advance_ms(60);
     verify_step("7c_hop_t120", &scene, "Yuri", "Oh!", true, false);
+    assert(stat_box_draws == 0);
     advance_ms(120);
     verify_step("7d_hop_settled", &scene, "Yuri", "Oh!", true, false);
+    assert(stat_box_draws == 0);
     scene.actors[1].flags = 0;
 
-    /* 8. Actor 0 speaking zoom 1.00 -> 1.05 across multiple ticks (scaled clip test!) */
+    /* 8. Actor 0 speaking zoom 1.00 -> 1.05 across multiple ticks (scaled clip test!
+     * Actor 0 at x=96 overlaps namebox [6..78), so ONLY namebox repaints while textbox skips!) */
     scene.actors[0].flags = VN_FLAG_ZOOM;
     verify_step("8a_zoom_start", &scene, "Sayori", "Let's read poems!", false, true);
     advance_ms(90);
     verify_step("8b_zoom_mid", &scene, "Sayori", "Let's read poems!", true, false);
+    assert(stat_box_draws == 1);
     advance_ms(200);
     verify_step("8c_zoom_full", &scene, "Sayori", "Let's read poems!", true, false);
+    assert(stat_box_draws == 1);
 
     /* 8d. Expression swap while Actor 0 is zoomed 1.05x (scaled face sub-rect!) */
     scene.actors[0].overlay = 4;
     verify_step("8d_expr_swap_while_zoomed", &scene, "Sayori", "Yay!", true, false);
     assert(stat_last_bg_w <= 50 && stat_last_bg_h <= 52);
+
+    /* 8e. Expression swap with unchanged dialogue -> face sub-rect + zero box redraws! */
+    scene.actors[0].overlay = 5;
+    verify_step("8e_expr_swap_box_skip", &scene, "Sayori", "Yay!", true, false);
+    assert(stat_last_bg_w <= 50 && stat_last_bg_h <= 52);
+    assert(stat_box_draws == 0);
 
     /* 9. Actor 2 sink animation down and back up */
     scene.actors[2].flags = VN_FLAG_SINK;

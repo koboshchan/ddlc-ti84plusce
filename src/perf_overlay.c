@@ -55,7 +55,6 @@ static unsigned stage_start[PERF_STAGE_COUNT];
 static unsigned cur_stages[PERF_STAGE_COUNT];
 static unsigned disp_stages[PERF_STAGE_COUNT];
 static unsigned sc_stages[PERF_STAGE_COUNT];
-static unsigned vram_start;
 static bool sc_pending_vram;
 static const char *sc_mode = "INIT";
 
@@ -407,9 +406,7 @@ static __attribute__((noinline)) void draw_stage_rows(uint8_t *fb)
 
 void perf_overlay_vram_begin(void)
 {
-    if (enabled && owns_timer) {
-        vram_start = (unsigned)timer_Get(3);
-    }
+    perf_overlay_stage_begin(PERF_STAGE_VRAM);
 }
 
 void perf_overlay_vram_end(void)
@@ -417,7 +414,7 @@ void perf_overlay_vram_end(void)
     if (!enabled || !owns_timer) {
         return;
     }
-    unsigned dt = (unsigned)timer_Get(3) - vram_start;
+    unsigned dt = (unsigned)timer_Get(3) - stage_start[PERF_STAGE_VRAM];
     disp_stages[PERF_STAGE_VRAM] = dt;
     if (sc_pending_vram) {
         sc_stages[PERF_STAGE_VRAM] = dt;
@@ -489,19 +486,16 @@ static __attribute__((noinline)) void perf_overlay_render_to(uint8_t *fb)
     }
 
     /* Page 2: Asset / DPK / Memory Inspector (10 compact rows, 6px step) */
-    char pal_str[8];
     if (dbg_pal_kind == PERF_PAL_CG) {
-        sprintf(pal_str, "CG%u", dbg_pal_id);
-    } else if (dbg_pal_kind == PERF_PAL_TITLE) {
-        strcpy(pal_str, "TTL");
-    } else if (dbg_pal_kind == PERF_PAL_MOTION) {
-        strcpy(pal_str, "MOT");
+        ov_row(2u, "P2 CH%u PC%04X SC%u PAL:CG%u",
+               dbg_chunk_id, dbg_pc_off, dbg_bg_id, dbg_pal_id);
     } else {
-        strcpy(pal_str, "GAME");
+        const char *pn = (dbg_pal_kind == PERF_PAL_TITLE) ? "TTL"
+                       : (dbg_pal_kind == PERF_PAL_MOTION) ? "MOT"
+                       : "GAME";
+        ov_row(2u, "P2 CH%u PC%04X SC%u PAL:%s",
+               dbg_chunk_id, dbg_pc_off, dbg_bg_id, pn);
     }
-
-    ov_row(2u, "P2 CH%u PC%04X SC%u PAL:%s",
-           dbg_chunk_id, dbg_pc_off, dbg_bg_id, pal_str);
     ov_row(8u, "BG S%u D%u+%u %uB",
            dbg_bg_id, dbg_bg_vol, dbg_bg_off, dbg_bg_len);
     ov_row(14u, "BG@%06X %s",
@@ -551,17 +545,28 @@ void perf_overlay_draw_buffer(void)
     perf_overlay_render_to((uint8_t *)gfx_vbuffer);
 }
 
+static __attribute__((noinline)) void ov_blit_bg(bool save)
+{
+    uint8_t *fb = (uint8_t *)gfx_vbuffer;
+    for (unsigned r = 0; r < OV_H; ++r) {
+        uint8_t *f = fb + (OV_Y + r) * 320u + OV_X;
+        uint8_t *s = PERF_BG_SAVE + r * OV_W;
+        if (save) {
+            memcpy(s, f, OV_W);
+        } else {
+            memcpy(f, s, OV_W);
+        }
+    }
+}
+
 void perf_overlay_present_begin(void)
 {
     if (!enabled) {
         return;
     }
-    uint8_t *fb = (uint8_t *)gfx_vbuffer;
-    for (unsigned r = 0; r < OV_H; ++r) {
-        memcpy(PERF_BG_SAVE + r * OV_W, fb + (OV_Y + r) * 320u + OV_X, OV_W);
-    }
+    ov_blit_bg(true);
     bg_saved = true;
-    perf_overlay_render_to(fb);
+    perf_overlay_render_to((uint8_t *)gfx_vbuffer);
 }
 
 void perf_overlay_present_end(void)
@@ -570,10 +575,7 @@ void perf_overlay_present_end(void)
         return;
     }
     bg_saved = false;
-    uint8_t *fb = (uint8_t *)gfx_vbuffer;
-    for (unsigned r = 0; r < OV_H; ++r) {
-        memcpy(fb + (OV_Y + r) * 320u + OV_X, PERF_BG_SAVE + r * OV_W, OV_W);
-    }
+    ov_blit_bg(false);
 }
 
 #endif
