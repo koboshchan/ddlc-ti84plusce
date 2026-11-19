@@ -75,7 +75,7 @@ typedef struct {
     bool quit;      /* clear       */
 } input_t;
 
-static unsigned main_ticks_to_ms(clock_t ticks)
+static __attribute__((noinline)) unsigned main_ticks_to_ms(clock_t ticks)
 {
     uint32_t dt = (uint32_t)ticks;
 #ifdef __TICE__
@@ -898,163 +898,135 @@ static __attribute__((noinline)) void run_debug_events_test(void)
  * fast_rect_blit, fast_zoom_row, fast_row_shift) and provides a live visual demo. */
 static __attribute__((noinline)) void run_debug_asm_test(void)
 {
+    static const char *const names[5] = {
+        "1. CG 2x Upscale",
+        "2. 2D Rect Blit ",
+        "3. Zoom Row 20:21",
+        "4. Glitch Shift ",
+        "5. Scaler 1.05x ",
+    };
     input_t in;
     char line[48];
+    unsigned times[5];
+    bool pass[5];
 
     for (;;) {
-        /* Run tests and benchmark */
-        unsigned t_cg = 0, t_blit = 0, t_zoom = 0, t_shift = 0, t_scale = 0;
-        bool pass_cg = true, pass_blit = true, pass_zoom = true, pass_shift = true, pass_scale = true;
+        uint8_t *fb = (uint8_t *)gfx_vbuffer;
+        uint8_t *src = fb + 320u * 180u;
+        clock_t start;
 
-        /* 1. Verify fast_cg_upscale_2x: use screen buffer directly */
+        for (uint8_t i = 0; i < 5; i++) pass[i] = true;
+
+        /* 1. fast_cg_upscale_2x */
+        for (uint16_t i = 0; i < 160u * 60u; i++) src[i] = (uint8_t)(i + 1u);
+        memset(fb, 0, 320u * 120u);
+        start = clock();
+        for (uint8_t it = 0; it < 5; it++) fast_cg_upscale_2x(fb, src);
+        times[0] = main_ticks_to_ms(clock() - start) / 5u;
         {
-            uint8_t *fb = (uint8_t *)gfx_vbuffer;
-            uint8_t *cg_src = fb + 320 * 180;
-            for (int i = 0; i < 160 * 60; i++) cg_src[i] = (uint8_t)(i + 1);
-            memset(fb, 0, 320 * 120);
-
-            clock_t start = clock();
-            for (int it = 0; it < 5; it++) {
-                fast_cg_upscale_2x(fb, cg_src);
-            }
-            t_cg = main_ticks_to_ms(clock() - start) / 5;
-
-            for (int y = 0; y < 60; y++) {
-                for (int x = 0; x < 160; x++) {
-                    uint8_t exp = cg_src[y * 160 + x];
-                    if (fb[(y * 2) * 320 + (x * 2)] != exp ||
-                        fb[(y * 2 + 1) * 320 + (x * 2 + 1)] != exp) {
-                        pass_cg = false;
+            const uint8_t *sp = src;
+            const uint8_t *dp = fb;
+            for (uint8_t y = 0; y < 60 && pass[0]; y++) {
+                for (uint8_t x = 0; x < 160; x++) {
+                    uint8_t exp = sp[x];
+                    uint16_t dx = (uint16_t)x << 1;
+                    if (dp[dx] != exp || dp[320u + dx + 1u] != exp) {
+                        pass[0] = false;
                         break;
                     }
                 }
-                if (!pass_cg) break;
+                sp += 160;
+                dp += 640;
             }
         }
 
-        /* 2. Verify fast_rect_blit */
-        {
-            uint8_t *fb = (uint8_t *)gfx_vbuffer;
-            uint8_t *blit_src = fb + 320 * 180;
-            for (int i = 0; i < 32 * 32; i++) blit_src[i] = (uint8_t)(i + 7);
-            memset(fb, 0, 320 * 40);
-
-            clock_t start = clock();
-            for (int it = 0; it < 50; it++) {
-                fast_rect_blit(fb, 320, blit_src, 32, 32, 32);
-            }
-            t_blit = main_ticks_to_ms(clock() - start) / 50;
-
-            for (int r = 0; r < 32; r++) {
-                for (int c = 0; c < 32; c++) {
-                    if (fb[r * 320 + c] != blit_src[r * 32 + c]) {
-                        pass_blit = false;
-                        break;
-                    }
-                }
-                if (!pass_blit) break;
+        /* 2. fast_rect_blit */
+        for (uint16_t i = 0; i < 32u * 32u; i++) src[i] = (uint8_t)(i + 7u);
+        memset(fb, 0, 320u * 40u);
+        start = clock();
+        for (uint8_t it = 0; it < 50; it++) fast_rect_blit(fb, 320, src, 32, 32, 32);
+        times[1] = main_ticks_to_ms(clock() - start) / 50u;
+        for (uint8_t r = 0; r < 32; r++) {
+            if (memcmp(fb + (uint16_t)r * 320u, src + (uint16_t)r * 32u, 32) != 0) {
+                pass[1] = false;
+                break;
             }
         }
 
-        /* 3. Verify fast_zoom_row */
+        /* 3. fast_zoom_row */
         {
             uint8_t z_src[64], z_dst[70];
-            for (int i = 0; i < 64; i++) z_src[i] = (uint8_t)(i * 2 + 1);
-
-            clock_t start = clock();
-            for (int it = 0; it < 500; it++) {
-                fast_zoom_row(z_dst, z_src, 64);
-            }
-            t_zoom = main_ticks_to_ms(clock() - start);
-
-            int sx = 0, ax = 0;
-            for (int x = 0; x < 64; x++) {
-                if (z_dst[x] != z_src[sx]) { pass_zoom = false; break; }
+            for (uint8_t i = 0; i < 64; i++) z_src[i] = (uint8_t)(i * 2u + 1u);
+            start = clock();
+            for (uint16_t it = 0; it < 500; it++) fast_zoom_row(z_dst, z_src, 64);
+            times[2] = main_ticks_to_ms(clock() - start);
+            uint8_t sx = 0, ax = 0;
+            for (uint8_t x = 0; x < 64; x++) {
+                if (z_dst[x] != z_src[sx]) { pass[2] = false; break; }
                 ax += 20;
                 if (ax >= 21) { ax -= 21; sx++; }
             }
         }
 
-        /* 4. Verify fast_row_shift */
+        /* 4. fast_row_shift */
         {
             uint8_t shift_row[320], scratch[320];
-            for (int i = 0; i < 320; i++) shift_row[i] = (uint8_t)i;
-
-            clock_t start = clock();
-            for (int it = 0; it < 320; it++) {
-                fast_row_shift(shift_row, scratch, 1);
-            }
-            t_shift = main_ticks_to_ms(clock() - start);
-
-            for (int i = 0; i < 320; i++) {
-                if (shift_row[i] != (uint8_t)i) { pass_shift = false; break; }
+            for (uint16_t i = 0; i < 320; i++) shift_row[i] = (uint8_t)i;
+            start = clock();
+            for (uint16_t it = 0; it < 320; it++) fast_row_shift(shift_row, scratch, 1);
+            times[3] = main_ticks_to_ms(clock() - start);
+            for (uint16_t i = 0; i < 320; i++) {
+                if (shift_row[i] != (uint8_t)i) { pass[3] = false; break; }
             }
         }
 
-        /* 5. Verify fast_scale_sprite_trans */
+        /* 5. fast_scale_sprite_trans */
         {
-            uint8_t *s_dst = (uint8_t *)gfx_vbuffer;
-            uint8_t *s_src = s_dst + 320 * 180;
-            for (int i = 0; i < 40 * 40; i++) s_src[i] = (uint8_t)(i % 2 ? 10 + i % 30 : 0);
-            memset(s_dst, 0xFF, 320 * 44);
-
-            clock_t start = clock();
-            for (int it = 0; it < 50; it++) {
-                fast_scale_sprite_trans(s_dst, 320, s_src, 40, 40, 42, 42);
+            uint8_t c = 0;
+            for (uint16_t i = 0; i < 40u * 40u; i++) {
+                src[i] = (i & 1u) ? (uint8_t)(10u + c) : 0u;
+                if (++c == 30) c = 0;
             }
-            t_scale = main_ticks_to_ms(clock() - start) / 50;
-
-            for (int y = 0; y < 42; y++) {
-                int sy = (y * 40 + 21) / 42;
-                for (int x = 0; x < 42; x++) {
-                    int sx = (x * 40 + 21) / 42;
-                    uint8_t exp = s_src[sy * 40 + sx];
-                    uint8_t act = s_dst[y * 320 + x];
-                    if (exp == 0 ? act != 0xFF : act != exp) {
-                        pass_scale = false;
-                        break;
-                    }
+            memset(fb, 0xFF, 320u * 44u);
+            start = clock();
+            for (uint8_t it = 0; it < 50; it++) {
+                fast_scale_sprite_trans(fb, 320, src, 40, 40, 42, 42);
+            }
+            times[4] = main_ticks_to_ms(clock() - start) / 50u;
+            uint8_t sy = 0, ay = 21;
+            const uint8_t *dp = fb;
+            for (uint8_t y = 0; y < 42 && pass[4]; y++) {
+                const uint8_t *sr = src + (uint16_t)sy * 40u;
+                uint8_t sx = 0, ax = 21;
+                for (uint8_t x = 0; x < 42; x++) {
+                    uint8_t exp = sr[sx];
+                    if (dp[x] != (exp ? exp : 0xFFu)) { pass[4] = false; break; }
+                    ax += 40;
+                    if (ax >= 42) { ax -= 42; sx++; }
                 }
-                if (!pass_scale) break;
+                ay += 40;
+                if (ay >= 42) { ay -= 42; sy++; }
+                dp += 320;
             }
         }
 
-        /* Display diagnostic screen */
         for (;;) {
             render_backdrop(COL_BOX_FILL);
             render_text("eZ80 ASM Optimization Tests", 14, 8, COL_NAME);
-
-            sprintf(line, "1. CG 2x Upscale : %s (%u ms)", pass_cg ? "PASS" : "FAIL", t_cg);
-            render_text(line, 14, 30, pass_cg ? COL_WHITE : COL_HIGHLIGHT);
-
-            sprintf(line, "2. 2D Rect Blit  : %s (%u ms)", pass_blit ? "PASS" : "FAIL", t_blit);
-            render_text(line, 14, 50, pass_blit ? COL_WHITE : COL_HIGHLIGHT);
-
-            sprintf(line, "3. Zoom Row 20:21: %s (%u ms)", pass_zoom ? "PASS" : "FAIL", t_zoom);
-            render_text(line, 14, 70, pass_zoom ? COL_WHITE : COL_HIGHLIGHT);
-
-            sprintf(line, "4. Glitch Shift  : %s (%u ms)", pass_shift ? "PASS" : "FAIL", t_shift);
-            render_text(line, 14, 90, pass_shift ? COL_WHITE : COL_HIGHLIGHT);
-
-            sprintf(line, "5. Scaler 1.05x  : %s (%u ms)", pass_scale ? "PASS" : "FAIL", t_scale);
-            render_text(line, 14, 110, pass_scale ? COL_WHITE : COL_HIGHLIGHT);
-
+            for (uint8_t i = 0; i < 5; i++) {
+                sprintf(line, "%s: %s (%u ms)", names[i],
+                        pass[i] ? "PASS" : "FAIL", times[i]);
+                render_text(line, 14, (uint16_t)(30u + i * 20u),
+                            pass[i] ? COL_WHITE : COL_HIGHLIGHT);
+            }
             render_text("All 5 eZ80 assembly routines active.", 14, 136, COL_NAME);
-            render_text("Streaming registers + hardware LDIR", 14, 154, COL_BOX_EDGE);
-
-            render_text("[2nd] Re-run test suite", 14, 184, COL_WHITE);
-            render_text("Mode / Clear: return to Debug Menu", 14, SCREEN_H - 18, COL_BOX_EDGE);
-
+            render_text("[2nd] Re-run   Mode/Clear: back", 14, SCREEN_H - 18, COL_BOX_EDGE);
             render_present(TRANS_CUT);
             gfx_Wait();
 
             input_poll(&in);
-            if (quit_requested || in.pause) {
-                return;
-            }
-            if (in.advance) {
-                break; /* Re-run benchmark */
-            }
+            if (quit_requested || in.pause) return;
+            if (in.advance) break;
         }
     }
 }
@@ -1221,11 +1193,13 @@ static __attribute__((noinline)) void run_debug_menu(vn_vm_t *vm)
     };
     static const char *const cnames[4] = { "Sayori", "Natsuki", "Yuri", "Monika" };
     uint8_t actions[DBG_ACTION_MAX];
-    char labels[DBG_ACTION_MAX][32];
+    const char *labels[DBG_ACTION_MAX];
+    char dyn[7][28];
     uint8_t count, selected = 0, top = 0;
     input_t in;
 
     for (;;) {
+        uint8_t d = 0;
         count = 0;
 
         static const struct { uint8_t action; const char *label; } static_items[] = {
@@ -1242,50 +1216,46 @@ static __attribute__((noinline)) void run_debug_menu(vn_vm_t *vm)
         };
         for (uint8_t i = 0; i < sizeof(static_items)/sizeof(static_items[0]); i++) {
             actions[count] = static_items[i].action;
-            strcpy(labels[count], static_items[i].label);
+            labels[count] = static_items[i].label;
             count++;
         }
 
 #ifdef DDLC_PERF_OVERLAY
         actions[count] = DBG_PERF;
-        sprintf(labels[count], "Performance overlay: %s",
+        sprintf(dyn[d], "Performance overlay: %s",
                 perf_overlay_enabled() ? "ON" : "OFF");
-        count++;
+        labels[count++] = dyn[d++];
 #endif
         if (vm) {
             actions[count] = DBG_SCENEINFO;
-            strcpy(labels[count], "Scene diagnostic");
-            count++;
+            labels[count++] = "Scene diagnostic";
 
             actions[count] = DBG_TEAR;
-            sprintf(labels[count], "Tear glitch: %s", vm->scene.tear_on ? "ON" : "OFF");
-            count++;
+            sprintf(dyn[d], "Tear glitch: %s", vm->scene.tear_on ? "ON" : "OFF");
+            labels[count++] = dyn[d++];
 
             actions[count] = DBG_WINDOW;
-            sprintf(labels[count], "Window hidden: %s", vm->scene.window_hidden ? "ON" : "OFF");
-            count++;
+            sprintf(dyn[d], "Window hidden: %s", vm->scene.window_hidden ? "ON" : "OFF");
+            labels[count++] = dyn[d++];
 
             if (assets_debug_chapter_count() > 0) {
                 actions[count] = DBG_CHAPTERS;
-                strcpy(labels[count], "Jump to chapter...");
-                count++;
+                labels[count++] = "Jump to chapter...";
             }
 
             for (uint8_t ch = 0; ch < 4; ch++) {
                 actions[count] = (uint8_t)(DBG_DEL_SAYORI + ch);
-                sprintf(labels[count], "Deleted %s: %s", cnames[ch],
+                sprintf(dyn[d], "Deleted %s: %s", cnames[ch],
                         vm->vars[VN_DELETED_VAR(ch)] ? "ON" : "OFF");
-                count++;
+                labels[count++] = dyn[d++];
             }
         }
 
         actions[count] = DBG_ERASE;
-        strcpy(labels[count], "Erase all saves...");
-        count++;
+        labels[count++] = "Erase all saves...";
 
         actions[count] = DBG_CLOSE;
-        strcpy(labels[count], "Close");
-        count++;
+        labels[count++] = "Close";
 
         if (selected >= count) {
             selected = (uint8_t)(count - 1);

@@ -24,6 +24,7 @@
 	.equ	ti_asm_prgm_size,0xD0118C
 	.equ	ti_userMem,      0xD1A881
 	.equ	RELOC_BASE,      0xD09466
+	.equ	LIBLOAD_MARGIN,  0x7400
 
 	.global	_guard_start
 _guard_start:
@@ -116,8 +117,11 @@ dbg_cmp_crc:
 	djnz	dbg_cmp_crc
 	call	ti_MemChk
 	ld	de, (rel_raw_size_src)
+	ld	bc, LIBLOAD_MARGIN
 	or	a, a
 	sbc	hl, de
+	jr	c, fail_dbg_mem
+	sbc	hl, bc
 	jr	c, fail_dbg_mem
 	call	ti_PopRealO1
 	ld	hl, ddebug_reloc_src

@@ -25,7 +25,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cedev import find_cedev_tool
 
 TI_APPVAR_MAX = 65503
-MAX_RAW_ENGINE = 0x024000
+# Empirical TI-84 Plus CE RAM ceiling with all 151 archived AppVars + arTIfiCE + LibLoad clibs (~29.5 KB)
+MAX_RAW_ENGINE = 120000
 
 
 def build_ddebug(elf_path: Path, out_8xv: Path, report_path: Path | None = None) -> dict:

@@ -704,11 +704,11 @@ static int16_t  exit_from_x;
                            VN_OVL_DUST)
 static bool ovl_pixel_active;
 
-static void render_live_tile_bg(void);
-static void render_overlay_fx(const vn_scene_t *scene);
+static __attribute__((noinline)) void render_live_tile_bg(void);
+static __attribute__((noinline)) void render_overlay_fx(const vn_scene_t *scene);
 static bool layer_fx_active_pending(void);
 static bool layer_fx_scene_pending(const vn_scene_t *scene, unsigned now_ms);
-static void apply_layer_fx(const vn_scene_t *scene, unsigned t);
+static __attribute__((noinline)) void apply_layer_fx(const vn_scene_t *scene, unsigned t);
 
 /* Captures the plate for actor @p a, sizing (or resizing) the buffer to fit.
  * Call with the background and every rearward actor already drawn. */
@@ -791,7 +791,7 @@ static bool      tear_was_on;
  * Every band re-rolls independently, so the bands drift out of sync with
  * each other over time, which reads as a genuine glitch rather than the
  * whole scene sliding as one piece. */
-static void apply_tear(const vn_scene_t *scene, unsigned t)
+static __attribute__((noinline)) void apply_tear(const vn_scene_t *scene, unsigned t)
 {
     if (!scene->tear_on) {
         tear_was_on = false;
@@ -899,7 +899,7 @@ static int mover_slot = -1;
  * time instead and papered over this by redrawing for 500ms regardless. */
 static void scene_obscured(void);
 
-static unsigned ticks_to_ms(clock_t ticks)
+static __attribute__((noinline)) unsigned ticks_to_ms(clock_t ticks)
 {
     uint32_t dt = (uint32_t)ticks;
 #ifdef __TICE__
@@ -1901,7 +1901,7 @@ static void spawn_blood_drop(blood_drop_t *d, bool eye_mode)
     d->ttl = (uint8_t)(10U + ((r >> 18) % 14U));
 }
 
-static void render_overlay_fx(const vn_scene_t *scene)
+static __attribute__((noinline)) void render_overlay_fx(const vn_scene_t *scene)
 {
     uint8_t mask = scene->overlay_fx_mask;
 
@@ -2485,7 +2485,7 @@ static bool layer_fx_scene_pending(const vn_scene_t *scene, unsigned now_ms)
     return key != layer_s_drawn_key;
 }
 
-static void apply_layer_fx(const vn_scene_t *scene, unsigned t)
+static __attribute__((noinline)) void apply_layer_fx(const vn_scene_t *scene, unsigned t)
 {
     if (!scene || scene->layer_fx == VN_LAYER_NONE) {
         layer_s_fx = VN_LAYER_NONE;

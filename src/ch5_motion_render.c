@@ -34,7 +34,7 @@ static clock_t started;
 static clock_t layer_start[8];
 static uint8_t previous_mode[8] = {255, 255, 255, 255, 255, 255, 255, 255};
 
-static unsigned ch5_ticks_to_ms(clock_t dt) {
+static __attribute__((noinline)) unsigned ch5_ticks_to_ms(clock_t dt) {
     uint32_t ticks = (uint32_t)dt;
 #ifdef __TICE__
     _Static_assert(CLOCKS_PER_SEC == 32768, "32-bit shift requires 32768Hz clock");
@@ -74,7 +74,7 @@ static void motion_axis_map(int16_t *map, unsigned count, int32_t origin, uint32
     ch5_axis_map(map, count, origin, scale, extent);
 }
 
-static void build_quant_pages(uint8_t *table, uint8_t *pages, const uint8_t *qdata,
+static __attribute__((noinline)) void build_quant_pages(uint8_t *table, uint8_t *pages, const uint8_t *qdata,
                               const uint8_t *quant_groups, uint16_t alpha_q10) {
     uint8_t base = (uint8_t)((uintptr_t)table >> 8);
     uint8_t pg = 0;
@@ -84,7 +84,7 @@ static void build_quant_pages(uint8_t *table, uint8_t *pages, const uint8_t *qda
     memcpy(table, qdata + 272 + (alpha_q10 < 352 ? 0 : alpha_q10 < 544 ? 4096 : 8192), 4096);
 }
 
-static bool draw_fused_bg(uint8_t *table, uint8_t *pages,
+static __attribute__((noinline)) bool draw_fused_bg(uint8_t *table, uint8_t *pages,
                           int16_t *pair_x, int16_t *pair_y,
                           int16_t *xmap, int16_t *ymap,
                           const uint8_t *record, const uint8_t *qdata,
@@ -202,7 +202,7 @@ static bool draw_fused_bg(uint8_t *table, uint8_t *pages,
     return true;
 }
 
-static bool draw_motion_layer(uint8_t layer, uint8_t mode, uint8_t i_slot,
+static __attribute__((noinline)) bool draw_motion_layer(uint8_t layer, uint8_t mode, uint8_t i_slot,
                               uint8_t *ramlut, uint8_t *pages,
                               int16_t *xmap, int16_t *ymap,
                               const uint8_t *qdata, const uint8_t *quant_groups,
