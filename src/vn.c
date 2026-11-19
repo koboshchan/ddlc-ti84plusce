@@ -742,6 +742,8 @@ bool vn_step(vn_vm_t *vm)
             }
             vm->scene.window_auto = false;
             vm->scene.window_hidden = true;
+            vm->scene.text = "";
+            vm->scene.speaker = VN_SPEAKER_NONE;
             break;
         }
 

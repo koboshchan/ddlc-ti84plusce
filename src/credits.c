@@ -64,18 +64,44 @@ static void credits_draw_centered_text(const char *s, int cx, int y, uint8_t col
     render_text(s, x, y, color);
 }
 
-static void credits_blit_thumb_clipped(const uint8_t *thumb, int dst_x, int dst_y)
+static void credits_blit_thumb_clipped(const uint8_t *thumb, int dst_x, int dst_y, int min_y)
 {
-    int y0 = (dst_y < 0) ? -dst_y : 0;
+    int y0 = (dst_y < min_y) ? (min_y - dst_y) : 0;
     int y1 = (dst_y + CREDITS_THUMB_H > SCREEN_H) ? (SCREEN_H - dst_y) : CREDITS_THUMB_H;
     if (y0 >= y1) {
         return;
     }
-    fast_rect_blit((uint8_t *)gfx_vbuffer + (size_t)(dst_y + y0) * SCREEN_W + dst_x,
+    int draw_y = dst_y + y0;
+    int draw_h = y1 - y0;
+    fast_rect_blit((uint8_t *)gfx_vbuffer + (size_t)draw_y * SCREEN_W + dst_x,
                    SCREEN_W, thumb + (size_t)y0 * CREDITS_THUMB_W, CREDITS_THUMB_W,
-                   CREDITS_THUMB_W, (size_t)(y1 - y0));
+                   CREDITS_THUMB_W, (size_t)draw_h);
     gfx_SetColor(COL_BOX_EDGE);
-    gfx_Rectangle(dst_x, dst_y + y0, CREDITS_THUMB_W, y1 - y0);
+    gfx_VertLine_NoClip(dst_x, draw_y, draw_h);
+    gfx_VertLine_NoClip(dst_x + CREDITS_THUMB_W - 1, draw_y, draw_h);
+    if (y0 == 0) {
+        gfx_HorizLine_NoClip(dst_x, draw_y, CREDITS_THUMB_W);
+    }
+    if (y1 == CREDITS_THUMB_H) {
+        gfx_HorizLine_NoClip(dst_x, draw_y + draw_h - 1, CREDITS_THUMB_W);
+    }
+}
+
+/* assets_scene() uses rows SCENE_H..SCREEN_H-1 as scratch for 2x CG upscaling;
+ * clear them before swapping so credits screens never leak raw 160px data. */
+static void credits_clear_bottom_bar(void)
+{
+    gfx_SetColor(COL_BLACK);
+    gfx_FillRectangle_NoClip(0, SCENE_H, SCREEN_W, SCREEN_H - SCENE_H);
+}
+
+/* Clears both buffers to black before switching hardware palette so no prior
+ * frame briefly flashes in the next card's colors. */
+static void credits_clear_both(void)
+{
+    gfx_FillScreen(COL_BLACK);
+    gfx_SwapDraw();
+    gfx_FillScreen(COL_BLACK);
 }
 
 static void credits_hold_scene(uint8_t scene_id, unsigned duration_ms)
@@ -83,9 +109,10 @@ static void credits_hold_scene(uint8_t scene_id, unsigned duration_ms)
     if (scene_id == VN_NO_SPRITE || quit_requested) {
         return;
     }
+    credits_clear_both();
     render_apply_palette(assets_scene_palette(scene_id));
-    gfx_FillScreen(COL_BLACK);
     assets_scene(scene_id, (uint8_t *)gfx_vbuffer);
+    credits_clear_bottom_bar();
     gfx_SwapDraw();
 
     clock_t start = clock();
@@ -250,6 +277,7 @@ static void credits_run_stage1(bool clearall, uint16_t clear_mask,
             }
         }
 
+        credits_clear_both();
         if (cg_id != VN_NO_SPRITE) {
             vn_scene_t tmp_s;
             memset(&tmp_s, 0, sizeof(tmp_s));
@@ -266,6 +294,7 @@ static void credits_run_stage1(bool clearall, uint16_t clear_mask,
         }
         int cg_x = entries[i].cg_right ? 152 : 8;
         int txt_cx = entries[i].cg_right ? 76 : 236;
+        int min_y = clearall ? 0 : 56;
 
         clock_t start = clock();
         const unsigned card_ms = 3400U;
@@ -286,11 +315,15 @@ static void credits_run_stage1(bool clearall, uint16_t clear_mask,
 
             gfx_FillScreen(COL_BLACK);
             if (has_thumb) {
-                credits_blit_thumb_clipped(thumb, cg_x, scroll_y - 10);
+                credits_blit_thumb_clipped(thumb, cg_x, scroll_y - 10, min_y);
             }
-            credits_draw_centered_text(entries[i].header, txt_cx, scroll_y + 12, COL_WHITE);
-            credits_draw_centered_text(entries[i].line1, txt_cx, scroll_y + 32, COL_WHITE);
-            if (l2 && l2[0] != '\0') {
+            if (scroll_y + 12 >= min_y) {
+                credits_draw_centered_text(entries[i].header, txt_cx, scroll_y + 12, COL_WHITE);
+            }
+            if (scroll_y + 32 >= min_y) {
+                credits_draw_centered_text(entries[i].line1, txt_cx, scroll_y + 32, COL_WHITE);
+            }
+            if (l2 && l2[0] != '\0' && scroll_y + 48 >= min_y) {
                 credits_draw_centered_text(l2, txt_cx, scroll_y + 48, COL_WHITE);
             }
             if (!clearall) {
@@ -323,6 +356,7 @@ static void credits_run_stage1(bool clearall, uint16_t clear_mask,
             { "os.remove(\"game/menu.rpy\")", "menu.rpy deleted successfully." },
             { "os.remove(\"game/script.rpy\")", "script.rpy deleted successfully." },
         };
+        credits_clear_both();
         render_apply_palette(assets_scene_palette(VN_NO_SPRITE));
         for (unsigned j = 0; j < 4 && !quit_requested; j++) {
             clock_t start = clock();
@@ -353,9 +387,10 @@ static void credits_run_stage1(bool clearall, uint16_t clear_mask,
     render_console_clear();
 
     if (!quit_requested && scenes && scenes[1] != VN_NO_SPRITE) {
+        credits_clear_both();
         render_apply_palette(assets_scene_palette(scenes[1]));
-        gfx_FillScreen(COL_BLACK);
         assets_scene(scenes[1], (uint8_t *)gfx_vbuffer);
+        credits_clear_bottom_bar();
         credits_draw_centered_text("made with love by", SCREEN_W / 2, 12, COL_WHITE);
         gfx_SwapDraw();
 

@@ -1459,7 +1459,7 @@ static void draw_dialogue_box(vn_vm_t *vm, const vn_scene_t *scene, size_t visib
         const char *text = vm->host->string(vm->host->ctx, scene->overlay_text[slot]);
         char line[48]; unsigned n = 0;
         int x = scene->overlay_x[slot], y = scene->overlay_y[slot];
-        gfx_SetTextFGColor(0); gfx_SetTextBGColor(255); gfx_SetTextTransparentColor(255);
+        gfx_SetTextFGColor(COL_BLACK); gfx_SetTextBGColor(COL_TRANSPARENT); gfx_SetTextTransparentColor(COL_TRANSPARENT);
         while (*text && y < 232) {
             char c = *text++;
             if (c != '\n') line[n++] = c;
@@ -1814,6 +1814,7 @@ static void host_update(void *ctx, const vn_scene_t *scene, uint8_t trans)
     const uint16_t *palette = render_filter_palette(
         scene, assets_scene_palette(scene->background));
     bool same_pal = render_palette_matches(palette);
+    bool defer_pal = false;
 
     if (trans == TRANS_FADE) {
         render_fade_out();
@@ -1828,10 +1829,13 @@ static void host_update(void *ctx, const vn_scene_t *scene, uint8_t trans)
         render_eyes_close_anim();
         render_apply_palette(palette);
     } else {
-        render_apply_palette(palette);
+        defer_pal = true;
     }
 
     render_scene(scene);
+    if (defer_pal && !render_scene_used_motion()) {
+        render_apply_palette(palette);
+    }
     draw_dialogue_box(ctx, scene, SIZE_MAX);
 
     if (trans == TRANS_DISSOLVE && same_pal) {

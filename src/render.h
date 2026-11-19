@@ -117,6 +117,10 @@ void render_scene_lazy(const vn_scene_t *scene);
  */
 void render_invalidate_scene(void);
 
+/** Returns whether the last render_scene() call rendered through the Chapter 5
+ * motion compositor (which manages its own DMOTPAL hardware palette). */
+bool render_scene_used_motion(void);
+
 /**
  * Returns true when the composed scene for @p bg_id is already in the draw
  * buffer and has no active animation, tear, or motion redraws pending.

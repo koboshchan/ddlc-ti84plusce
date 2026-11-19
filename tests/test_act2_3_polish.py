@@ -285,6 +285,19 @@ int main(void) {
     code[7] = 2; /* vars[0] = 2 */
     assert(vn_run(&vm) == VN_FINISHED);
     assert(vm.vars[2] == 99);
+    /* Verify OP_WINDOW_HIDE clears any stale dialogue text/speaker */
+    static const uint8_t hide_code[] = {
+        OP_SAY, 1, 0, 0,     /* speaker=1, str=0 */
+        OP_WINDOW_HIDE,      /* must clear text and speaker */
+        OP_END
+    };
+    vn_init(&vm, hide_code, sizeof(hide_code), &host, 1);
+    assert(vn_step(&vm));
+    assert(vm.scene.speaker == 1);
+    assert(vn_step(&vm));
+    assert(vm.scene.window_hidden);
+    assert(vm.scene.speaker == VN_SPEAKER_NONE);
+    assert(vm.scene.text != NULL && vm.scene.text[0] == '\0');
     return 0;
 }
 """
@@ -295,6 +308,71 @@ int main(void) {
             subprocess.run(
                 ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "src"),
                  str(src_c), str(ROOT / "src/vn.c"), "-o", str(exe)],
+                check=True,
+            )
+            subprocess.run([str(exe)], check=True)
+
+    def test_render_filter_palette_monika_box_style(self) -> None:
+        render_src = (ROOT / "src/render.c").read_text()
+        start = render_src.index("const uint16_t *render_filter_palette(")
+        end = render_src.index("static uint8_t blood_red_index(", start)
+        fn_src = render_src[start:end]
+        harness = f"""
+#include <assert.h>
+#include <stdint.h>
+#include <string.h>
+#include "vn.h"
+#define COL_BOX_FILL 3
+#define COL_BOX_EDGE 4
+#define COL_NAME     5
+
+{fn_src}
+
+static uint16_t pack555(unsigned r, unsigned g, unsigned b) {{
+    return (uint16_t)(((r & 31U) << 10) | ((g & 31U) << 5) | (b & 31U));
+}}
+
+int main(void) {{
+    uint16_t pal[256];
+    for (unsigned i = 0; i < 256; i++) pal[i] = pack555(28U, 20U, 24U);
+    pal[0] = pack555(31U, 0U, 31U);   /* COL_TRANSPARENT */
+    pal[1] = 0U;                        /* COL_BLACK */
+    pal[2] = pack555(31U, 31U, 31U);  /* COL_WHITE */
+    pal[3] = pack555(11U, 2U, 6U);    /* COL_BOX_FILL */
+    pal[4] = pack555(30U, 25U, 27U);  /* COL_BOX_EDGE */
+    pal[5] = pack555(31U, 22U, 26U);  /* COL_NAME */
+    pal[10] = 0U;                       /* black entry inside UI_BOX range */
+
+    vn_scene_t scene;
+    memset(&scene, 0, sizeof(scene));
+
+    /* Default box_style returns original pointer unchanged */
+    assert(render_filter_palette(&scene, pal) == pal);
+
+    /* Monika Act 3 box_style == 1 shifts UI_BOX indices 3,4,5 and 11..49 toward violet */
+    scene.box_style = 1;
+    const uint16_t *out = render_filter_palette(&scene, pal);
+    assert(out != pal);
+    assert(out[0] == pal[0] && out[1] == pal[1] && out[2] == pal[2]);
+    assert(out[6] == pal[6] && out[7] == pal[7] && out[10] == 0U);
+    for (unsigned i = 50; i < 256; i++) assert(out[i] == pal[i]);
+    for (unsigned idx = 3; idx <= 49; idx++) {{
+        if ((idx > 5 && idx < 10) || idx == 10) continue;
+        unsigned r = (out[idx] >> 10) & 31U;
+        unsigned g = (out[idx] >> 5) & 31U;
+        unsigned b = out[idx] & 31U;
+        assert(b > r && r > g);
+    }}
+    return 0;
+}}
+"""
+        with tempfile.TemporaryDirectory() as td:
+            src_c = Path(td) / "pal_test.c"
+            exe = Path(td) / "pal_test"
+            src_c.write_text(harness)
+            subprocess.run(
+                ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "src"),
+                 str(src_c), "-o", str(exe)],
                 check=True,
             )
             subprocess.run([str(exe)], check=True)

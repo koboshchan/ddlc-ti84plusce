@@ -28,6 +28,10 @@
 /* Seeded by render_init(), used by the tear effect section further down --
  * forward-declared here since render_init() runs before that section's own
  * declaration would otherwise be visible. */
+/* Forward-declared above render_box(), which inspects the active palette
+ * before the fade/palette section below. */
+static bool palette_entry_is_near_white(uint8_t index);
+
 static uint32_t tear_rng_state;
 
 /* Forward-declared for the same reason as tear_rng_state above -- defined
@@ -899,10 +903,13 @@ static unsigned ticks_to_ms(clock_t ticks)
 #endif
 }
 
+static bool last_scene_used_motion;
+
 void render_scene(const vn_scene_t *scene)
 {
     noise_restore();
-    if (ch5_motion_draw(scene->background)) perf_overlay_mark_rendered();
+    last_scene_used_motion = ch5_motion_draw(scene->background);
+    if (last_scene_used_motion) perf_overlay_mark_rendered();
     else draw_background(scene->background);
     ovl_pixel_active = (scene->overlay_fx_mask & VN_OVL_PIXEL_MASK) != 0;
     if (scene->overlay_fx_mask & VN_OVL_LIVE_TILE) {
@@ -1116,6 +1123,11 @@ void render_invalidate_scene(void)
     have_drawn_once = false;
 }
 
+bool render_scene_used_motion(void)
+{
+    return last_scene_used_motion;
+}
+
 bool render_scene_is_settled(uint8_t bg_id)
 {
     return have_drawn_once && scene_settled && !ch5_motion_active(bg_id) &&
@@ -1174,8 +1186,6 @@ void render_scene_lazy(const vn_scene_t *scene)
      * on the next frame in that case. */
 }
 
-static void monika_box_remap(uint8_t *dst, size_t count);
-
 void render_box(const vn_scene_t *scene, const char *speaker,
                 const char *text, size_t visible)
 {
@@ -1189,32 +1199,14 @@ void render_box(const vn_scene_t *scene, const char *speaker,
     }
 
     /* `window hide` or empty text -- DDLC uses this for beats with no text
-     * (e.g. splash screens, CGs, end screens, pauses) over a clean shot of
-     * the scene. The letterbox area (rows 180..239) is filled matching the
-     * bottom row of the rendered scene so white scenes (like s_kill_early)
-     * stay seamless white with no black bar, and black scenes stay black.
-     * When window_hidden is set with text present (e.g. floating text displayables),
-     * the text is drawn directly centered over the scene. */
+     * (e.g. splash screens, CGs, end screens, pauses). Only match the
+     * letterbox color to the bottom row when it is near-white (such as
+     * s_kill_early or white); darker pixels like splash_glitch fill black. */
     if (scene->window_hidden || text == NULL || text[0] == '\0') {
         uint8_t bottom_color = ((uint8_t *)gfx_vbuffer)[(SCENE_H - 1) * SCREEN_W];
-        gfx_SetColor(bottom_color);
+        uint8_t fill = palette_entry_is_near_white(bottom_color) ? bottom_color : COL_BLACK;
+        gfx_SetColor(fill);
         gfx_FillRectangle_NoClip(0, BOX_Y, SCREEN_W, BOX_H);
-        if (scene->window_hidden && text != NULL && text[0] != '\0') {
-            int sw = (int)string_width(text);
-            /* Ren'Py AST uses xalign 0.8, yalign 0.5 for floating text like s_kill_early */
-            int cx = ((SCREEN_W - sw) * 4) / 5;
-            if (cx < 6) {
-                cx = 6;
-            }
-            if (cx + sw > SCREEN_W - 6) {
-                cx = SCREEN_W - sw - 6;
-            }
-            int cy = 114; /* vertically centered on 240px screen */
-            uint8_t fg = (bottom_color == COL_WHITE) ? COL_BLACK : COL_WHITE;
-            uint8_t outline = (bottom_color == COL_WHITE) ? COL_WHITE : COL_BLACK;
-            print_slice_outlined(text, visible < strlen(text) ? visible : strlen(text),
-                                 cx, cy, fg, outline);
-        }
         return;
     }
 
@@ -1227,10 +1219,6 @@ void render_box(const vn_scene_t *scene, const char *speaker,
         gfx_FillRectangle_NoClip(0, BOX_Y, SCREEN_W, BOX_H);
         gfx_SetColor(COL_BOX_EDGE);
         gfx_HorizLine_NoClip(0, BOX_Y, SCREEN_W);
-    }
-    if (scene->box_style == 1) {
-        monika_box_remap((uint8_t *)gfx_vbuffer + BOX_Y * SCREEN_W,
-                       (size_t)TEXTBOX_W * TEXTBOX_H);
     }
 
     int y = BOX_Y + 4;
@@ -1778,16 +1766,22 @@ void render_pause_box(int x, int y, int w, int h, uint8_t fill_color, uint8_t ed
     gfx_Rectangle_NoClip(x, y, w, h);
 }
 
+static bool palette_entry_is_near_white(uint8_t index)
+{
+    uint16_t bc = current_palette[index];
+    return ((bc >> 10) & 31U) >= 28U && ((bc >> 5) & 31U) >= 28U && (bc & 31U) >= 28U;
+}
+
 const uint16_t *render_filter_palette(const vn_scene_t *scene, const uint16_t *palette)
 {
     static uint16_t fx_palette[256];
-    if (!scene || !palette || scene->pal_fx == VN_FX_NONE) {
+    if (!scene || !palette || (scene->pal_fx == VN_FX_NONE && scene->box_style == 0)) {
         return palette;
     }
+    memcpy(fx_palette, palette, sizeof(fx_palette));
     if (scene->pal_fx == VN_FX_SILHOUETTE) {
-        memcpy(fx_palette, palette, 8 * sizeof(uint16_t));
         for (unsigned i = 8; i < 256; i++) {
-            uint16_t c = palette[i];
+            uint16_t c = fx_palette[i];
             unsigned r = (c >> 10) & 31U;
             unsigned g = (c >> 5) & 31U;
             unsigned b = c & 31U;
@@ -1798,61 +1792,32 @@ const uint16_t *render_filter_palette(const vn_scene_t *scene, const uint16_t *p
             }
             fx_palette[i] = (uint16_t)((gray << 10) | (gray << 5) | gray);
         }
-        return fx_palette;
     }
-    return palette;
-}
-
-static void monika_box_remap(uint8_t *dst, size_t count)
-{
-    static uint8_t lut_raw[512];
-    static bool lut_ready = false;
-    static uint16_t lut_key = 0;
-
-    uint8_t *lut = (uint8_t *)(((uintptr_t)lut_raw + 255U) & ~(uintptr_t)255U);
-    uint16_t key = (uint16_t)(current_palette[COL_BOX_FILL] ^ current_palette[8]);
-    if (!lut_ready || lut_key != key) {
-        lut_key = key;
-        lut_ready = true;
-        for (unsigned i = 0; i < 256; i++) {
-            if (i == COL_TRANSPARENT || i == COL_BLACK || i == COL_WHITE ||
-                i == COL_NAME || i == COL_HIGHLIGHT || i == COL_SHADOW) {
-                lut[i] = (uint8_t)i;
+    if (scene->box_style == 1) {
+        /* Shift the dedicated textbox/namebox entries (COL_BOX_FILL,
+         * COL_BOX_EDGE, COL_NAME, and UI_BOX_FIXED_ENTRIES 10..49) to Act 3
+         * Monika deep violet without disturbing scene colors. */
+        for (unsigned i = 3; i <= 49; i++) {
+            if (i > 5 && i < 10) {
                 continue;
             }
-            uint16_t c = current_palette[i];
+            uint16_t c = fx_palette[i];
             unsigned r = (c >> 10) & 31U;
             unsigned g = (c >> 5) & 31U;
             unsigned b = c & 31U;
-            unsigned tr = (r * 2U) / 3U;
-            unsigned tg = g / 2U;
-            unsigned tb = ((b * 3U) / 4U) + 2U;
-            if (tb > 31U) {
-                tb = 31U;
+            if (r + g + b == 0U) {
+                continue;
             }
-            uint8_t best = (uint8_t)i;
-            unsigned best_err = 0xFFFFU;
-            for (unsigned j = 1; j < 256; j++) {
-                if (j == COL_WHITE || j == COL_NAME || j == COL_HIGHLIGHT) {
-                    continue;
-                }
-                uint16_t pj = current_palette[j];
-                unsigned jr = (pj >> 10) & 31U;
-                unsigned jg = (pj >> 5) & 31U;
-                unsigned jb = pj & 31U;
-                int dr = (int)tr - (int)jr;
-                int dg = (int)tg - (int)jg;
-                int db = (int)tb - (int)jb;
-                unsigned err = (unsigned)(dr * dr + dg * dg + db * db);
-                if (err < best_err) {
-                    best_err = err;
-                    best = (uint8_t)j;
-                }
+            r = (r * 9U) >> 4;
+            g = (g * 7U) >> 4;
+            b = ((b * 13U) >> 4) + 3U;
+            if (b > 31U) {
+                b = 31U;
             }
-            lut[i] = best;
+            fx_palette[i] = (uint16_t)((c & 0x8000U) | (r << 10) | (g << 5) | b);
         }
     }
-    fast_remap_bytes(dst, lut, (uint16_t)count);
+    return fx_palette;
 }
 
 static uint8_t blood_red_index(void)
