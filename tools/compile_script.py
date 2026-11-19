@@ -89,6 +89,13 @@ def _encode_dialogue_tags(text: str, quoted: bool = False) -> str:
             except ValueError:
                 pass
             return ""
+        if inner.startswith("space="):
+            try:
+                if float(inner[6:]) <= 200.0:
+                    return " "
+            except ValueError:
+                pass
+            return ""
         return ""
 
     out = _TAG_RE.sub(_replace, text)

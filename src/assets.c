@@ -26,6 +26,7 @@
 #include "assets.h"
 #include "cgpack.h"
 #include "pak.h"
+#include "perf_overlay.h"
 #include "render.h"
 #include "fast_ops.h"
 #include "text.h"
@@ -401,6 +402,9 @@ void assets_use_title_palette(bool on)
     if (on && !title_palette_ok) {
         return; /* no title palette shipped -- leave the game one in place */
     }
+#ifdef DDLC_PERF_OVERLAY
+    perf_overlay_set_pal(on ? PERF_PAL_TITLE : PERF_PAL_GAME, 0);
+#endif
     render_apply_palette(on ? title_palette : game_palette);
 }
 
@@ -780,51 +784,53 @@ static bool sprite_open_rlet(uint16_t id, const gfx_rletsprite_t **rle_out,
     }
 
     uint32_t vol_sz = ti_GetSize(sprite_handle);
+    uint16_t raw_size;
+    uint16_t dst_off;
+
     if ((uint32_t)offset + entry_len <= vol_sz) {
+        raw_size = read_u16le((const uint8_t *)ti_GetDataPtr(sprite_handle) + offset);
+        if (raw_size < 2 || !sprite_ensure_arena(raw_size)) {
+            return false;
+        }
+        /* sprite_ensure_arena() may call assets_sprite_cache_clear() ->
+         * assets_sprite_end(), closing sprite_handle. Re-open and re-fetch
+         * the Flash data pointer right before decompression so it is never stale. */
+        if (!sprite_handle) {
+            sprite_handle = pak_open_vol("DSPR", appvar_idx);
+            if (!sprite_handle) {
+                return false;
+            }
+            sprite_handle_idx = appvar_idx;
+        }
         const uint8_t *compressed = (const uint8_t *)ti_GetDataPtr(sprite_handle) + offset;
-        uint16_t raw_size = read_u16le(compressed);
-        if (raw_size < 2) {
-            return false;
-        }
-        if (!sprite_ensure_arena(raw_size)) {
-            return false;
-        }
-        uint16_t dst_off = sprite_arena_used;
+        dst_off = sprite_arena_used;
         zx0_Decompress(sprite_arena + dst_off, compressed + 2);
-        sprite_arena_used += raw_size;
-
-        sprite_cache_slot_t *slot = &sprite_cache[sprite_cache_count++];
-        slot->id = id;
-        slot->offset = dst_off;
-        slot->size = raw_size;
-        slot->dx = *dx_out;
-        slot->dy = *dy_out;
-        slot->last_use = ++sprite_lru_tick;
-
-        *rle_out = (const gfx_rletsprite_t *)(sprite_arena + dst_off);
-        return true;
-    }
-
-    /* Spanning fallback when a packed sprite crosses a DPK volume boundary. */
-    assets_sprite_end();
-    uint8_t *tmp = malloc(entry_len);
-    if (!tmp) {
-        return false;
-    }
-    if (!pak_read_span(appvar_idx, offset, 0, tmp, entry_len)) {
+    } else {
+        /* Spanning fallback: always copy spanning sprites into RAM first. */
+        assets_sprite_end();
+        uint8_t *tmp = malloc(entry_len);
+        if (!tmp) {
+            assets_sprite_cache_clear();
+            tmp = malloc(entry_len);
+            if (!tmp) {
+                return false;
+            }
+        }
+        if (!pak_read_span(appvar_idx, offset, 0, tmp, entry_len)) {
+            free(tmp);
+            return false;
+        }
+        raw_size = read_u16le(tmp);
+        if (raw_size < 2 || !sprite_ensure_arena(raw_size)) {
+            free(tmp);
+            return false;
+        }
+        dst_off = sprite_arena_used;
+        zx0_Decompress(sprite_arena + dst_off, tmp + 2);
         free(tmp);
-        return false;
     }
-    uint16_t raw_size = read_u16le(tmp);
-    if (raw_size < 2 || !sprite_ensure_arena(raw_size)) {
-        free(tmp);
-        return false;
-    }
-    uint16_t dst_off = sprite_arena_used;
-    zx0_Decompress(sprite_arena + dst_off, tmp + 2);
-    free(tmp);
+
     sprite_arena_used += raw_size;
-
     sprite_cache_slot_t *slot = &sprite_cache[sprite_cache_count++];
     slot->id = id;
     slot->offset = dst_off;
@@ -1231,12 +1237,16 @@ bool assets_scene(uint8_t id, uint8_t *dest)
 {
     assets_sprite_end();
     if (is_cg(id) && !assets_scene_fullscreen(id) && cgpack_read_pixels(id, dest)) {
+#ifdef DDLC_PERF_OVERLAY
+        perf_overlay_set_bg(id, 0xFF, 0, 0, (uintptr_t)dest, true);
+#endif
         return true;
     }
 
     uint8_t appvar_idx;
     uint16_t offset;
-    if (!lut_lookup(scene_lut, scene_lut_count, id, &appvar_idx, &offset, NULL)) {
+    uint16_t entry_len = 0;
+    if (!lut_lookup(scene_lut, scene_lut_count, id, &appvar_idx, &offset, &entry_len)) {
         return false;
     }
 
@@ -1244,15 +1254,41 @@ bool assets_scene(uint8_t id, uint8_t *dest)
     if (!handle) {
         return false;
     }
-    const uint8_t *data = ti_GetDataPtr(handle);
+    uint32_t vol_sz = ti_GetSize(handle);
+    const uint8_t *src = NULL;
+    uint8_t *tmp = NULL;
+    if (entry_len > 0 && (uint32_t)offset + entry_len > vol_sz) {
+        /* Spanning scene fallback: copy compressed stream into RAM first. */
+        ti_Close(handle);
+        handle = 0;
+        tmp = malloc(entry_len);
+        if (!tmp) {
+            assets_sprite_cache_clear();
+            tmp = malloc(entry_len);
+            if (!tmp) {
+                return false;
+            }
+        }
+        if (!pak_read_span(appvar_idx, offset, 0, tmp, entry_len)) {
+            free(tmp);
+            return false;
+        }
+        src = tmp;
+    } else {
+        src = (const uint8_t *)ti_GetDataPtr(handle) + offset;
+    }
+#ifdef DDLC_PERF_OVERLAY
+    perf_overlay_set_bg(id, appvar_idx, offset, entry_len, (uintptr_t)src, tmp != NULL);
+#endif
 
     if (!is_cg(id)) {
         if (assets_scene_fullscreen(id)) {
-            fast_zx0_decompress(dest, data + offset);
+            fast_zx0_decompress(dest, src);
         } else {
-            zx0_Decompress(dest, data + offset);
+            zx0_Decompress(dest, src);
         }
-        ti_Close(handle);
+        if (handle) ti_Close(handle);
+        free(tmp);
         return true;
     }
 
@@ -1261,8 +1297,9 @@ bool assets_scene(uint8_t id, uint8_t *dest)
      * at most dest[76159] before reading dest[76480], and row 119 copies
      * cleanly through a 160-byte stack buffer so input never overlaps output. */
     uint8_t *cg_scratch = dest + SCENE_BYTES;
-    zx0_Decompress(cg_scratch, data + offset);
-    ti_Close(handle);
+    zx0_Decompress(cg_scratch, src);
+    if (handle) ti_Close(handle);
+    free(tmp);
 
     if (assets_scene_fullscreen(id)) {
         uint8_t last_row[SCENE_CG_SRC_W];
@@ -1293,6 +1330,9 @@ const uint16_t *assets_scene_palette(uint8_t id)
             if (pak_active()) {
                 memcpy(cg_palette_scratch, game_palette, sizeof(cg_palette_scratch));
                 if (pak_read_span(appvar_idx, offset, 0, cg_palette_scratch, len)) {
+#ifdef DDLC_PERF_OVERLAY
+                    perf_overlay_set_pal(PERF_PAL_CG, cg_index_buf[id]);
+#endif
                     return cg_palette_scratch;
                 }
             } else {
@@ -1304,10 +1344,34 @@ const uint16_t *assets_scene_palette(uint8_t id)
                     memcpy(cg_palette_scratch, game_palette, sizeof(cg_palette_scratch));
                     memcpy(cg_palette_scratch, data + offset, len);
                     ti_Close(handle);
+#ifdef DDLC_PERF_OVERLAY
+                    perf_overlay_set_pal(PERF_PAL_CG, cg_index_buf[id]);
+#endif
                     return cg_palette_scratch;
                 }
             }
         }
     }
+#ifdef DDLC_PERF_OVERLAY
+    perf_overlay_set_pal(PERF_PAL_GAME, 0);
+#endif
     return game_palette;
 }
+
+#ifdef DDLC_PERF_OVERLAY
+bool assets_sprite_debug_info(uint16_t id, uint8_t *vol_out, uint16_t *off_out,
+                              uint16_t *len_out, uintptr_t *addr_out)
+{
+    if (!lut_lookup(sprite_lut, sprite_lut_count, id, vol_out, off_out, len_out)) {
+        return false;
+    }
+    *addr_out = 0;
+    for (uint8_t i = 0; i < sprite_cache_count; i++) {
+        if (sprite_cache[i].id == id) {
+            *addr_out = (uintptr_t)(sprite_arena + sprite_cache[i].offset);
+            break;
+        }
+    }
+    return true;
+}
+#endif

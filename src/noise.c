@@ -64,6 +64,7 @@ static bool mask_cached;
 static uint8_t cell_tile[NOISE_CELLS];
 static uint8_t cell_cnt[NOISE_CELLS];
 static uint8_t amort_slot;
+static bool frame_ready;
 static uint16_t xorshift_state = 0xACE1u;
 
 static uint16_t noise_xorshift16(void) {
@@ -168,9 +169,15 @@ bool noise_begin(uint8_t scene) {
     meta=ti_GetDataPtr(h[0]);
 #endif
     (void)scene; /* explicit VM lifetime flag, never inferred from scene */
+#ifdef __TICE__
+    extern const uint16_t *render_active_palette(void);
+    const uint16_t *pal = render_active_palette();
+#else
+    const uint16_t *pal = gfx_palette;
+#endif
     uint32_t hash = 0;
     for (unsigned p = 0; p < 256; p++) {
-        hash = ((hash << 5) - hash) ^ gfx_palette[p];
+        hash = ((hash << 5) - hash) ^ pal[p];
     }
     if (palette_valid && hash == cached_palette_hash) return true;
     cached_palette_hash = hash;
@@ -179,7 +186,7 @@ bool noise_begin(uint8_t scene) {
         unsigned target = k<16?0:31-(k-16)*23/15;
         unsigned best=65535;
         for(i=0;i<256;i++) {
-            unsigned p=gfx_palette[i],r=(p>>10)&31,g=(p>>5)&31,bl=p&31;
+            unsigned p=pal[i],r=(p>>10)&31,g=(p>>5)&31,bl=p&31;
             int dr=(int)r-target,dg=(int)g-target,db=(int)bl-target;
             unsigned d=dr*dr+dg*dg+db*db;
             if(d<best){best=d;colors[k]=i;}
@@ -190,9 +197,9 @@ bool noise_begin(uint8_t scene) {
 static void noise_frame_rows(unsigned elapsed_ms,unsigned frame_rows) {
     unsigned coverage=elapsed_ms>=3000?4u:(uint32_t)elapsed_ms*4u/3000u;
 #ifndef NOISE_HOST_GOLDEN
-    if(!coverage){ noise_restore(); return; }
+    if(!coverage){ noise_restore(); frame_ready = true; return; }
     if(!undo)undo=malloc(NOISE_UNDO_BYTES);
-    if(!undo)return;
+    if(!undo){ frame_ready = true; return; }
     noise_ensure_tiles();
 
     uint8_t *fb = (uint8_t*)gfx_vbuffer;
@@ -200,9 +207,10 @@ static void noise_frame_rows(unsigned elapsed_ms,unsigned frame_rows) {
     static const uint8_t cov_counts[5] = { 0, 6, 12, 19, 25 };
     uint8_t cnt = cov_counts[coverage];
 
-    /* If framebuffer pointer changed, restore the previous buffer first. */
+    /* If framebuffer pointer changed (e.g. after gfx_SwapDraw), re-anchor
+     * undo_buffer without restoring since gfx_BlitScreen already synced it. */
     if (undo_size && undo_buffer != fb) {
-        noise_restore();
+        undo_buffer = fb;
     }
     /* If shrinking from 240 -> 180 rows, restore bottom dialogue cells cleanly. */
     if (undo_size && active_cells < NOISE_CELLS) {
@@ -220,56 +228,38 @@ static void noise_frame_rows(unsigned elapsed_ms,unsigned frame_rows) {
     undo_rows = frame_rows;
 
     if (!undo_size) {
-        /* Fresh background frame: stamp all active cells with precomputed tiles
-         * selected by fast xorshift (no LFSR rejection loop). */
+        /* Fresh background frame: clear cell tracking and start slice 0 of 5. */
         memset(cell_cnt, 0, sizeof(cell_cnt));
-        for (uint8_t c = 0; c < active_cells; c++) {
-            uint8_t t = (uint8_t)(noise_xorshift16() & (NOISE_TILES - 1u));
-            uint8_t mv = mask_cache[c];
-            noise_tile_draw_cell(noise_cell_ptr(fb, c),
-                                 undo + (size_t)c * NOISE_CELL_UNDO,
-                                 noise_tiles[t], cnt,
-                                 colors[mv], colors[mv + 16u]);
-            cell_tile[c] = t;
-            cell_cnt[c] = cnt;
+        amort_slot = 0;
+    }
+
+    /* Generate exactly 1/5 of the screen's noise cells per tick into the
+     * off-screen back buffer (<= 24ms budget). Only mark frame_ready on the
+     * 5th slice (slot == 4) so the caller swaps the completed frame atomically
+     * with gfx_SwapDraw() and nothing partial is ever visible. */
+    uint8_t slot = amort_slot;
+    for (uint8_t c = slot; c < active_cells; c += NOISE_AMORT_SLOTS) {
+        uint8_t *cfb = noise_cell_ptr(fb, c);
+        uint8_t *cu  = undo + (size_t)c * NOISE_CELL_UNDO;
+        if (cell_cnt[c]) {
+            noise_tile_restore_cell(cfb, cu, noise_tiles[cell_tile[c]], cell_cnt[c]);
         }
-        undo_size = (unsigned)active_cells * NOISE_CELL_UNDO;
+        uint8_t t = (uint8_t)(noise_xorshift16() & (NOISE_TILES - 1u));
+        if (cell_cnt[c] && t == cell_tile[c]) {
+            t = (uint8_t)((t + 1u) & (NOISE_TILES - 1u));
+        }
+        uint8_t mv = mask_cache[c];
+        noise_tile_draw_cell(cfb, cu, noise_tiles[t], cnt,
+                             colors[mv], colors[mv + 16u]);
+        cell_tile[c] = t;
+        cell_cnt[c] = cnt;
+    }
+    undo_size = (unsigned)active_cells * NOISE_CELL_UNDO;
+    if (++amort_slot >= NOISE_AMORT_SLOTS) {
+        amort_slot = 0;
+        frame_ready = true;
     } else {
-        /* Persisted frame: amortize static updates 1/5 per frame across 5
-         * interleaved slices so the whole screen shimmers at high FPS. */
-        uint8_t slot = amort_slot;
-        if (++amort_slot >= NOISE_AMORT_SLOTS) amort_slot = 0;
-        for (uint8_t c = slot; c < active_cells; c += NOISE_AMORT_SLOTS) {
-            uint8_t *cfb = noise_cell_ptr(fb, c);
-            uint8_t *cu  = undo + (size_t)c * NOISE_CELL_UNDO;
-            if (cell_cnt[c]) {
-                noise_tile_restore_cell(cfb, cu, noise_tiles[cell_tile[c]], cell_cnt[c]);
-            }
-            uint8_t t = (uint8_t)(noise_xorshift16() & (NOISE_TILES - 1u));
-            if (cell_cnt[c] && t == cell_tile[c]) {
-                t = (uint8_t)((t + 1u) & (NOISE_TILES - 1u));
-            }
-            uint8_t mv = mask_cache[c];
-            noise_tile_draw_cell(cfb, cu, noise_tiles[t], cnt,
-                                 colors[mv], colors[mv + 16u]);
-            cell_tile[c] = t;
-            cell_cnt[c] = cnt;
-        }
-        /* Fill any newly exposed bottom cells if expanding 180 -> 240 rows. */
-        if (active_cells == NOISE_CELLS) {
-            for (uint8_t c = 144u; c < NOISE_CELLS; c++) {
-                if (cell_cnt[c]) continue;
-                uint8_t t = (uint8_t)(noise_xorshift16() & (NOISE_TILES - 1u));
-                uint8_t mv = mask_cache[c];
-                noise_tile_draw_cell(noise_cell_ptr(fb, c),
-                                     undo + (size_t)c * NOISE_CELL_UNDO,
-                                     noise_tiles[t], cnt,
-                                     colors[mv], colors[mv + 16u]);
-                cell_tile[c] = t;
-                cell_cnt[c] = cnt;
-            }
-        }
-        undo_size = (unsigned)active_cells * NOISE_CELL_UNDO;
+        frame_ready = false;
     }
 #else
     unsigned row,seed=(0xDD1Cu^(elapsed_ms/100u)*40503u)&65535u;
@@ -312,3 +302,10 @@ static void noise_frame_rows(unsigned elapsed_ms,unsigned frame_rows) {
 void noise_frame(unsigned elapsed_ms) { noise_frame_rows(elapsed_ms,240u); }
 void noise_frame_scene(unsigned elapsed_ms) { noise_frame_rows(elapsed_ms,180u); }
 bool noise_is_fullscreen(void) { return undo_size != 0 && undo_rows == 240u; }
+bool noise_frame_ready(void) {
+#ifndef NOISE_HOST_GOLDEN
+    return frame_ready;
+#else
+    return true;
+#endif
+}

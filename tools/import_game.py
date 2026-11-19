@@ -708,12 +708,22 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
         packer.add_named("DPOEMT", poem_texts, contiguous=True)
 
     # Sprites ship individually ZX0-compressed ([u16 raw_size][zx0 bitstream]).
+    # Key cached .zx0 files by content digest so a cached convimg restore with
+    # older mtimes can never leave a stale/mismatched .zx0 blob behind.
     sprite_files = [bin_for(s["file"]) for s in manifest["sprites"]]
     def _compress_sprite(raw_path: Path) -> Path:
         zx0_path = raw_path.with_suffix(".zx0")
+        sig_path = raw_path.with_suffix(".zx0.sha")
         raw_bytes = raw_path.read_bytes()
-        if not zx0_path.exists() or zx0_path.stat().st_mtime_ns < raw_path.stat().st_mtime_ns:
+        digest = hashlib.sha256(raw_bytes).hexdigest()[:16]
+        valid = False
+        if zx0_path.exists() and sig_path.exists() and sig_path.read_text().strip() == digest:
+            zx0_data = zx0_path.read_bytes()
+            if len(zx0_data) >= 3 and struct.unpack_from("<H", zx0_data, 0)[0] == len(raw_bytes):
+                valid = True
+        if not valid:
             zx0_path.write_bytes(zx0_compress(raw_bytes, appvar_dir))
+            sig_path.write_text(digest + "\n")
         return zx0_path
 
     if sprite_files:
@@ -818,6 +828,11 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
     pack_res = packer.build(lut_names, build_lut)
     for gname, lname in lut_names.items():
         (build_dir / f"{gname.lower()}.lut").write_bytes(pack_res.lut_bytes[lname])
+
+    appvar_dir.mkdir(parents=True, exist_ok=True)
+    for stale in appvar_dir.iterdir():
+        if stale.is_file() and stale.suffix in (".8xv", ".bin"):
+            stale.unlink()
 
     appvars: list[Path] = []
     # Keep DFONTS standalone: fontlib reads font data via a direct Flash pointer.

@@ -159,6 +159,9 @@ typedef struct {
 static void poem_poll(poem_input_t *in)
 {
     static bool held_up, held_down, held_left, held_right, held_advance;
+#ifdef DDLC_PERF_OVERLAY
+    static bool held_graph;
+#endif
 
     kb_Scan();
 
@@ -181,6 +184,14 @@ static void poem_poll(poem_input_t *in)
     held_right = right;
     held_advance = advance;
 
+#ifdef DDLC_PERF_OVERLAY
+    bool graph = kb_IsDown(kb_KeyGraph);
+    if (graph && !held_graph && perf_overlay_enabled()) {
+        perf_overlay_toggle_page();
+    }
+    held_graph = graph;
+#endif
+
     if (in->quit) {
         quit_requested = true;
     }
@@ -190,27 +201,24 @@ static void poem_poll(poem_input_t *in)
  * Rendering
  * ------------------------------------------------------------------------ */
 
-/* Exact ruled-line Y coordinates measured from poem_bg_notebook.png (320x240).
- * font[0] (dfonts.8xv) has space_above=1 and baseline=12 (bottom of caps/x-height
- * sits at cursor_y + POEM_FONT_BASELINE), so drawing at rule_y - POEM_FONT_BASELINE
- * seats every line's baseline directly on the notebook's printed blue rules. */
+/* Exact ruled-line Y coordinates measured from the zoomed 320x240 right-hand
+ * notebook page (poem_bg_notebook.png, cropped to remove left page, desk, and
+ * top/bottom white bars). font[0] has baseline=12, so drawing at
+ * rule_y - POEM_FONT_BASELINE seats every line's baseline directly on the rule. */
 #define POEM_FONT_BASELINE 12
 
-static const uint8_t poem_right_rule_y[14] = {
-    55, 66, 77, 89, 100, 112, 123, 135, 146, 158, 169, 181, 192, 203
+static const uint8_t poem_rule_y[14] = {
+    21, 37, 53, 69, 86, 102, 118, 134, 150, 167, 183, 199, 215, 231
 };
-static const uint8_t poem_left_rule_y[5] = {
-    63, 84, 105, 127, 148
-};
-static const uint8_t poem_game_right_rule_y[5] = {
-    66, 89, 112, 135, 158
+static const uint8_t poem_game_rule_y[5] = {
+    53, 86, 118, 150, 183
 };
 
-#define POEM_COL_X0    8
-#define POEM_COL_X1  114
-#define POEM_COL_W0   88
-#define POEM_COL_W1  108
-#define POEM_ROW_HL_H 15
+#define POEM_COL_X0    24
+#define POEM_COL_X1   170
+#define POEM_COL_W0   132
+#define POEM_COL_W1   132
+#define POEM_ROW_HL_H  15
 
 static int poem_col_x(uint8_t col)
 {
@@ -219,12 +227,12 @@ static int poem_col_x(uint8_t col)
 
 static int poem_cell_y(uint8_t col, uint8_t row)
 {
-    uint8_t rule_y = (col == 0) ? poem_left_rule_y[row] : poem_game_right_rule_y[row];
-    return (int)rule_y - POEM_FONT_BASELINE;
+    (void)col;
+    return (int)poem_game_rule_y[row] - POEM_FONT_BASELINE;
 }
 
-#define POEM_STICKER_Y_IDLE  234
-#define POEM_STICKER_Y_HOP   218
+#define POEM_STICKER_Y_IDLE  236
+#define POEM_STICKER_Y_HOP   220
 
 #define POEM_S_X_ACT1         65
 #define POEM_N_X_ACT1        160
@@ -317,7 +325,7 @@ static void draw_round(const uint16_t *shown, uint8_t round, uint8_t sel_col, ui
     } else {
         sprintf(progress, "%u/%u", round + 1, POEM_ROUNDS);
     }
-    render_text(progress, 184, poem_right_rule_y[0] - POEM_FONT_BASELINE, COL_BLACK);
+    render_text(progress, POEM_COL_X0, poem_rule_y[0] - POEM_FONT_BASELINE, COL_BLACK);
 
     for (uint8_t col = 0; col < POEM_COLS; col++) {
         int hl_w = (col == 0) ? POEM_COL_W0 : POEM_COL_W1;
@@ -532,11 +540,10 @@ poem_done:
 #include <fontlibc.h>
 
 #define POEM_VIEW_MAX_LINES 240
-#define POEM_PAGE_LINES     14
-/* Keep poem text cleanly on the notebook's white right-hand page (x=107..226),
- * away from the green bookmark ribbon (x=98..106) and the curved grey left page. */
-#define POEM_TEXT_X         112
-#define POEM_TEXT_MAX_W     110
+/* Full-screen zoomed 320x240 lined notebook page: 13 body rules (0..12) +
+ * prompt on rule 13 (or title on rule 0 + 11 body rules 2..12 when titled). */
+#define POEM_TEXT_X         14
+#define POEM_TEXT_MAX_W     292
 
 typedef struct {
     char author[8];
@@ -638,36 +645,45 @@ void poem_view(uint8_t poem_id)
         p = q + brk_len;
     }
 
+    /* Strip DDLC's dummy "%" title (Sayori's Ch5 poem_s3 uses title="%"). */
+    bool has_title = (poem->title[0] != '\0') &&
+                     !(poem->title[0] == '%' && poem->title[1] == '\0');
+    uint8_t first_rule = has_title ? 2 : 0;
+    uint8_t page_lines = (uint8_t)(13 - first_rule);
     uint16_t scroll = 0;
     bool dirty = true;
 
     while (!quit_requested) {
-        bool has_more = (scroll + POEM_PAGE_LINES < total_lines);
+        bool has_more = (scroll + page_lines < total_lines);
         if (dirty) {
             perf_overlay_frame_start();
             draw_background(false);
 
-            /* Draw Title in top white margin above the notebook cover */
-            if (poem->title[0]) {
-                render_text(poem->title, POEM_TEXT_X, 12, COL_NAME);
+            /* Draw real poem title on rule 0 in crisp dark ink */
+            if (has_title) {
+                render_text(poem->title, POEM_TEXT_X,
+                            poem_rule_y[0] - POEM_FONT_BASELINE, COL_BLACK);
             }
 
-            /* Draw visible lines aligned to the notebook's 14 printed ruled lines */
-            for (uint8_t i = 0; i < POEM_PAGE_LINES; i++) {
+            /* Draw visible poem lines seated directly on the zoomed blue rules */
+            for (uint8_t i = 0; i < page_lines; i++) {
                 uint16_t l_idx = scroll + i;
                 if (l_idx >= total_lines) break;
                 if (lines[l_idx].len > 0) {
                     fontlib_SetForegroundColor(COL_BLACK);
-                    fontlib_SetCursorPosition(POEM_TEXT_X, (uint8_t)(poem_right_rule_y[i] - POEM_FONT_BASELINE));
+                    fontlib_SetCursorPosition(POEM_TEXT_X,
+                        (uint8_t)(poem_rule_y[first_rule + i] - POEM_FONT_BASELINE));
                     fontlib_DrawStringL(lines[l_idx].start, lines[l_idx].len);
                 }
             }
 
-            /* Draw bottom prompt in lower white margin below notebook */
+            /* Draw bottom prompt aligned on rule 13 in readable dark berry */
             if (has_more) {
-                render_text("v 2nd / Down for more", SCREEN_W - 145, 218, COL_NAME);
+                render_text("v 2nd / Down for more", SCREEN_W - 148,
+                            poem_rule_y[13] - POEM_FONT_BASELINE, COL_BOX_FILL);
             } else {
-                render_text("2nd / Enter to dismiss", SCREEN_W - 145, 218, COL_NAME);
+                render_text("2nd / Enter to dismiss", SCREEN_W - 148,
+                            poem_rule_y[13] - POEM_FONT_BASELINE, COL_BOX_FILL);
             }
 
             render_present(TRANS_CUT);
@@ -681,26 +697,32 @@ void poem_view(uint8_t poem_id)
             break;
         }
         dirty = in.up || in.down || in.advance;
+#ifdef DDLC_PERF_OVERLAY
+        if (perf_overlay_page_dirty()) {
+            dirty = true;
+        }
+#endif
         if (in.down) {
             if (has_more) {
-                scroll += POEM_PAGE_LINES - 2;
-                if (scroll + POEM_PAGE_LINES > total_lines) {
-                    scroll = total_lines > POEM_PAGE_LINES ? total_lines - POEM_PAGE_LINES : 0;
+                scroll += page_lines > 2 ? (uint16_t)(page_lines - 2) : 1;
+                if (scroll + page_lines > total_lines) {
+                    scroll = total_lines > page_lines ? (uint16_t)(total_lines - page_lines) : 0;
                 }
             }
         }
         if (in.up) {
-            if (scroll > POEM_PAGE_LINES - 2) {
-                scroll -= POEM_PAGE_LINES - 2;
+            uint16_t step = page_lines > 2 ? (uint16_t)(page_lines - 2) : 1;
+            if (scroll > step) {
+                scroll -= step;
             } else {
                 scroll = 0;
             }
         }
         if (in.advance) {
             if (has_more) {
-                scroll += POEM_PAGE_LINES - 2;
-                if (scroll + POEM_PAGE_LINES > total_lines) {
-                    scroll = total_lines > POEM_PAGE_LINES ? total_lines - POEM_PAGE_LINES : 0;
+                scroll += page_lines > 2 ? (uint16_t)(page_lines - 2) : 1;
+                if (scroll + page_lines > total_lines) {
+                    scroll = total_lines > page_lines ? (uint16_t)(total_lines - page_lines) : 0;
                 }
             } else {
                 break;

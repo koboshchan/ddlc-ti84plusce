@@ -1497,7 +1497,17 @@ class ImageResolver:
             return None
 
         img = PILImage.open(art).convert("RGBA")
-        canvas = _fit_and_center(img, POEM_BG_SIZE, (255, 255, 255, 255))
+        # Zoom and crop tightly onto the middle/right-hand white lined notebook
+        # page so it fills the entire 320x240 display with no white top/bottom
+        # bars, no left page, and no wooden desk on the right.
+        w, h = img.size
+        crop_box = (
+            round(w * 424 / 1280),
+            round(h * 38 / 720),
+            round(w * 906 / 1280),
+            round(h * 718 / 720),
+        )
+        canvas = img.crop(crop_box).resize(POEM_BG_SIZE, PILImage.LANCZOS)
 
         filename = f"poem_bg_{Path(rel_path).stem}.png"
         canvas.save(self.img_dir / filename)

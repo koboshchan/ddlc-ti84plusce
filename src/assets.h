@@ -337,4 +337,9 @@ bool assets_draw_box(bool namebox, uint8_t *dest);
  */
 bool assets_draw_sticker_centered(uint8_t id, int center_x, int bottom_y);
 
+#ifdef DDLC_PERF_OVERLAY
+bool assets_sprite_debug_info(uint16_t id, uint8_t *vol_out, uint16_t *off_out,
+                              uint16_t *len_out, uintptr_t *addr_out);
+#endif
+
 #endif /* ASSETS_H */

@@ -525,7 +525,17 @@ static int pos_center(uint8_t pos)
     return (int)pos * 2;
 }
 
-static void draw_actor_at(const vn_actor_t *actor, int center_x, unsigned t)
+#ifdef DDLC_PERF_OVERLAY
+static __attribute__((noinline)) void record_actor_sprite(uint8_t slot, bool is_face, uint16_t id)
+{
+    uint8_t v = 0; uint16_t o = 0, l = 0; uintptr_t a = 0;
+    if (slot < VN_MAX_CHARS && assets_sprite_debug_info(id, &v, &o, &l, &a)) {
+        perf_overlay_record_sprite(slot, is_face, id, v, o, l, a);
+    }
+}
+#endif
+
+static void draw_actor_at(const vn_actor_t *actor, uint8_t slot, int center_x, unsigned t)
 {
     bool zoom_wanted = (actor->flags & VN_FLAG_ZOOM) != 0;
 
@@ -553,6 +563,9 @@ static void draw_actor_at(const vn_actor_t *actor, int center_x, unsigned t)
         int y_off = can_zoom ? 0 : fallback_off;
         body_drawn = assets_draw_sprite(actor->sprite, center_x, feet_y + y_off);
     }
+#ifdef DDLC_PERF_OVERLAY
+    if (body_drawn) record_actor_sprite(slot, false, actor->sprite);
+#endif
 
     /* Most actors are one flattened sprite (overlay == VN_NO_OVERLAY); a
      * layered one draws its expression atom second, at the same anchor */
@@ -564,16 +577,20 @@ static void draw_actor_at(const vn_actor_t *actor, int center_x, unsigned t)
         }
         if (!ov_drawn) {
             int y_off = can_zoom ? 0 : fallback_off;
-            assets_draw_sprite(actor->overlay, ov_x, feet_y + y_off);
+            ov_drawn = assets_draw_sprite(actor->overlay, ov_x, feet_y + y_off);
         }
+#ifdef DDLC_PERF_OVERLAY
+        if (ov_drawn) record_actor_sprite(slot, true, actor->overlay);
+#endif
     }
+    (void)slot;
 }
 
-static void draw_actor(const vn_actor_t *actor, unsigned t)
+static void draw_actor(const vn_actor_t *actor, uint8_t slot, unsigned t)
 {
     int center_x = slide_x_pos(actor->character, actor->show_seq,
                                pos_center(actor->pos), actor->flags, t);
-    draw_actor_at(actor, center_x, t);
+    draw_actor_at(actor, slot, center_x, t);
 }
 
 /* ---------------------------------------------------------------------------
@@ -975,6 +992,7 @@ void render_scene(const vn_scene_t *scene)
     int  first_mover = -1;
     bool captured = false;
 
+    perf_overlay_clear_sprites();
     for (int i = 0; i < VN_MAX_CHARS; i++) {
         const vn_actor_t *actor = &scene->actors[i];
         if (actor->character == VN_NO_SPRITE) {
@@ -985,7 +1003,7 @@ void render_scene(const vn_scene_t *scene)
         }
 
         bool was_moving = anim_moving;
-        draw_actor(actor, t);
+        draw_actor(actor, (uint8_t)i, t);
         if (!was_moving && anim_moving) {
             movers++;
             if (first_mover < 0) {
@@ -1000,7 +1018,7 @@ void render_scene(const vn_scene_t *scene)
         } else {
             int cur_x = LEFTIN_PX + ease(ease_remain, exit_from_x - LEFTIN_PX,
                                          t, exit_started_at, LEFTIN_MS);
-            draw_actor_at(&exit_actor, cur_x, t);
+            draw_actor_at(&exit_actor, 0xFF, cur_x, t);
             anim_moving = true;
         }
     }
@@ -1111,7 +1129,7 @@ static void render_scene_moving(const vn_scene_t *scene)
     for (int i = plate_slot; i < VN_MAX_CHARS; i++) {
         const vn_actor_t *actor = &scene->actors[i];
         if (actor->character != VN_NO_SPRITE) {
-            draw_actor(actor, t);
+            draw_actor(actor, (uint8_t)i, t);
         }
     }
     assets_sprite_end();
@@ -1275,11 +1293,11 @@ void render_box(const vn_scene_t *scene, const char *speaker,
                 name_x = nb_x + 2;
             }
             print_slice_outlined(speaker, strlen(speaker), name_x, nb_y + 2,
-                                 COL_WHITE, COL_NAME);
+                                 COL_WHITE, COL_BOX_FILL);
             y = nb_y + NAMEBOX_H + 2;
         } else {
             print_slice_outlined(speaker, strlen(speaker), pad, y,
-                                 COL_WHITE, COL_NAME);
+                                 COL_WHITE, COL_BOX_FILL);
             y += 11;
         }
         set_font(FONT_DEFAULT);
@@ -1291,13 +1309,14 @@ void render_box(const vn_scene_t *scene, const char *speaker,
      * single typewriter tick even though only @p visible had changed since
      * the last call. Caching the wrap by text content comparison turns that
      * into a one-time cost per line, while staying immune to pointer aliasing
-     * when consecutive lines reuse a shared static buffer (&buf[0]). */
+     * when consecutive lines reuse a shared static buffer (&buf[0]). Copy into
+     * cached_copy FIRST so cached_full.lines[].start points into stable storage. */
     static char          cached_copy[256];
     static text_layout_t cached_full;
     if (strcmp(text, cached_copy) != 0) {
-        text_wrap(&cached_full, text, SCREEN_W - 2 * pad, measure, NULL);
         strncpy(cached_copy, text, sizeof(cached_copy) - 1);
         cached_copy[sizeof(cached_copy) - 1] = '\0';
+        text_wrap(&cached_full, cached_copy, SCREEN_W - 2 * pad, measure, NULL);
     }
 
     text_layout_t shown;
@@ -1494,6 +1513,7 @@ void render_present(uint8_t trans)
     perf_overlay_end();
     perf_overlay_present_begin();
     gfx_SwapDraw();
+    render_commit_palette();
     gfx_BlitScreen();
     perf_overlay_present_end();
 }
@@ -1720,6 +1740,8 @@ void render_title_screen(uint8_t selected, unsigned t, int16_t playthrough)
 static uint16_t current_palette[256];
 static uint16_t fade_saved[256];
 static bool fade_active;
+static bool palette_defer;
+static bool palette_staged;
 static bool timed_fx_inverted;
 static bool room_mask_applied;
 
@@ -1760,6 +1782,23 @@ void render_fade_in(void)
     fade_active = false;
 }
 
+void render_defer_palette(bool defer)
+{
+    palette_defer = defer;
+}
+
+void render_commit_palette(void)
+{
+    palette_defer = false;
+    if (palette_staged && !fade_active) {
+#ifdef __TICE__
+        gfx_Wait();
+#endif
+        memcpy(gfx_palette, current_palette, sizeof(current_palette));
+        palette_staged = false;
+    }
+}
+
 void render_apply_palette(const uint16_t *palette)
 {
     timed_fx_inverted = false;
@@ -1767,15 +1806,19 @@ void render_apply_palette(const uint16_t *palette)
     memcpy(current_palette, palette, sizeof(current_palette));
     memcpy(fade_saved, palette, sizeof(fade_saved));
     if (fade_active) {
+        palette_staged = false;
         fade_apply(0);
+    } else if (palette_defer) {
+        palette_staged = true;
     } else {
+        palette_staged = false;
         memcpy(gfx_palette, palette, sizeof(current_palette));
     }
 }
 
 const uint16_t *render_active_palette(void)
 {
-    return fade_active ? fade_saved : gfx_palette;
+    return (fade_active || palette_staged) ? current_palette : gfx_palette;
 }
 
 void render_fade_retarget(const uint16_t *palette)

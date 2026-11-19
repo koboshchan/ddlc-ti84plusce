@@ -12,6 +12,9 @@
 #include "ch5_motion_fast.h"
 #include "pak.h"
 #include "perf_memory.h"
+#ifdef DDLC_PERF_OVERLAY
+#include "perf_overlay.h"
+#endif
 
 extern void render_apply_palette(const uint16_t *);
 
@@ -557,6 +560,15 @@ motion_done:
         if (pal) {
             if (psz == 512) {
                 /* Publish palette and fade state only after dependency/stream success. */
+#ifdef DDLC_PERF_OVERLAY
+                perf_overlay_set_pal(PERF_PAL_MOTION, 0);
+                {
+                    uint8_t mv = 0, mf = 0; uint16_t moff = 0; size_t mlen = 0;
+                    pak_stat("DMOT0", &mv, &moff, &mlen, &mf);
+                    perf_overlay_set_bg(scene, mv, moff, (uint16_t)mlen,
+                                        (uintptr_t)gfx_vbuffer, true);
+                }
+#endif
                 render_apply_palette((const uint16_t *)pal);
             } else {
                 success = false;

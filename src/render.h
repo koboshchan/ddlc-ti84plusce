@@ -199,6 +199,12 @@ void render_console_draw_step(const char *typing_cmd, size_t visible_chars);
  * fade in progress). */
 void render_apply_palette(const uint16_t *palette);
 
+/** Defer subsequent render_apply_palette() writes until render_commit_palette()
+ * (or render_present()) so a new scene's palette switches atomically on VBlank
+ * with the new framebuffer instead of flashing onto the previous screen. */
+void render_defer_palette(bool defer);
+void render_commit_palette(void);
+
 /** Target palette for the active screen (the destination palette during a
  * fade, or the live gfx_palette otherwise), used by the debug perf overlay so
  * it chooses readable paper/ink indices even while gfx_palette is blacked out. */
