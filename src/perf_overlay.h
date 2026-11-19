@@ -1,5 +1,6 @@
 #ifndef PERF_OVERLAY_H
 #define PERF_OVERLAY_H
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -8,6 +9,17 @@ enum {
     PERF_PAL_TITLE = 1,
     PERF_PAL_MOTION = 2,
     PERF_PAL_CG = 3
+};
+
+enum {
+    PERF_STAGE_BG = 0,
+    PERF_STAGE_ACT0 = 1,
+    PERF_STAGE_ACT1 = 2,
+    PERF_STAGE_ACT2 = 3,
+    PERF_STAGE_ACT3 = 4,
+    PERF_STAGE_BOX = 5,
+    PERF_STAGE_VRAM = 6,
+    PERF_STAGE_COUNT = 7
 };
 
 #ifdef DDLC_PERF_OVERLAY
@@ -24,6 +36,11 @@ void perf_overlay_draw_buffer(void);
 void perf_overlay_present_begin(void);
 void perf_overlay_present_end(void);
 void perf_overlay_shutdown(void);
+void perf_overlay_stage_begin(uint8_t stage);
+void perf_overlay_stage_end(uint8_t stage);
+void perf_overlay_vram_begin(void);
+void perf_overlay_vram_end(void);
+void perf_overlay_set_mode(const char *mode);
 void perf_overlay_set_vm(uint8_t chunk_id, uint16_t pc_off, uint8_t bg_id);
 void perf_overlay_set_pal(uint8_t pal_kind, uint8_t pal_id);
 void perf_overlay_set_bg(uint8_t bg_id, uint8_t vol, uint16_t off, uint16_t len,
@@ -46,10 +63,16 @@ void perf_overlay_record_sprite(uint8_t slot, bool is_face, uint16_t spr_id,
 #define perf_overlay_present_begin() ((void)0)
 #define perf_overlay_present_end() ((void)0)
 #define perf_overlay_shutdown() ((void)0)
-#define perf_overlay_set_vm(c,p,b) ((void)0)
-#define perf_overlay_set_pal(k,i) ((void)0)
-#define perf_overlay_set_bg(b,v,o,l,a,r) ((void)0)
+#define perf_overlay_stage_begin(st) ((void)0)
+#define perf_overlay_stage_end(st) ((void)0)
+#define perf_overlay_vram_begin() ((void)0)
+#define perf_overlay_vram_end() ((void)0)
+#define perf_overlay_set_mode(m) ((void)0)
+#define perf_overlay_set_vm(c, p, b) ((void)0)
+#define perf_overlay_set_pal(k, i) ((void)0)
+#define perf_overlay_set_bg(b, v, o, l, a, r) ((void)0)
 #define perf_overlay_clear_sprites() ((void)0)
-#define perf_overlay_record_sprite(sl,f,id,v,o,l,a) ((void)0)
+#define perf_overlay_record_sprite(sl, f, id, v, o, l, a) ((void)0)
 #endif
+
 #endif

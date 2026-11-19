@@ -938,12 +938,19 @@ static __attribute__((noinline)) void run_debug_asm_test(void)
 
         /* 3. fast_row_shift */
         {
-            uint8_t shift_row[320], scratch[320];
-            for (uint16_t i = 0; i < 320; i++) shift_row[i] = (uint8_t)i;
+            uint8_t *shift_row = fb;
+            uint8_t *scratch = src;
+            for (uint16_t i = 0; i < 320; i++) {
+                shift_row[i] = (uint8_t)i;
+            }
             start = clock();
-            for (uint16_t it = 0; it < 320; it++) fast_row_shift(shift_row, scratch, 1);
+            for (uint16_t it = 0; it < 320; it++) {
+                fast_row_shift(shift_row, scratch, 1);
+            }
             times[2] = main_ticks_to_ms(clock() - start);
-            if (shift_row[0] != 0u || shift_row[319] != 63u) pass[2] = false;
+            if (shift_row[0] != 0u || shift_row[319] != 63u) {
+                pass[2] = false;
+            }
         }
 
         for (;;) {
@@ -1062,7 +1069,8 @@ static __attribute__((noinline)) bool run_debug_chapter_menu(vn_vm_t *vm)
         return false;
     }
 
-    char names[CHAPTER_MENU_ROWS][24];
+    extern uint8_t render_row_scratch[SCREEN_W];
+    char (*names)[24] = (char (*)[24])render_row_scratch;
     const char *items[CHAPTER_MENU_ROWS];
     uint8_t selected = 0, top = 0;
     input_t in;
@@ -1142,9 +1150,10 @@ static __attribute__((noinline)) void run_debug_menu(vn_vm_t *vm)
         DBG_ERASE, DBG_CLOSE, DBG_ACTION_MAX,
     };
     static const char *const cnames[4] = { "Sayori", "Natsuki", "Yuri", "Monika" };
+    extern uint8_t render_row_scratch[SCREEN_W];
+    char (*dyn)[28] = (char (*)[28])render_row_scratch;
     uint8_t actions[DBG_ACTION_MAX];
     const char *labels[DBG_ACTION_MAX];
-    char dyn[7][28];
     uint8_t count, selected = 0, top = 0;
     input_t in;
 

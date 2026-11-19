@@ -943,13 +943,20 @@ void render_scene(const vn_scene_t *scene)
     } else {
         noise_restore();
     }
+    perf_overlay_stage_begin(PERF_STAGE_BG);
     last_scene_used_motion = ch5_motion_draw(scene->background);
-    if (last_scene_used_motion) perf_overlay_mark_rendered();
-    else draw_background(scene->background);
+    if (last_scene_used_motion) {
+        perf_overlay_mark_rendered();
+        perf_overlay_set_mode("MOT");
+    } else {
+        draw_background(scene->background);
+        perf_overlay_set_mode("FULL");
+    }
     ovl_pixel_active = (scene->overlay_fx_mask & VN_OVL_PIXEL_MASK) != 0;
     if (scene->overlay_fx_mask & VN_OVL_LIVE_TILE) {
         render_live_tile_bg();
     }
+    perf_overlay_stage_end(PERF_STAGE_BG);
     anim_moving = false;
 
     /* Real elapsed time, not a frame count -- render_scene() is called from
@@ -1008,7 +1015,9 @@ void render_scene(const vn_scene_t *scene)
         }
 
         bool was_moving = anim_moving;
+        perf_overlay_stage_begin((uint8_t)(PERF_STAGE_ACT0 + i));
         draw_actor(actor, (uint8_t)i, t);
+        perf_overlay_stage_end((uint8_t)(PERF_STAGE_ACT0 + i));
         if (!was_moving && anim_moving) {
             movers++;
             if (first_mover < 0) {
@@ -1023,7 +1032,9 @@ void render_scene(const vn_scene_t *scene)
         } else {
             int cur_x = LEFTIN_PX + ease(ease_remain, exit_from_x - LEFTIN_PX,
                                          t, exit_started_at, LEFTIN_MS);
+            perf_overlay_stage_begin(PERF_STAGE_ACT3);
             draw_actor_at(&exit_actor, 0xFF, cur_x, t);
+            perf_overlay_stage_end(PERF_STAGE_ACT3);
             anim_moving = true;
         }
     }
@@ -1127,7 +1138,10 @@ static void render_scene_moving(const vn_scene_t *scene)
         render_scene(scene);
         return;
     }
+    perf_overlay_set_mode("PLAT");
+    perf_overlay_stage_begin(PERF_STAGE_BG);
     plate_blit(false);
+    perf_overlay_stage_end(PERF_STAGE_BG);
 
     unsigned t = ticks_to_ms(clock());
     anim_moving = false;
@@ -1135,7 +1149,9 @@ static void render_scene_moving(const vn_scene_t *scene)
     for (int i = plate_slot; i < VN_MAX_CHARS; i++) {
         const vn_actor_t *actor = &scene->actors[i];
         if (actor->character != VN_NO_SPRITE) {
+            perf_overlay_stage_begin((uint8_t)(PERF_STAGE_ACT0 + i));
             draw_actor(actor, (uint8_t)i, t);
+            perf_overlay_stage_end((uint8_t)(PERF_STAGE_ACT0 + i));
         }
     }
     assets_sprite_end();
@@ -1235,18 +1251,22 @@ void render_box(const vn_scene_t *scene, const char *speaker,
         had_namebox = false;
     }
 
+    perf_overlay_stage_begin(PERF_STAGE_BOX);
+
     /* `window hide` or empty text -- DDLC uses this for beats with no text
      * (e.g. splash screens, CGs, end screens, pauses). Full-height 240px
      * scenes and full-screen noise already fill rows 180..239; 180px scenes
      * letterbox the bottom bar to black (or near-white for light voids). */
     if (scene->window_hidden || text == NULL || text[0] == '\0') {
         if (assets_scene_fullscreen(scene->background) || noise_is_fullscreen()) {
+            perf_overlay_stage_end(PERF_STAGE_BOX);
             return;
         }
         uint8_t bottom_color = ((uint8_t *)gfx_vbuffer)[(SCENE_H - 1) * SCREEN_W];
         uint8_t fill = palette_entry_is_near_white(bottom_color) ? bottom_color : COL_BLACK;
         gfx_SetColor(fill);
         gfx_FillRectangle_NoClip(0, BOX_Y, SCREEN_W, BOX_H);
+        perf_overlay_stage_end(PERF_STAGE_BOX);
         return;
     }
 
@@ -1352,6 +1372,7 @@ void render_box(const vn_scene_t *scene, const char *speaker,
         gfx_Rectangle(4, 4, 82, 14);
         render_text("Skipping >>", 9, 6, COL_WHITE);
     }
+    perf_overlay_stage_end(PERF_STAGE_BOX);
 }
 
 #ifdef DDLC_DEBUG_MENU
@@ -1519,9 +1540,11 @@ void render_present(uint8_t trans)
 
     perf_overlay_end();
     perf_overlay_present_begin();
+    perf_overlay_vram_begin();
     gfx_SwapDraw();
     render_commit_palette();
     gfx_BlitScreen();
+    perf_overlay_vram_end();
     perf_overlay_present_end();
     buffers_synced = true;
 }
@@ -1534,12 +1557,14 @@ void render_present_box(const vn_scene_t *scene)
         !(scene->overlay_fx_mask & VN_OVL_FAKE_SKIP)) {
         perf_overlay_end();
         perf_overlay_present_begin();
+        perf_overlay_vram_begin();
         gfx_SwapDraw();
         /* Rows 0..166 are already identical in both framebuffers; sync only
          * the namebox + dialogue box band (73 lines = 23,360 B instead of
          * 76,800 B), saving 53,440 B of VRAM copy per typewriter frame. */
         enum { SYNC_Y = BOX_Y - NAMEBOX_H + 4 };
         gfx_BlitLines(gfx_screen, SYNC_Y, SCREEN_H - SYNC_Y);
+        perf_overlay_vram_end();
         perf_overlay_present_end();
         return;
     }
