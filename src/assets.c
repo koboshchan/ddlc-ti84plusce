@@ -25,6 +25,7 @@
 
 #include "assets.h"
 #include "cgpack.h"
+#include "pak.h"
 #include "render.h"
 #include "fast_ops.h"
 #include "text.h"
@@ -142,25 +143,7 @@ static uint16_t read_u16le(const uint8_t *p)
  * opened or the allocation fails. */
 static uint8_t *read_whole(const char *name, uint16_t *size_out)
 {
-    uint8_t handle = ti_Open(name, "r");
-    if (!handle) {
-        return NULL;
-    }
-
-    uint16_t size = ti_GetSize(handle);
-    uint8_t *buf = malloc(size);
-    if (!buf) {
-        ti_Close(handle);
-        return NULL;
-    }
-
-    ti_Read(buf, 1, size, handle);
-    ti_Close(handle);
-
-    if (size_out) {
-        *size_out = size;
-    }
-    return buf;
+    return pak_read_whole(name, size_out);
 }
 
 bool assets_load_chunk(uint8_t chunk_id)
@@ -194,23 +177,45 @@ bool assets_load_chunk(uint8_t chunk_id)
      * only runs once per chunk *swap* (not per frame, unlike
      * assets_scene()'s per-redraw decompress), so the decode cost here is
      * negligible next to what it buys back in archive space. */
-    uint8_t handle = ti_Open(name, "r");
-    if (!handle) {
-        return false;
+    pak_view_t v;
+    if (pak_view_open(name, &v)) {
+        if (v.size < 4) {
+            pak_view_close(&v);
+            return false;
+        }
+        uint16_t total = read_u16le(v.ptr);
+        script_buf = malloc(total);
+        if (!script_buf) {
+            pak_view_close(&v);
+            return false;
+        }
+        zx0_Decompress(script_buf, v.ptr + 2);
+        pak_view_close(&v);
+    } else {
+        uint8_t vol, flags;
+        uint16_t off;
+        size_t packed_len;
+        if (!pak_stat(name, &vol, &off, &packed_len, &flags) ||
+            packed_len < 4 || packed_len > 0xFFFFu) {
+            return false;
+        }
+        uint8_t *tmp = malloc(packed_len);
+        if (!tmp) {
+            return false;
+        }
+        if (!pak_read_span(vol, off, 0, tmp, packed_len)) {
+            free(tmp);
+            return false;
+        }
+        uint16_t total = read_u16le(tmp);
+        script_buf = malloc(total);
+        if (!script_buf) {
+            free(tmp);
+            return false;
+        }
+        zx0_Decompress(script_buf, tmp + 2);
+        free(tmp);
     }
-    if (ti_GetSize(handle) < 4) {
-        ti_Close(handle);
-        return false;
-    }
-    const uint8_t *packed = ti_GetDataPtr(handle);
-    uint16_t total = read_u16le(packed);
-    script_buf = malloc(total);
-    if (!script_buf) {
-        ti_Close(handle);
-        return false;
-    }
-    zx0_Decompress(script_buf, packed + 2);
-    ti_Close(handle);
 
     uint16_t code_len = read_u16le(script_buf);
     script_code = script_buf + 2;
@@ -254,6 +259,8 @@ static bool load_lut(const char *name, uint8_t **buf_out,
 
 assets_status_t assets_init(void)
 {
+    pak_init();
+
     uint16_t entry_size;
     uint8_t *entry = read_whole("DENTRY", &entry_size);
     if (!entry || entry_size < 4) {
@@ -765,27 +772,57 @@ static bool sprite_open_rlet(uint16_t id, const gfx_rletsprite_t **rle_out,
         assets_sprite_end();
     }
     if (!sprite_handle) {
-        char name[9];
-        sprintf(name, "DSPR%u", appvar_idx);
-        sprite_handle = ti_Open(name, "r");
+        sprite_handle = pak_open_vol("DSPR", appvar_idx);
         if (!sprite_handle) {
             return false;
         }
         sprite_handle_idx = appvar_idx;
     }
 
-    const uint8_t *compressed = ti_GetDataPtr(sprite_handle) + offset;
-    uint16_t raw_size = read_u16le(compressed);
-    if (raw_size < 2) {
-        return false;
+    uint32_t vol_sz = ti_GetSize(sprite_handle);
+    if ((uint32_t)offset + entry_len <= vol_sz) {
+        const uint8_t *compressed = (const uint8_t *)ti_GetDataPtr(sprite_handle) + offset;
+        uint16_t raw_size = read_u16le(compressed);
+        if (raw_size < 2) {
+            return false;
+        }
+        if (!sprite_ensure_arena(raw_size)) {
+            return false;
+        }
+        uint16_t dst_off = sprite_arena_used;
+        zx0_Decompress(sprite_arena + dst_off, compressed + 2);
+        sprite_arena_used += raw_size;
+
+        sprite_cache_slot_t *slot = &sprite_cache[sprite_cache_count++];
+        slot->id = id;
+        slot->offset = dst_off;
+        slot->size = raw_size;
+        slot->dx = *dx_out;
+        slot->dy = *dy_out;
+        slot->last_use = ++sprite_lru_tick;
+
+        *rle_out = (const gfx_rletsprite_t *)(sprite_arena + dst_off);
+        return true;
     }
 
-    if (!sprite_ensure_arena(raw_size)) {
+    /* Spanning fallback when a packed sprite crosses a DPK volume boundary. */
+    assets_sprite_end();
+    uint8_t *tmp = malloc(entry_len);
+    if (!tmp) {
         return false;
     }
-
+    if (!pak_read_span(appvar_idx, offset, 0, tmp, entry_len)) {
+        free(tmp);
+        return false;
+    }
+    uint16_t raw_size = read_u16le(tmp);
+    if (raw_size < 2 || !sprite_ensure_arena(raw_size)) {
+        free(tmp);
+        return false;
+    }
     uint16_t dst_off = sprite_arena_used;
-    zx0_Decompress(sprite_arena + dst_off, compressed + 2);
+    zx0_Decompress(sprite_arena + dst_off, tmp + 2);
+    free(tmp);
     sprite_arena_used += raw_size;
 
     sprite_cache_slot_t *slot = &sprite_cache[sprite_cache_count++];
@@ -993,9 +1030,7 @@ static const uint8_t *title_appvar(uint8_t appvar_idx)
         title_handle = 0;
     }
     if (!title_handle) {
-        char name[9];
-        sprintf(name, "DTIL%u", appvar_idx);
-        title_handle = ti_Open(name, "r");
+        title_handle = pak_open_vol("DTIL", appvar_idx);
         if (!title_handle) {
             return NULL;
         }
@@ -1043,16 +1078,16 @@ bool assets_draw_title(uint8_t id, int left_x, int top_y)
 
 bool assets_title_bg(uint8_t px, uint8_t py, uint8_t *dest)
 {
-    uint8_t handle = ti_Open("DTILBG", "r");
-    if (!handle) {
+    pak_view_t v;
+    if (!pak_view_open("DTILBG", &v)) {
         return false;
     }
 
     px %= TITLE_TILE;
     py %= TITLE_TILE;
-    fast_title_bg(dest, ti_GetDataPtr(handle), px, py);
+    fast_title_bg(dest, v.ptr, px, py);
 
-    ti_Close(handle);
+    pak_view_close(&v);
     return true;
 }
 
@@ -1064,10 +1099,10 @@ bool assets_title_bg(uint8_t px, uint8_t py, uint8_t *dest)
 
 bool assets_poem_bg(uint8_t *dest)
 {
-    uint8_t compressed = ti_Open("DPOEMBG", "r");
-    if (compressed) {
-        fast_zx0_decompress(dest, ti_GetDataPtr(compressed));
-        ti_Close(compressed);
+    pak_view_t v;
+    if (pak_view_open("DPOEMBG", &v)) {
+        fast_zx0_decompress(dest, v.ptr);
+        pak_view_close(&v);
         return true;
     }
     /* Compatibility with old uncompressed bundles. */
@@ -1103,33 +1138,48 @@ bool assets_draw_box(bool namebox, uint8_t *dest)
 {
     size_t w = namebox ? NAMEBOX_W : TEXTBOX_W;
     size_t h = namebox ? NAMEBOX_H : TEXTBOX_H;
-    uint8_t handle = ti_Open(namebox ? "DNAMEBOX" : "DTXTBOX", "r");
-    if (!handle) return false;
-    if (ti_GetSize(handle) != w * h) {
-        ti_Close(handle);
+    const char *aname = namebox ? "DNAMEBOX" : "DTXTBOX";
+    pak_view_t v;
+    if (pak_view_open(aname, &v)) {
+        if (v.size != w * h) {
+            pak_view_close(&v);
+            return false;
+        }
+        fast_rect_blit(dest, SCREEN_W, v.ptr, w, w, h);
+        pak_view_close(&v);
+        return true;
+    }
+    /* Spanning fallback: blit row-by-row with zero extra RAM. */
+    uint8_t vol, flags;
+    uint16_t off;
+    size_t total;
+    if (!pak_stat(aname, &vol, &off, &total, &flags) || total != w * h) {
         return false;
     }
-    fast_rect_blit(dest, SCREEN_W, ti_GetDataPtr(handle), w, w, h);
-    ti_Close(handle);
+    for (size_t row = 0; row < h; row++) {
+        if (!pak_read_span(vol, off, row * w, dest + row * SCREEN_W, w)) {
+            return false;
+        }
+    }
     return true;
 }
 
 bool assets_draw_sticker_centered(uint8_t id, int center_x, int bottom_y)
 {
-    uint8_t handle = ti_Open("DSTKRS", "r");
-    if (!handle) {
+    pak_view_t v;
+    if (!pak_view_open("DSTKRS", &v)) {
         return false;
     }
-    const uint8_t *data = ti_GetDataPtr(handle);
+    const uint8_t *data = v.ptr;
     uint8_t count = data[0];
     if (id >= count) {
-        ti_Close(handle);
+        pak_view_close(&v);
         return false;
     }
     uint16_t offset = (uint16_t)(data[1 + (size_t)id * 2] | ((uint16_t)data[2 + (size_t)id * 2] << 8));
     const gfx_rletsprite_t *spr = (const gfx_rletsprite_t *)(data + offset);
     gfx_RLETSprite(spr, center_x - spr->width / 2, bottom_y - spr->height);
-    ti_Close(handle);
+    pak_view_close(&v);
     return true;
 }
 
@@ -1190,9 +1240,7 @@ bool assets_scene(uint8_t id, uint8_t *dest)
         return false;
     }
 
-    char name[9];
-    sprintf(name, "DSCN%u", appvar_idx);
-    uint8_t handle = ti_Open(name, "r");
+    uint8_t handle = pak_open_vol("DSCN", appvar_idx);
     if (!handle) {
         return false;
     }
@@ -1239,18 +1287,25 @@ const uint16_t *assets_scene_palette(uint8_t id)
         uint16_t offset;
         uint16_t len = 0;
         if (lut_lookup(cgpal_lut, cgpal_lut_count, cg_index_buf[id], &appvar_idx, &offset, &len)) {
-            char name[9];
-            sprintf(name, "DCGPAL%u", appvar_idx);
-            uint8_t handle = ti_Open(name, "r");
-            if (handle) {
-                const uint8_t *data = ti_GetDataPtr(handle);
+            if (len > sizeof(cg_palette_scratch)) {
+                len = sizeof(cg_palette_scratch);
+            }
+            if (pak_active()) {
                 memcpy(cg_palette_scratch, game_palette, sizeof(cg_palette_scratch));
-                if (len > sizeof(cg_palette_scratch)) {
-                    len = sizeof(cg_palette_scratch);
+                if (pak_read_span(appvar_idx, offset, 0, cg_palette_scratch, len)) {
+                    return cg_palette_scratch;
                 }
-                memcpy(cg_palette_scratch, data + offset, len);
-                ti_Close(handle);
-                return cg_palette_scratch;
+            } else {
+                char name[9];
+                sprintf(name, "DCGPAL%u", appvar_idx);
+                uint8_t handle = ti_Open(name, "r");
+                if (handle) {
+                    const uint8_t *data = ti_GetDataPtr(handle);
+                    memcpy(cg_palette_scratch, game_palette, sizeof(cg_palette_scratch));
+                    memcpy(cg_palette_scratch, data + offset, len);
+                    ti_Close(handle);
+                    return cg_palette_scratch;
+                }
             }
         }
     }

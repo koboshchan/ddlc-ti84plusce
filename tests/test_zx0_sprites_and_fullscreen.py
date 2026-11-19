@@ -83,6 +83,16 @@ static uint8_t ti_Open(const char *name, const char *mode) {
 }
 
 static void ti_Close(uint8_t handle) { (void)handle; }
+static uint16_t ti_GetSize(uint8_t handle) { return handle == 10 ? (uint16_t)(160u * 120u) : 64u; }
+static uint8_t pak_open_vol(const char *prefix, uint8_t vol) {
+    char name[9];
+    snprintf(name, sizeof(name), "%s%u", prefix, vol);
+    return ti_Open(name, "r");
+}
+static bool pak_read_span(uint8_t vol, uint16_t off, size_t sub, void *dst, size_t len) {
+    (void)vol; (void)off; (void)sub; (void)dst; (void)len;
+    return false;
+}
 
 static uint8_t cg_source_pixels[160u * 120u];
 

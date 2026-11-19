@@ -53,6 +53,7 @@ import extract
 import vnasm
 from _cedev import find_cedev_tool
 from ch5_motion_assets import generate as motion_generate
+from pak_builder import AssetPacker, PAK_VOL_MAX
 from compile_script import (VN_STR_BASE, CompileError, Compiler, link_chunks,
                             load_label_params, load_transform_animations,
                             load_variable_defaults)
@@ -637,7 +638,9 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
     def bin_for(png_name: str) -> Path:
         return gfx_dir / (Path(png_name).stem + ".bin")
 
-    appvars: list[Path] = []
+    packer = AssetPacker(vol_max=PAK_VOL_MAX)
+    lut_names: dict[str, str] = {}
+
     # These flags indicate mask availability only; noise_beat selects source beats.
     flags = bytearray(256)
     for sid, entry in enumerate(manifest["scenes"]):
@@ -647,101 +650,64 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
     with Image.open(raw_dir / "images/bg/vignette.png") as im:
         alpha = im.convert("RGBA").getchannel("A").resize((16, 9))
         mask = bytes(round(v * 15 / 255) for v in alpha.getdata()) + bytes(48)
-    appvars.append(write_appvar(bytes(flags) + mask, "DNFX", appvar_dir))
+    packer.add_named("DNFX", bytes(flags) + mask, contiguous=False)
+
     for chunk_path in chunk_paths:
         chunk_id = int(chunk_path.stem.removeprefix("chunk"))
         compressed = zx0_compress(chunk_path.read_bytes(), appvar_dir)
-        appvars.append(write_appvar(compressed, ti_name("DSCR", chunk_id), appvar_dir))
+        packer.add_named(ti_name("DSCR", chunk_id), compressed, contiguous=False)
 
-    # Packed (chunk_id << 16 | offset) for `label start` -- see vn.h's
-    # VN_PACK_ADDR and find_entry_point(). src/assets.c reads this instead of
-    # assuming pc=0 is the entry, since --files order no longer guarantees
-    # that (see docs/FORMAT.md's "Chunking").
-    appvars.append(write_appvar(struct.pack("<I", (entry_chunk << 16) | entry_offset),
-                                "DENTRY", appvar_dir))
+    packer.add_named(
+        "DENTRY",
+        struct.pack("<I", (entry_chunk << 16) | entry_offset),
+        contiguous=False,
+    )
 
-    # Optional, like DVSTR/DVDEF/DVLBL below: only shipped if splash.rpyc
-    # was in this build's --files selection and its `label splashscreen`
-    # (compile_script.py's curated stub -- see _emit_Label) actually
-    # compiled. src/assets.c's assets_splash_pc() degrades gracefully to
-    # "no startup splashscreen check" when this AppVar is simply missing.
     if splash_pc is not None:
         splash_chunk, splash_offset = splash_pc
-        appvars.append(write_appvar(struct.pack("<I", (splash_chunk << 16) | splash_offset),
-                                    "DSPLASH", appvar_dir))
+        packer.add_named(
+            "DSPLASH",
+            struct.pack("<I", (splash_chunk << 16) | splash_offset),
+            contiguous=False,
+        )
 
-    # The interned string pool (compile_script.py's VN_STR_BASE). Ships
-    # separately from the per-chunk dialogue strings, and not inside any
-    # chunk, because a variable set in one chunk is read in another: a name
-    # assigned by script.rpyc has to still render three chunks later. Tiny --
-    # 37 strings, under a kilobyte for the whole game -- so it stays resident
-    # rather than being swapped like a chunk.
-    #
-    # Same container layout as a chunk's string pool (see vnasm.Assembler's
-    # to_bytes): u16 count, then per string a u16 byte length, the UTF-8
-    # bytes, and a trailing NUL so src/assets.c can hand out a `const char *`
-    # pointing straight into the archived AppVar.
     pool = bytearray(struct.pack("<H", len(compiler.var_strings)))
     for text in compiler.var_strings:                 # insertion order == id order
         encoded = text.encode("utf-8")
         pool += struct.pack("<H", len(encoded)) + encoded + b"\x00"
-    appvars.append(write_appvar(bytes(pool), "DVSTR", appvar_dir))
+    packer.add_named("DVSTR", bytes(pool), contiguous=False)
 
-    # The dynamic-jump/call label table (compiler.var_labels, built above
-    # right after link_chunks()) -- u16 count, then per entry u16 (interned
-    # id - VN_STR_BASE) + u32 packed (chunk_id<<16 | offset). Relative ids
-    # keep every entry in u16 rather than needing the full i16 range signed;
-    # src/assets.c adds VN_STR_BASE back when matching a lookup against it.
     labels = bytearray(struct.pack("<H", len(compiler.var_labels)))
     for str_id, (chunk_id, offset) in sorted(compiler.var_labels.items()):
         labels += struct.pack("<HI", str_id - VN_STR_BASE, (chunk_id << 16) | offset)
-    appvars.append(write_appvar(bytes(labels), "DVLBL", appvar_dir))
+    packer.add_named("DVLBL", bytes(labels), contiguous=False)
 
-    # The debug menu's "jump to chapter" table (compiler.file_entry_points,
-    # built in do_compile()'s file loop) -- u16 count, then per entry u8
-    # name_len + name bytes (no NUL, length-prefixed like DVSTR's own
-    # strings) + u32 packed (chunk_id<<16 | offset). One entry per this
-    # build's actual --files selection, in that same order, so a smaller
-    # build (e.g. --files=act1) naturally ships a shorter list. Display
-    # names strip the "script-" prefix -- purely cosmetic, compile_script.py
-    # never sees this list. See src/assets.h's assets_debug_chapter_*.
     chjmp = bytearray(struct.pack("<H", len(compiler.file_entry_points)))
     for name, (chunk_id, offset) in compiler.file_entry_points.items():
         label = name.removeprefix("script-").encode("ascii")[:32]
         chjmp += struct.pack("<B", len(label)) + label
         chjmp += struct.pack("<I", (chunk_id << 16) | offset)
-    appvars.append(write_appvar(bytes(chjmp), "DCHJMP", appvar_dir))
+    packer.add_named("DCHJMP", bytes(chjmp), contiguous=False)
 
-    # Which slots are `persistent.*` (compiler.persistent_slots, built above)
-    # -- u16 count, then one u8 slot per entry. Read-only, compiler-generated,
-    # small (22 entries for the full game today); see src/persist.c for how
-    # this drives what actually gets saved/restored across a New Game.
     pslots = bytearray(struct.pack("<H", len(compiler.persistent_slots)))
     for slot in compiler.persistent_slots:
         pslots += struct.pack("<B", slot)
-    appvars.append(write_appvar(bytes(pslots), "DPSLOT", appvar_dir))
+    packer.add_named("DPSLOT", bytes(pslots), contiguous=False)
 
-    # Ren'Py's `default` values, applied to a fresh vars[] before a New
-    # Game/Continue starts (see src/main.c's assets_apply_var_defaults()) --
-    # u16 count, then per entry u8 slot + i16 value. Small and fixed
-    # (32 entries today), so like DVSTR it isn't per-chunk.
     defaults = bytearray(struct.pack("<H", len(compiler.var_defaults)))
     for slot, value in sorted(compiler.var_defaults.items()):
         defaults += struct.pack("<Bh", slot, value)
-    appvars.append(write_appvar(bytes(defaults), "DVDEF", appvar_dir))
+    packer.add_named("DVDEF", bytes(defaults), contiguous=False)
 
     poem_words = do_poem_words(raw_dir)
     if poem_words is not None:
-        appvars.append(write_appvar(poem_words, "DPOEM", appvar_dir))
+        packer.add_named("DPOEM", poem_words, contiguous=False)
 
     poem_texts = do_poem_texts(Path(__file__).parent)
     if poem_texts is not None:
-        appvars.append(write_appvar(poem_texts, "DPOEMT", appvar_dir))
+        packer.add_named("DPOEMT", poem_texts, contiguous=True)
 
-    # Sprites ship individually ZX0-compressed ([u16 raw_size][zx0 bitstream])
-    # and decode on cache miss into a single contiguous LRU RAM arena in
-    # src/assets.c, eliminating per-draw malloc/free fragmentation while keeping
-    # repeated animation/zoom draws in fast RAM.
+    # Sprites ship individually ZX0-compressed ([u16 raw_size][zx0 bitstream]).
     sprite_files = [bin_for(s["file"]) for s in manifest["sprites"]]
     def _compress_sprite(raw_path: Path) -> Path:
         zx0_path = raw_path.with_suffix(".zx0")
@@ -755,66 +721,60 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
             compressed_sprite_files = list(pool.map(_compress_sprite, sprite_files))
     else:
         compressed_sprite_files = []
-    appvars += package_group(compressed_sprite_files, "DSPR", "DSPRLUT", build_dir, appvar_dir)
+    packer.add_group("DSPR", [p.read_bytes() for p in compressed_sprite_files], contiguous=True)
+    lut_names["DSPR"] = "DSPRLUT"
 
-    # Per-sprite (dx, dy) draw-offset table, matching DSPRLUT's order --
-    # nonzero only for a layered "expression" atom (image_resolve.py's
-    # _bake_layer_atom()), letting src/assets.c's assets_draw_sprite() draw
-    # it in alignment with its body atom using the same center/feet anchor
-    # math as an ordinary sprite, just nudged. (0, 0) for every other
-    # sprite reproduces today's behavior exactly -- see docs/FORMAT.md's
-    # "Layered sprites".
     if manifest["sprites"]:
         sprite_offsets = b"".join(struct.pack("<hh", s.get("dx", 0), s.get("dy", 0))
                                   for s in manifest["sprites"])
-        appvars.append(write_appvar(sprite_offsets, "DSPROFF", appvar_dir))
+        packer.add_named("DSPROFF", sprite_offsets, contiguous=False)
 
     scene_files = [bin_for(s["file"]) for s in manifest["scenes"]]
-    appvars += package_group(scene_files, "DSCN", "DSCNLUT", build_dir, appvar_dir,
-                             alias_ids=None)
+    packer.add_group("DSCN", [p.read_bytes() for p in scene_files], contiguous=True)
+    lut_names["DSCN"] = "DSCNLUT"
+
     scene_heights = bytes(1 if s.get("h", 180) in (240, 120) else 0
                           for s in manifest["scenes"])
-    appvars.append(write_appvar(scene_heights, "DSCNH", appvar_dir))
+    packer.add_named("DSCNH", scene_heights, contiguous=False)
 
-    appvars.append(write_appvar((gfx_dir / "pal_game.bin").read_bytes(), "DPALGAME", appvar_dir))
+    packer.add_named("DPALGAME", (gfx_dir / "pal_game.bin").read_bytes(), contiguous=False)
 
-    # Title screen: art + its layout table + the scrolling background strip,
-    # all quantized against their own palette (see convert_images.py).
     title_art = manifest.get("title_art") or []
     if title_art:
         title_files = [bin_for(t["file"]) for t in title_art]
-        appvars += package_group(title_files, "DTIL", "DTILLUT", build_dir, appvar_dir)
+        packer.add_group("DTIL", [p.read_bytes() for p in title_files], contiguous=True)
+        lut_names["DTIL"] = "DTILLUT"
 
-        # Resting position and entrance offset per title art id, computed at
-        # bake time (alpha-cropping shifts them, so render.c can't rederive
-        # them from DDLC's ATL constants alone): i16 x, y, dx, dy.
         pos = b"".join(struct.pack("<hhhh", t["x"], t["y"], t["dx"], t["dy"])
                        for t in title_art)
-        appvars.append(write_appvar(pos, "DTILPOS", appvar_dir))
-        appvars.append(write_appvar((gfx_dir / "pal_title.bin").read_bytes(),
-                                    "DPALTTL", appvar_dir))
+        packer.add_named("DTILPOS", pos, contiguous=False)
+        packer.add_named("DPALTTL", (gfx_dir / "pal_title.bin").read_bytes(), contiguous=False)
 
     if manifest.get("title_bg"):
-        appvars.append(write_appvar(
-            bin_for(manifest["title_bg"]["file"]).read_bytes(), "DTILBG", appvar_dir))
+        packer.add_named(
+            "DTILBG",
+            bin_for(manifest["title_bg"]["file"]).read_bytes(),
+            contiguous=True,
+        )
 
     if manifest.get("poem_bg"):
         poem_bg_bytes = bin_for(manifest["poem_bg"]["file"]).read_bytes()
         if len(poem_bg_bytes) > MAXVARSIZE:
             raise ValueError("compressed poem background exceeds one AppVar")
-        appvars.append(write_appvar(poem_bg_bytes, "DPOEMBG", appvar_dir))
+        packer.add_named("DPOEMBG", poem_bg_bytes, contiguous=True)
 
-
-    # The real dialogue box/namebox art (see ImageResolver.ui_box_art()).
-    # Both fit comfortably in one AppVar each (320x60 = 19200 bytes,
-    # 72x17 = 1224 bytes -- nowhere near poem_bg's 76800-byte need to
-    # split), so no LUT/multi-part handling needed, unlike DPOEMBG above.
     if manifest.get("textbox"):
-        appvars.append(write_appvar(
-            bin_for(manifest["textbox"]["file"]).read_bytes(), "DTXTBOX", appvar_dir))
+        packer.add_named(
+            "DTXTBOX",
+            bin_for(manifest["textbox"]["file"]).read_bytes(),
+            contiguous=False,
+        )
     if manifest.get("namebox"):
-        appvars.append(write_appvar(
-            bin_for(manifest["namebox"]["file"]).read_bytes(), "DNAMEBOX", appvar_dir))
+        packer.add_named(
+            "DNAMEBOX",
+            bin_for(manifest["namebox"]["file"]).read_bytes(),
+            contiguous=False,
+        )
 
     if manifest.get("stickers"):
         sticker_entries = manifest["stickers"]
@@ -829,45 +789,50 @@ def do_package(build_dir: Path, appvar_dir: Path, raw_dir: Path, manifest: dict,
         for off in offsets:
             header += struct.pack("<H", off)
         data = bytes(header) + b"".join(payloads)
-        appvars.append(write_appvar(data, "DSTKRS", appvar_dir))
+        packer.add_named("DSTKRS", data, contiguous=True)
 
     cg_count = sum(1 for s in manifest["scenes"] if s["palette"] == "own")
     if cg_count:
         cg_pal_files = [gfx_dir / f"pal_cg_{i:03d}.bin" for i in range(cg_count)]
-        appvars += package_group(cg_pal_files, "DCGPAL", "DCGPLUT", build_dir, appvar_dir)
+        packer.add_group("DCGPAL", [p.read_bytes() for p in cg_pal_files], contiguous=False)
+        lut_names["DCGPAL"] = "DCGPLUT"
 
-        # Scene id -> index into DCGPLUT, one byte per scene in DSCNLUT order
-        # (0xFF for a "shared"/background scene, which has no own palette).
-        # src/assets.c's assets_scene_palette() is the reader.
         cg_index = bytes(s["cg_palette_index"] if s["cg_palette_index"] is not None else 0xFF
                          for s in manifest["scenes"])
-        appvars.append(write_appvar(cg_index, "DCGIDX", appvar_dir))
+        packer.add_named("DCGIDX", cg_index, contiguous=False)
 
-        # Full-res CG pack export (external FAT32 drive) + its matching
-        # fingerprint, resident on-calc so src/cgpack.c can refuse a pack
-        # built against a different --files selection/order rather than
-        # showing the wrong image for some scene id -- see export_cgpack.py.
         pack_count, pack_bytes = export_cgpack.export_cgpack(build_dir)
         print(f"  cgpack: {pack_count} full-res CGs, {pack_bytes} bytes "
               f"-> {build_dir / 'cgpack'} (copy onto a FAT32 drive as /DDLC/)")
-        appvars.append(write_appvar(export_cgpack.build_fingerprint(manifest),
-                                    "DCGVER", appvar_dir))
+        packer.add_named("DCGVER", export_cgpack.build_fingerprint(manifest), contiguous=False)
 
-    # Aller_Rg (index 0, default/body text) + RifficFree-Bold (index 1,
-    # namebox + menu labels) -- see convert_fonts.py's own docstring for
-    # which of fonts.rpa's several bundled fonts these are and why.
+    # Collect Ch5 motion assets into the shared pack: band streams & lookup
+    # tables stay contiguous for direct Flash access; tiny map/palette can span.
+    motion_contig = {"DMOT0", "DMOT1", "DMOT2", "DMOT3", "DMOTRGB", "DLUTQ"}
+    def _collect_motion(data: bytes, name: str, _dir: Path) -> Path:
+        packer.add_named(name, data, contiguous=(name in motion_contig))
+        return _dir / f"{name.lower()}.8xv"
+
+    motion_generate(raw_dir, build_dir, appvar_dir, _collect_motion)
+
+    pack_res = packer.build(lut_names, build_lut)
+    for gname, lname in lut_names.items():
+        (build_dir / f"{gname.lower()}.lut").write_bytes(pack_res.lut_bytes[lname])
+
+    appvars: list[Path] = []
+    # Keep DFONTS standalone: fontlib reads font data via a direct Flash pointer.
     fontpack = convert_fonts.build_fontpack(raw_dir, build_dir)
     appvars.append(write_appvar(fontpack.read_bytes(), "DFONTS", appvar_dir))
 
-    # The 4 real DDLC character ".chr" file stand-ins (src/chars.c/.h) --
-    # Character AppVars (SAYORI/NATSUKI/YURI/MONIKA) are created on first boot
-    # by chars_init() directly on-calc (and guarded by the FIRSTRUN marker), so they
-    # do not need to be transferred via TI Connect CE.
+    # Emit DPKIDX + shared ~64KB DPK0..DPKn pack AppVars.
+    appvars.append(write_appvar(pack_res.index_bytes, "DPKIDX", appvar_dir))
+    for i, vol_bytes in enumerate(pack_res.volumes):
+        appvars.append(write_appvar(vol_bytes, ti_name("DPK", i), appvar_dir))
 
-    appvars.extend(motion_generate(raw_dir, build_dir, appvar_dir, write_appvar))
     total = sum(p.stat().st_size for p in appvars)
-    print(f"{len(appvars)} AppVars, {total} bytes total "
-          f"({len(sprite_files)} sprites + {len(scene_files)} scenes)")
+    print(f"{len(appvars)} AppVars ({len(pack_res.volumes)} DPK volumes + DPKIDX + DFONTS, "
+          f"{len(pack_res.named_locations)} indexed assets, {pack_res.spanning_count} spanning), "
+          f"{total} bytes total ({len(sprite_files)} sprites + {len(scene_files)} scenes)")
     return appvars
 
 
@@ -889,7 +854,7 @@ def optimize_flash_order(prog_8xp: Path, appvars: list[Path]) -> list[Path]:
        (saving over 250 KB of flash overhead compared to unoptimized sequential order).
     """
     core_names = {
-        "dfonts.8xv", "dpalgame.8xv", "dpalttl.8xv", "dentry.8xv", "dvstr.8xv",
+        "dpkidx.8xv", "dfonts.8xv", "dpalgame.8xv", "dpalttl.8xv", "dentry.8xv", "dvstr.8xv",
         "dvlbl.8xv", "dvdef.8xv", "dsprlut.8xv", "dscnlut.8xv", "dtillut.8xv",
         "dtxtbox.8xv", "dnamebox.8xv", "dstkrs.8xv", "dcgplut.8xv", "dcgidx.8xv",
         "dcgver.8xv", "dchjmp.8xv", "dpslot.8xv", "dpoem.8xv", "dpoemt.8xv",

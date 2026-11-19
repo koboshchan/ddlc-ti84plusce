@@ -10,6 +10,7 @@
 #include "ch5_bands.h"
 #include "ch5_motion.h"
 #include "ch5_motion_fast.h"
+#include "pak.h"
 #include "perf_memory.h"
 
 extern void render_apply_palette(const uint16_t *);
@@ -329,30 +330,27 @@ bool ch5_motion_active(uint8_t scene) {
     static uint8_t cached;
     static uint8_t scene_bits[32];
     if (!cached) {
-        uint8_t h = ti_Open("DMOTMAP", "r");
-        if (h) {
-            const uint8_t *p = ti_GetDataPtr(h);
-            unsigned n = ti_GetSize(h);
+        uint16_t n = 0;
+        uint8_t *p = pak_read_whole("DMOTMAP", &n);
+        if (p) {
             for (unsigned i = 0; i + 18 <= n; i += 18) {
                 uint8_t s = p[i];
                 scene_bits[s >> 3] |= (uint8_t)(1u << (s & 7));
             }
-            ti_Close(h);
+            free(p);
         }
         cached = 1;
     }
     return (scene_bits[scene >> 3] >> (scene & 7)) & 1u;
 #else
-    char name[] = "DMOTMAP";
-    uint8_t h = ti_Open(name, "r");
+    uint16_t n = 0;
+    uint8_t *p = pak_read_whole("DMOTMAP", &n);
     bool active = false;
-    if (h) {
-        const uint8_t *p = ti_GetDataPtr(h);
-        unsigned n = ti_GetSize(h), i;
-        for (i = 0; i + 18 <= n; i += 18) {
+    if (p) {
+        for (unsigned i = 0; i + 18 <= n; i += 18) {
             if (p[i] == scene) { active = true; break; }
         }
-        ti_Close(h);
+        free(p);
     }
     return active;
 #endif
@@ -361,10 +359,10 @@ bool ch5_motion_active(uint8_t scene) {
 /* Clock lifetime is independent of framebuffer drawing. A successful USB
  * frame must advance the same scene/layer clocks as the on-calc renderer. */
 bool ch5_motion_sync_clock(uint8_t scene) {
-    uint8_t h = ti_Open("DMOTMAP", "r");
-    if (!h) return false;
-    const uint8_t *p = ti_GetDataPtr(h);
-    unsigned n = ti_GetSize(h), i, j;
+    uint16_t n = 0;
+    uint8_t *p = pak_read_whole("DMOTMAP", &n);
+    if (!p) return false;
+    unsigned i, j;
     clock_t now = clock();
     bool found = false;
     for (i = 0; i + 18 <= n; i += 18) {
@@ -385,55 +383,53 @@ bool ch5_motion_sync_clock(uint8_t scene) {
             break;
         }
     }
-    ti_Close(h);
+    free(p);
     return found;
 }
 
 bool ch5_motion_draw(uint8_t scene) {
-    uint8_t record[18], h, blend_handle;
-    unsigned n, x;
+    uint8_t record[18];
+    unsigned x;
     uint8_t i;
     bool found = false;
 
-    h = ti_Open("DMOTMAP", "r");
-    if (!h) return false;
-    const uint8_t *p = ti_GetDataPtr(h);
-    n = ti_GetSize(h);
-    for (x = 0; x + 18 <= n; x += 18) {
-        if (p[x] == scene) { memcpy(record, p + x, 18); found = true; break; }
+    uint16_t map_n = 0;
+    uint8_t *map_p = pak_read_whole("DMOTMAP", &map_n);
+    if (!map_p) return false;
+    for (x = 0; x + 18 <= map_n; x += 18) {
+        if (map_p[x] == scene) { memcpy(record, map_p + x, 18); found = true; break; }
     }
-    ti_Close(h);
+    free(map_p);
     if (!found) { last_scene = 255; return false; }
     if (record[1] > 8) return false;
 
-    h = ti_Open("DMOTPAL", "r");
-    if (!h) return false;
-    n = ti_GetSize(h);
-    ti_Close(h);
-    if (n != 512) return false;
+    uint16_t pal_sz = 0;
+    uint8_t *pal_check = pak_read_whole("DMOTPAL", &pal_sz);
+    free(pal_check);
+    if (!pal_check || pal_sz != 512) return false;
     if (!ch5_motion_sync_clock(scene)) return false;
 
-    blend_handle = ti_Open("DMOTRGB", "r");
-    if (!blend_handle) return false;
-    if (ti_GetSize(blend_handle) != 32768u) { ti_Close(blend_handle); return false; }
+    pak_view_t blend_v;
+    if (!pak_view_open("DMOTRGB", &blend_v)) return false;
+    if (blend_v.size != 32768u) { pak_view_close(&blend_v); return false; }
 
     /* DMOTRGB is validated above; no unused data-pointer lookup. */
-    uint8_t qh = ti_Open("DLUTQ", "r");
-    if (!qh) { ti_Close(blend_handle); return false; }
-    if (ti_GetSize(qh) != 12560) { ti_Close(qh); ti_Close(blend_handle); return false; }
-    const uint8_t *qdata = ti_GetDataPtr(qh);
+    pak_view_t qv;
+    if (!pak_view_open("DLUTQ", &qv)) { pak_view_close(&blend_v); return false; }
+    if (qv.size != 12560u) { pak_view_close(&qv); pak_view_close(&blend_v); return false; }
+    const uint8_t *qdata = qv.ptr;
     const uint8_t *quant_groups = qdata;
     {
         uint8_t q = 0;
         do {
             if (quant_groups[q] >= 16) {
-                ti_Close(qh);
-                ti_Close(blend_handle);
+                pak_view_close(&qv);
+                pak_view_close(&blend_v);
                 return false;
             }
         } while (++q);
     }
-    ti_Close(qh);
+    pak_view_close(&qv);
 
 #ifdef __TICE__
     /* Pack LUT (4KB-aligned), pages (256B), band scratch (6272B on-calc), and
@@ -452,7 +448,7 @@ bool ch5_motion_draw(uint8_t scene) {
 #else
     /* Host adversarial tests assert gfx_vbuffer[57600..] stays untouched. */
     uint8_t *lookup_alloc = malloc(4096 + 256 + 4095 + 2000);
-    if (!lookup_alloc) { ti_Close(blend_handle); return false; }
+    if (!lookup_alloc) { pak_view_close(&blend_v); return false; }
     uint8_t *table = (uint8_t *)(((uintptr_t)lookup_alloc + 4095u) & ~(uintptr_t)4095u);
     uint8_t *pages = table + 4096;
     int16_t *pair_x = (int16_t *)(pages + 256);
@@ -554,17 +550,18 @@ motion_done:
 #ifdef __TICE__
     ch5_band_scratch = NULL;
 #endif
-    ti_Close(blend_handle);
+    pak_view_close(&blend_v);
     if (success) {
-        h = ti_Open("DMOTPAL", "r");
-        if (h) {
-            if (ti_GetSize(h) == 512) {
+        uint16_t psz = 0;
+        uint8_t *pal = pak_read_whole("DMOTPAL", &psz);
+        if (pal) {
+            if (psz == 512) {
                 /* Publish palette and fade state only after dependency/stream success. */
-                render_apply_palette((const uint16_t *)ti_GetDataPtr(h));
+                render_apply_palette((const uint16_t *)pal);
             } else {
                 success = false;
             }
-            ti_Close(h);
+            free(pal);
         } else {
             success = false;
         }

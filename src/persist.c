@@ -4,6 +4,7 @@
  */
 
 #include "persist.h"
+#include "pak.h"
 
 #include <fileioc.h>
 
@@ -63,7 +64,7 @@ static void ensure_slots(void)
         return;
     }
     uint16_t size;
-    slot_buf = read_whole("DPSLOT", &size);
+    slot_buf = pak_read_whole("DPSLOT", &size);
     /* A bundle whose script has no persistent.* variable at all ships no
      * DPSLOT -- slot_count stays 0, and both functions below correctly
      * become no-ops rather than failing. */

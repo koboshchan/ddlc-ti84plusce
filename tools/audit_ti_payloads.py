@@ -178,6 +178,8 @@ def audit_bundle(bundle_path: Path, engine_path: Path | None = None) -> dict:
         name = row["name"]
         if name in ("DDLC", "DDLC0", "DDLC1"):
             return "engine"
+        if name == "DPKIDX" or name.startswith("DPK"):
+            return "asset_pack"
         if name.startswith("DSPR"):
             return "sprites"
         if name.startswith("DSCN"):

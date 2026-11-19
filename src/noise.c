@@ -2,6 +2,7 @@
  * attenuation ABOVE the noise. All archived pointers live only while their
  * handles are open; no file operation occurs between begin and end. */
 #include "noise.h"
+#include "pak.h"
 #include "noise_prng.h"
 #include <fileioc.h>
 #include <graphx.h>
@@ -149,20 +150,17 @@ void noise_end(void) {
     meta=0;
 }
 bool noise_begin(uint8_t scene) {
-    unsigned i,k; const char *names[1]={"DNFX"};
+    unsigned i,k;
     noise_end();
 #ifndef NOISE_HOST_GOLDEN
     if (!mask_cached) {
-        for(i=0;i<1;i++) {
-            h[i]=ti_Open(names[i],"r");
-            if(!h[i] || ti_GetSize(h[i]) != 448) { noise_end(); return false; }
+        if (!pak_read_asset("DNFX", 256, mask_cache, NOISE_CELLS)) {
+            return false;
         }
-        meta=ti_GetDataPtr(h[0]);
-        memcpy(mask_cache, meta + 256, NOISE_CELLS);
         mask_cached = true;
-        noise_end();
     }
 #else
+    const char *names[1]={"DNFX"};
     for(i=0;i<1;i++) {
         h[i]=ti_Open(names[i],"r");
         if(!h[i] || ti_GetSize(h[i]) != 448) { noise_end(); return false; }

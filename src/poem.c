@@ -6,6 +6,7 @@
 #include "poem.h"
 
 #include "assets.h"
+#include "pak.h"
 #include "perf_memory.h"
 #include "perf_overlay.h"
 #include "render.h"
@@ -62,16 +63,17 @@ static uint16_t  pool_remaining;
  * can't be held past that. */
 static bool load_words(void)
 {
-    uint8_t handle = ti_Open("DPOEM", "r");
-    if (!handle) {
+    uint16_t data_size = 0;
+    uint8_t *data = pak_read_whole("DPOEM", &data_size);
+    if (!data || data_size < 2) {
+        free(data);
         return false;
     }
 
-    const uint8_t *data = ti_GetDataPtr(handle);
     uint16_t total = (uint16_t)(data[0] | ((uint16_t)data[1] << 8));
     uint16_t cap   = total < POEM_WORDS_CAP ? total : POEM_WORDS_CAP;
     if (cap == 0) {
-        ti_Close(handle);
+        free(data);
         return false;
     }
 
@@ -82,7 +84,7 @@ static bool load_words(void)
         free(pool);
         poem_words = NULL;
         pool = NULL;
-        ti_Close(handle);
+        free(data);
         return false;
     }
 
@@ -110,7 +112,7 @@ static bool load_words(void)
         }
     }
 
-    ti_Close(handle);
+    free(data);
     poem_word_count = kept;
     if (poem_word_count == 0) {
         free(poem_words);
@@ -550,14 +552,14 @@ typedef struct {
 
 void poem_view(uint8_t poem_id)
 {
-    uint8_t handle = ti_Open("DPOEMT", "r");
-    if (!handle) {
+    pak_view_t v;
+    if (!pak_view_open("DPOEMT", &v)) {
         return;
     }
-    const uint8_t *data = ti_GetDataPtr(handle);
+    const uint8_t *data = v.ptr;
     uint16_t count = *(const uint16_t *)data;
     if (poem_id >= count) {
-        ti_Close(handle);
+        pak_view_close(&v);
         return;
     }
     const uint16_t *offsets = (const uint16_t *)(data + 2);
@@ -566,7 +568,7 @@ void poem_view(uint8_t poem_id)
     /* Split and word-wrap poem text into lines */
     poem_line_slice_t *lines = malloc(POEM_VIEW_MAX_LINES * sizeof(*lines));
     if (!lines) {
-        ti_Close(handle);
+        pak_view_close(&v);
         return;
     }
     uint16_t total_lines = 0;
@@ -706,5 +708,5 @@ void poem_view(uint8_t poem_id)
         }
     }
     free(lines);
-    ti_Close(handle);
+    pak_view_close(&v);
 }

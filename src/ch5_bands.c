@@ -1,4 +1,5 @@
 #include "ch5_bands.h"
+#include "pak.h"
 #ifdef __TICE__
 #include "fast_ops.h"
 #endif
@@ -44,7 +45,7 @@ void ch5_band_invalidate(void) {
     memset(layer_data,0,sizeof layer_data);
 }
 const uint8_t *ch5_band_row(uint8_t layer,uint16_t row) {
-    uint8_t band,handle;
+    uint8_t band;
     uint16_t width,size,offset,next;
     const uint8_t *data;
     char name[]="DMOT0";
@@ -64,18 +65,18 @@ const uint8_t *ch5_band_row(uint8_t layer,uint16_t row) {
     if(data) {
         size=layer_size[layer];
     } else {
+        pak_view_t v;
         name[4]=48+layer;
-        handle=ti_Open(name,"r");
-        if(!handle)return 0;
-        size=ti_GetSize(handle);
-        data=ti_GetDataPtr(handle);
+        if(!pak_view_open(name,&v))return 0;
+        size=(uint16_t)v.size;
+        data=v.ptr;
         if(size<12 || memcmp(data,"DMT1",4) ||
            u16(data+4)!=width || u16(data+6)!=(layer<2?180:263) ||
            data[8]!=8 || data[9]!=(layer<2?23:33) ||
            size<10+2*data[9]) {
-            ti_Close(handle);return 0;
+            pak_view_close(&v);return 0;
         }
-        ti_Close(handle);
+        pak_view_close(&v);
         if(frame_cache.flags[0]) {
             layer_data[layer]=data;
             layer_size[layer]=size;
